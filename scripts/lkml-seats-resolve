@@ -12,7 +12,7 @@
 # harness/model pins checked into each persona's frontmatter -- see
 # skills/lkml-mode/SKILL.md, "Building a panel". Its path is
 # $LKML_SEATS_FILE when set (the test hook, same pattern as
-# LKML_SUMMARIZE_ENV_FILE), else ~/.config/fork-sandbox/lkml-seats.yaml.
+# LKML_SUMMARIZE_ENV_FILE), else ~/.config/lkml/seats.yaml.
 #
 # The seats file's schema is validated by lkml-seats-parse.py (the same
 # "small python3 parser that fails with precise paths and emits
@@ -44,7 +44,7 @@
 #
 # <announce> is empty unless the seats file changed the seat; it is the
 # line the launcher prints on stderr with its own prefix, e.g. a launcher
-# prints `lkml-round: seat core: pi, sealed (lkml-seats.yaml, was claude/opus)`
+# prints `lkml-round: seat core: pi, sealed (seats.yaml, was claude/opus)`
 # so the operator can audit every seat a seats file moved.
 #
 # `harness: pi-local` is a permanent alias for `harness: pi` +
@@ -164,7 +164,7 @@ if [[ "$mode" == "resolve" ]]; then
     fi
 fi
 
-seats_file="${LKML_SEATS_FILE:-$HOME/.config/fork-sandbox/lkml-seats.yaml}"
+seats_file="${LKML_SEATS_FILE:-$HOME/.config/lkml/seats.yaml}"
 
 if [[ ! -e "$seats_file" ]]; then
     if [[ -n "${LKML_SEATS_FILE:-}" ]]; then

@@ -77,7 +77,7 @@ stub_bin="$(mktemp -d)"; tmpdirs+=("$stub_bin")
 run_prefix_dir="$(mktemp -d)"; tmpdirs+=("$run_prefix_dir")
 # The launcher resolves its seats file from $HOME by default -- pin a
 # controlled HOME and an empty LKML_SEATS_FILE so neither a real
-# ~/.config/fork-sandbox/lkml-seats.yaml nor the machine's own HOME can
+# ~/.config/lkml/seats.yaml nor the machine's own HOME can
 # leak in (tests/lkml-seats-test.sh does the same).
 home_dir="$(mktemp -d)"; tmpdirs+=("$home_dir")
 export HOME="$home_dir" LKML_SEATS_FILE=''

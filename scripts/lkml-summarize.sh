@@ -24,7 +24,7 @@
 #            for it verbatim and the leg dies with zero replies -- what
 #            the lkml-round.sh --model-override 404 lesson was about. Without the
 #            flag, each tier falls back to the machine default in
-#            ~/.config/fork-sandbox/lkml-summarize.env (keys
+#            ~/.config/lkml/summarize.env (keys
 #            LKML_SUMMARIZE_HIGH / LKML_SUMMARIZE_LOW, same form; the
 #            file's path is overridable via LKML_SUMMARIZE_ENV_FILE),
 #            then to the shipped defaults high=claude/opus,
@@ -45,7 +45,7 @@
 # LKML_SUMMARIZE_HEARTBEAT_SECS controls the wait-loop progress heartbeat
 # (default 60); it is read from the environment for tests and odd terminals.
 # LKML_SUMMARIZE_MAX_INPUT_BYTES caps each tier handoff (default 409600);
-# it is site config read from lkml-summarize.env, with the environment taking precedence.
+# it is site config read from summarize.env, with the environment taking precedence.
 #
 # Input is `lkml-render.py --text <series-dir>` output ONLY -- never
 # the HTML view. The render is carried inline in each tier's handoff
@@ -160,7 +160,7 @@ lkml_summarize_env_value() {
     return 1
 }
 
-env_file="${LKML_SUMMARIZE_ENV_FILE:-$HOME/.config/fork-sandbox/lkml-summarize.env}"
+env_file="${LKML_SUMMARIZE_ENV_FILE:-$HOME/.config/lkml/summarize.env}"
 
 if [[ -v LKML_SUMMARIZE_MAX_INPUT_BYTES ]]; then
     max_input_bytes="$LKML_SUMMARIZE_MAX_INPUT_BYTES"
@@ -390,7 +390,7 @@ check_handoff_size() {
     local tier="$1" handoff_file="$2" handoff_bytes
     handoff_bytes="$(wc -c < "$handoff_file" | tr -d '[:space:]')"
     if (( handoff_bytes > max_input_bytes )); then
-        echo "fork-sandbox lkml-summarize: Error: the $tier tier's handoff is $handoff_bytes bytes; the cap is $max_input_bytes (LKML_SUMMARIZE_MAX_INPUT_BYTES in lkml-summarize.env). The thread no longer fits a tier's context window; see the hardening backlog's size-scaling item." >&2
+        echo "fork-sandbox lkml-summarize: Error: the $tier tier's handoff is $handoff_bytes bytes; the cap is $max_input_bytes (LKML_SUMMARIZE_MAX_INPUT_BYTES in summarize.env). The thread no longer fits a tier's context window; see the hardening backlog's size-scaling item." >&2
         return 1
     fi
 }

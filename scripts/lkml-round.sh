@@ -97,7 +97,7 @@
 #            harness/model passes through verbatim. The
 #            persona frontmatter pins are defaults, not policy: this
 #            machine's seats file (LKML_SEATS_FILE, else
-#            ~/.config/fork-sandbox/lkml-seats.yaml) may re-seat any
+#            ~/.config/lkml/seats.yaml) may re-seat any
 #            persona, per persona, key by key -- precedence
 #            --model-override > seats personas.<p> > seats default: >
 #            frontmatter (lkml-seats-resolve owns the rules; a seats
@@ -105,7 +105,7 @@
 #            missing file means the pins stand; an unreadable or
 #            unparseable one refuses the whole round before any launch.
 #            Every seat the seats file changes is announced on stderr,
-#            e.g. `lkml-round: seat core: pi, sealed (lkml-seats.yaml,
+#            e.g. `lkml-round: seat core: pi, sealed (seats.yaml,
 #            was claude/opus)`; --model-override wins over the seats file
 #            silently -- it flattens the whole roster, so per-persona
 #            seat announcements would be noise.
@@ -1081,7 +1081,7 @@ if (( summarize )); then
         # Bare name, resolved from PATH, like the fork-sandbox.sh launcher
         # above: parity with that PATH requirement, and the stubbable seam
         # tests/lkml-round-test.sh uses (a capturing stub on PATH).
-        # lkml-summarize.env owns the tier selection, so no tier is passed.
+        # summarize.env owns the tier selection, so no tier is passed.
         # A failure must NOT fail the round: the replies are already posted
         # and that work is durable; the round's exit status stays exactly
         # what launch_failed says.

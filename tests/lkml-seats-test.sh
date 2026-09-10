@@ -9,7 +9,7 @@
 #
 # The helper tests call scripts/lkml-seats-resolve with LKML_SEATS_FILE
 # pointed at fixtures (its documented test hook) and a controlled HOME,
-# so neither a real ~/.config/fork-sandbox/lkml-seats.yaml nor the
+# so neither a real ~/.config/lkml/seats.yaml nor the
 # machine's own HOME can leak in. The integration tests launch the real
 # lkml-round.sh against the stub and inspect the argv each persona was
 # actually launched with, plus the stderr announcements.
@@ -450,13 +450,13 @@ contains "--help prints the usage to stdout" "$help_out" "lkml-seats-resolve act
 printf '\n== active: the seats-file path rule lives in the resolver ==\n'
 HOME="$home_dir" LKML_SEATS_FILE='' "$resolver" active "$personas_test_dir"
 check "active: no file anywhere is inactive" "1" "$?"
-mkdir -p -- "$home_dir/.config/fork-sandbox"
-printf 'default:\n  harness: pi-local\n' > "$home_dir/.config/fork-sandbox/lkml-seats.yaml"
+mkdir -p -- "$home_dir/.config/lkml"
+printf 'default:\n  harness: pi-local\n' > "$home_dir/.config/lkml/seats.yaml"
 HOME="$home_dir" LKML_SEATS_FILE='' "$resolver" active "$personas_test_dir"
 check "active: the default path is honored" "0" "$?"
 res_out="$(HOME="$home_dir" LKML_SEATS_FILE='' "$resolver" resolve "$personas_test_dir" core claude opus "" "")"
 check "set-but-empty LKML_SEATS_FILE consults the default path" "pi" "$(printf '%s\n' "$res_out" | sed -n 1p)"
-rm -f -- "$home_dir/.config/fork-sandbox/lkml-seats.yaml"
+rm -f -- "$home_dir/.config/lkml/seats.yaml"
 HOME="$home_dir" LKML_SEATS_FILE="$work/nope.yaml" "$resolver" active "$personas_test_dir" 2>"$work/err"
 check "active: an explicit missing path errors, not just inactivates" "1" "$?"
 contains "active: the error names the path" "$(cat "$work/err")" "nope.yaml"
@@ -792,7 +792,8 @@ printf '\n== round consults the default seats path without the env hook ==\n'
 # The seats file sits at the resolver's owned default path under the
 # controlled HOME and no LKML_SEATS_FILE is set: the round must find
 # and announce it, proving the launcher did not re-derive the path.
-cat > "$home_dir/.config/fork-sandbox/lkml-seats.yaml" <<'YAML'
+mkdir -p -- "$home_dir/.config/lkml"
+cat > "$home_dir/.config/lkml/seats.yaml" <<'YAML'
 default:
   harness: pi-local
 YAML
@@ -805,8 +806,8 @@ OUT="$(env HOME="$home_dir" PATH="$stub_bin:$PATH" \
 RC=$?
 check "default-path round exits 0" "0" "$RC"
 contains "default-path round re-seats the panel and announces it" "$OUT" \
-    "lkml-round: seat core: pi, sealed (lkml-seats.yaml, was claude/opus)"
-rm -f -- "$home_dir/.config/fork-sandbox/lkml-seats.yaml"
+    "lkml-round: seat core: pi, sealed (seats.yaml, was claude/opus)"
+rm -f -- "$home_dir/.config/lkml/seats.yaml"
 
 printf '\n== the author scripts consume the same seats resolution ==\n'
 # Same seats file for all three: the author persona (claude/opus in

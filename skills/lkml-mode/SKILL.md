@@ -104,7 +104,7 @@ scheduling, not reading, and the reviewers' job is reading.
   letter INSIDE the thread; this writes files OUTSIDE the thread and
   touches nothing in the mailbox. The tier harnesses/models are
   overridable with `--high`/`--low` or a
-  `~/.config/fork-sandbox/lkml-summarize.env` file; a bare harness
+  `~/.config/lkml/summarize.env` file; a bare harness
   (e.g. `--high pi-local`) passes through bare, exactly like a reviewer
   persona's -- `lkml-summarize.sh` has no `network:` channel of its own,
   so a bare `pi` (as opposed to `pi-local`) has no model and
@@ -202,7 +202,7 @@ independent axes: `harness` is `claude`, `pi` or `codex`; `network` is
 from the network — sealed only makes sense on `pi`. On a machine where
 the panel should run elsewhere (every reviewer sealed against a
 self-hosted `pi` endpoint, `author` staying on `claude/opus`), write the
-machine seats file at `~/.config/fork-sandbox/lkml-seats.yaml`
+machine seats file at `~/.config/lkml/seats.yaml`
 (overridable via `LKML_SEATS_FILE`):
 
 ```yaml
@@ -246,7 +246,7 @@ A missing file means the frontmatter pins stand exactly as shipped; an
 unreadable or unparseable one refuses the run loudly — a typo never
 silently re-seats the panel onto the expensive endpoint. Every seat the
 file changes is announced on stderr (`lkml-round: seat core: pi, sealed
-(lkml-seats.yaml, was claude/opus)`), and `--model-override` wins over the
+(seats.yaml, was claude/opus)`), and `--model-override` wins over the
 seats file quietly, as it flattens the whole roster. `lkml-round.sh`,
 `lkml-revise.sh`, `lkml-cover.sh` and `lkml-series.sh` all consume the same
 resolution (the `lkml-seats-resolve` helper); `lkml-summarize.sh`'s tiers

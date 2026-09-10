@@ -51,14 +51,14 @@
 #              a bare claude takes the harness default); a combined
 #              harness/model passes through verbatim. The frontmatter pins
 #              are defaults, not policy: this machine's seats file
-#              (LKML_SEATS_FILE, else ~/.config/fork-sandbox/lkml-seats.yaml)
+#              (LKML_SEATS_FILE, else ~/.config/lkml/seats.yaml)
 #              may re-seat the persona, key by key -- precedence
 #              --model-override > seats personas.<p> > seats default: >
 #              frontmatter (a seats harness without a model drops the
 #              frontmatter's model). A missing file means the pins stand;
 #              an unreadable or unparseable one refuses the run before the
 #              launch. A seat the seats file changes is announced on stderr,
-#              e.g. `lkml-cover: seat author: pi, sealed (lkml-seats.yaml,
+#              e.g. `lkml-cover: seat author: pi, sealed (seats.yaml,
 #              was claude/opus)`; --model-override wins over the seats file
 #              silently.
 # --timeout    seconds to wait for the run to finish. Default 3600.
