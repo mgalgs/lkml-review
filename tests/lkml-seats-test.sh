@@ -153,6 +153,43 @@ resolve_helper "$work/does-not-exist.yaml" core claude opus "" ""
 check "explicit missing seats file exits non-zero" "1" "$RES_RC"
 contains "explicit missing seats file names the path" "$RES_ERR" "does-not-exist.yaml"
 
+printf '\n== default path missing but an older file is left behind: warn, still fall through ==\n'
+# The pre-move state: no ~/.config/lkml/seats.yaml, but the old
+# ~/.config/fork-sandbox/lkml-seats.yaml is still on disk. The no-fallback
+# decision stands (the frontmatter pins apply, exit 0), but the
+# orphaned file must be named on stderr instead of silently not sealing
+# the seats.
+mkdir -p -- "$home_dir/.config/fork-sandbox"
+printf 'default:\n  harness: pi-local\n' > "$home_dir/.config/fork-sandbox/lkml-seats.yaml"
+resolve_helper ABSENT core claude opus "" ""
+check "orphaned old file: still resolves, exit 0" "0" "$RES_RC"
+check "orphaned old file: frontmatter harness stands" "claude" "$(resolved_field RES_OUT 1)"
+check "orphaned old file: frontmatter model stands" "opus" "$(resolved_field RES_OUT 2)"
+check "orphaned old file: the old file is not read" "" "$(resolved_field RES_OUT 5)"
+contains "orphaned old file: warning names the old path" "$RES_ERR" \
+    "$home_dir/.config/fork-sandbox/lkml-seats.yaml"
+contains "orphaned old file: warning names the wanted path" "$RES_ERR" \
+    "$home_dir/.config/lkml/seats.yaml"
+contains "orphaned old file: warning says the old file is not read" "$RES_ERR" "which is not read"
+# A present default file plus a leftover old file is the moved state:
+# the default wins and the warning is gone.
+mkdir -p -- "$home_dir/.config/lkml"
+printf 'default:\n  harness: pi-local\n' > "$home_dir/.config/lkml/seats.yaml"
+resolve_helper ABSENT core claude opus "" ""
+check "default file present: it is read despite the old file" "pi" "$(resolved_field RES_OUT 1)"
+check "default file present: no orphaned-file warning" "" "$RES_ERR"
+rm -f -- "$home_dir/.config/lkml/seats.yaml"
+# An explicit LKML_SEATS_FILE that resolves normally does not warn about
+# the leftover old file either -- the operator already pointed somewhere.
+cat > "$work/seats-orphaned.yaml" <<'YAML'
+personas:
+  core:
+    model: sonnet
+YAML
+resolve_helper "$work/seats-orphaned.yaml" core claude opus "" ""
+check "explicit file: no orphaned-file warning" "" "$RES_ERR"
+rm -rf -- "$home_dir/.config/fork-sandbox"
+
 printf '\n== default: re-seats every persona, model dropped ==\n'
 cat > "$work/seats-default.yaml" <<'YAML'
 default:

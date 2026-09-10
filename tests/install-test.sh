@@ -14,7 +14,8 @@
 #     neither list, and a listed name that does not exist in scripts/.
 #   - a drift refusal links nothing: the install stops before creating
 #     any directory.
-#   - --check exits 0 when the config files are missing, and names them.
+#   - --check exits 0 when the config files are missing, and names them;
+#     an orphaned pre-move file at the old path is called out by name.
 #   - re-running the install is idempotent.
 
 set -uo pipefail
@@ -139,6 +140,23 @@ check "--check with missing config exits 0" "0" "$RC"
 contains "--check names the missing seats file" "$OUT" "$home4/.config/lkml/seats.yaml"
 contains "--check names the missing summarize env" "$OUT" "$home4/.config/lkml/summarize.env"
 contains "--check reports the scripts dir is not on PATH" "$OUT" "$home4/.claude/scripts is not on PATH"
+# An orphaned pre-move file at the old fork-sandbox path is called out
+# by name, not just reported as a plain miss.
+mkdir -p -- "$home4/.config/fork-sandbox"
+: > "$home4/.config/fork-sandbox/lkml-seats.yaml"
+: > "$home4/.config/fork-sandbox/lkml-summarize.env"
+OUT="$(HOME="$home4" "$install" --check 2>&1)"; RC=$?
+check "--check with an orphaned old file exits 0" "0" "$RC"
+contains "--check names the orphaned old seats file" "$OUT" "$home4/.config/fork-sandbox/lkml-seats.yaml"
+contains "--check names the orphaned old summarize env" "$OUT" "$home4/.config/fork-sandbox/lkml-summarize.env"
+contains "--check says the orphaned old file is not read" "$OUT" "not read"
+rm -rf -- "$home4/.config/fork-sandbox"
+OUT="$(HOME="$home4" "$install" --check 2>&1)"; RC=$?
+check "--check without the old files stays plain-miss" "0" "$RC"
+case "$OUT" in
+    *"fork-sandbox"*) no "--check without old files does not mention the old path" "$OUT" ;;
+    *) ok "--check without old files does not mention the old path" ;;
+esac
 # And when they exist, it says so and still exits 0.
 mkdir -p -- "$home4/.config/lkml"
 : > "$home4/.config/lkml/seats.yaml"

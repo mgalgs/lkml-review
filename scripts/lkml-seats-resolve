@@ -113,7 +113,13 @@
 #
 # A missing file at the DEFAULT path is not an error: everything falls
 # back to the frontmatter values verbatim (the fm-* arguments are
-# printed unchanged, no announce). An LKML_SEATS_FILE that is set to a
+# printed unchanged, no announce). One exception to that silence: if
+# the default path is missing and a file remains at the pre-move
+# location (~/.config/fork-sandbox/lkml-seats.yaml), `resolve` prints
+# a warning on stderr naming both paths before falling through -- the
+# frontmatter pins still stand, nothing refuses; a machine that has
+# not moved its file must not have its seals silently drop.
+# An LKML_SEATS_FILE that is set to a
 # path with no file there IS an error -- the operator meant for a file
 # to be there, and guessing that it was a typo would turn the typo into
 # the frontmatter pins. An unreadable or unparseable file is always an
@@ -178,7 +184,17 @@ if [[ ! -e "$seats_file" ]]; then
     fi
     if [[ "$mode" == "resolve" ]]; then
         # No seats file: today's behavior, the frontmatter pins verbatim
-        # (already pi-local-expanded above).
+        # (already pi-local-expanded above). The one loud case: a file
+        # left at the pre-move location would have sealed these seats, and
+        # falling through without saying so is exactly the silent re-seat
+        # onto the frontmatter pins the move was meant to make visible.
+        # Warning only -- the no-fallback decision stands.
+        if [[ -f "$HOME/.config/fork-sandbox/lkml-seats.yaml" ]]; then
+            echo "Warning: no seats file at '$seats_file'; the persona frontmatter" >&2
+            echo "pins stand. An older seats file remains at" >&2
+            echo "'$HOME/.config/fork-sandbox/lkml-seats.yaml', which is not read." >&2
+            echo "Move it to '$seats_file' if those pins are not the seats you want." >&2
+        fi
         printf '%s\n%s\n%s\n%s\n\n' "$fm_harness" "$fm_model" "$fm_thinking" "$fm_network"
     fi
     exit 0

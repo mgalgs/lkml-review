@@ -17,7 +17,12 @@
 #           ~/.config/lkml/summarize.env exists, and whether
 #           $HOME/.claude/scripts is on PATH. A missing config file is
 #           a thing to tell someone about, not a broken install, so
-#           --check exits 0 regardless.
+#           --check exits 0 regardless. A missing config file with an
+#           orphaned copy still at the pre-move location
+#           (~/.config/fork-sandbox/lkml-seats.yaml or
+#           lkml-summarize.env) is called out by name: that file is
+#           not read, and its seals or caps have silently stopped
+#           applying.
 #
 # Only porcelain goes on PATH. Plumbing is reached by its callers
 # through their own script_dir (the dirname of the caller's own
@@ -151,12 +156,16 @@ do_install() {
 # Reports what is missing and exits 0 regardless: a missing config file
 # is a thing to tell someone about, not a broken install.
 do_check() {
-    local f
+    local f old
     for f in "$HOME/.config/lkml/seats.yaml" "$HOME/.config/lkml/summarize.env"; do
         if [[ -f "$f" ]]; then
             echo "check: ok       $f"
         else
             echo "check: MISSING  $f"
+            old="$HOME/.config/fork-sandbox/lkml-$(basename -- "$f")"
+            if [[ -f "$old" ]]; then
+                echo "check:           an older pre-move file remains at $old; it is not read -- move it to $f"
+            fi
         fi
     done
     if path_has "$SCRIPTS_DIR"; then
