@@ -992,6 +992,42 @@ check "an unsupported harness submits nothing at all" "0" "$n_submits_bad"
 n_local_launches_bad="$(find "$cap_k8s_bad" -name '*.task-meta.json' | wc -l | tr -d '[:space:]')"
 check "an unsupported harness launches nothing locally either" "0" "$n_local_launches_bad"
 
+printf '\n== the seats pre-pass names an orphaned pre-move file before any launch ==\n'
+# On an un-migrated machine the round's pre-pass stops at `active`
+# (which answers "inactive") and never reaches `resolve`, so the
+# orphaned-pre-move warning must come from `active`: with only the
+# old-path file present, the round must refuse (the unknown series)
+# AND name the orphan on stderr, launching nothing. The round is
+# pointed at a nonexistent series so it refuses right after the seats
+# pre-pass, before any persona launch.
+mkdir -p -- "$home_dir/.config/fork-sandbox"
+printf 'default:\n  harness: pi-local\n' > "$home_dir/.config/fork-sandbox/lkml-seats.yaml"
+cap_orphan="$(mktemp -d)"; tmpdirs+=("$cap_orphan")
+out_orphan="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_orphan" STUB_RUN_PREFIX="$run_prefix_dir" \
+    "$round" nosuchseries --project "$project_dir" --checkout somebranch \
+    --personas core --personas-dir "$work" --reply-to "$patch_id" 2>&1)"; rc_orphan=$?
+if (( rc_orphan != 0 )); then ok "orphaned seats file: the round still refuses the unknown series"; else no "orphaned seats file: the round still refuses the unknown series" "exit 0: $out_orphan"; fi
+contains "orphaned seats file: the refusal is the series error, not the seats file" "$out_orphan" "does not resolve in series 'nosuchseries'"
+n_orphan_warns="$(grep -c 'Warning: no seats file at' <<< "$out_orphan")"; n_orphan_warns="${n_orphan_warns:-0}"
+check "orphaned seats file: the warning is printed exactly once" "1" "$n_orphan_warns"
+contains "orphaned seats file: the warning names the old path" "$out_orphan" \
+    "$home_dir/.config/fork-sandbox/lkml-seats.yaml"
+contains "orphaned seats file: the warning names the wanted path" "$out_orphan" \
+    "$home_dir/.config/lkml/seats.yaml"
+n_orphan_launches="$(find "$cap_orphan" -name '*.task-meta.json' | wc -l | tr -d '[:space:]')"
+check "orphaned seats file: no seat was launched" "0" "$n_orphan_launches"
+# And without the old file the same refusal stays silent about seats:
+# the warning is specific to the orphan, not a generic no-file notice.
+rm -rf -- "$home_dir/.config/fork-sandbox"
+out_orphan2="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_orphan" STUB_RUN_PREFIX="$run_prefix_dir" \
+    "$round" nosuchseries --project "$project_dir" --checkout somebranch \
+    --personas core --personas-dir "$work" --reply-to "$patch_id" 2>&1)"; rc_orphan2=$?
+if (( rc_orphan2 != 0 )); then ok "no seats file at all: the round still refuses the unknown series"; else no "no seats file at all: the round still refuses the unknown series" "exit 0: $out_orphan2"; fi
+case "$out_orphan2" in
+    *"Warning: no seats file at"*) no "no seats file at all: the warning does not fire" "$out_orphan2" ;;
+    *) ok "no seats file at all: the warning does not fire" ;;
+esac
+
 printf '\n== --help ==\n'
 h_out="$("$round" --help 2>&1)"; h_rc=$?
 if (( h_rc == 0 )); then ok "--help alone exits 0"; else no "--help alone exits 0" "exit $h_rc: $h_out"; fi

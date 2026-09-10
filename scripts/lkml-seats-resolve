@@ -30,7 +30,12 @@
 # mere inactivity). Launchers query it instead of re-deriving the path:
 # the default and the set-but-empty-means-unset semantics live here
 # only, so a launcher cannot drift into a silent frontmatter fallback
-# the seats file was meant to prevent.
+# the seats file was meant to prevent. Because lkml-round.sh reaches
+# `resolve` only when `active` passes, the orphaned-pre-move warning
+# below is printed from `active` too: otherwise a round whose seats
+# file was never moved would launch on the frontmatter pins with zero
+# stderr, while the single-persona launchers (which call `resolve`
+# unconditionally) would warn.
 #
 # `resolve` prints exactly five lines on stdout, one field per line
 # (one-per-line rather than delimited: fields may be empty, and a
@@ -115,10 +120,11 @@
 # back to the frontmatter values verbatim (the fm-* arguments are
 # printed unchanged, no announce). One exception to that silence: if
 # the default path is missing and a file remains at the pre-move
-# location (~/.config/fork-sandbox/lkml-seats.yaml), `resolve` prints
-# a warning on stderr naming both paths before falling through -- the
-# frontmatter pins still stand, nothing refuses; a machine that has
-# not moved its file must not have its seals silently drop.
+# location (~/.config/fork-sandbox/lkml-seats.yaml), `active` and
+# `resolve` both print a warning on stderr naming both paths before
+# falling through -- the frontmatter pins still stand, nothing
+# refuses; a machine that has not moved its file must not have its
+# seals silently drop.
 # An LKML_SEATS_FILE that is set to a
 # path with no file there IS an error -- the operator meant for a file
 # to be there, and guessing that it was a typo would turn the typo into
@@ -139,6 +145,19 @@ fi
 (( $# == 2 || $# == 7 )) || { usage >&2; exit 1; }
 mode="$1"
 personas_dir="$2"
+
+# A file left at the pre-move location while the owned path is missing:
+# name both paths on stderr, once per call. Called only from the
+# missing-file branch, after the explicit-missing-LKML_SEATS_FILE
+# error has had its say. Warning only -- the no-fallback decision
+# stands; this is the loud case the move was meant to surface.
+warn_orphaned_seats_file() {
+    [[ -f "$HOME/.config/fork-sandbox/lkml-seats.yaml" ]] || return 0
+    echo "Warning: no seats file at '$seats_file'; the persona frontmatter" >&2
+    echo "pins stand. An older seats file remains at" >&2
+    echo "'$HOME/.config/fork-sandbox/lkml-seats.yaml', which is not read." >&2
+    echo "Move it to '$seats_file' if those pins are not the seats you want." >&2
+}
 
 if [[ "$mode" == "resolve" ]]; then
     persona="$3" fm_harness="$4" fm_model="$5" fm_thinking="$6" fm_network="${7:-}"
@@ -179,24 +198,25 @@ if [[ ! -e "$seats_file" ]]; then
         echo "pins stand." >&2
         exit 1
     fi
+    # `check` is only the parse gate (a missing file at the default
+    # path is an explicit absence, exit 0) and stays silent; the round
+    # runs it right before `active`, and a doubled warning is noise.
+    # The one loud case on a missing file: a file left at the pre-move
+    # location would have sealed these seats, and falling through without
+    # saying so is exactly the silent re-seat onto the frontmatter pins
+    # the move was meant to make visible. `active` prints it too, not
+    # just `resolve`: the round's pre-pass stops at `active` on an
+    # un-migrated machine and never reaches `resolve`.
+    if [[ "$mode" == "check" ]]; then
+        exit 0
+    fi
+    warn_orphaned_seats_file
     if [[ "$mode" == "active" ]]; then
         exit 1
     fi
-    if [[ "$mode" == "resolve" ]]; then
-        # No seats file: today's behavior, the frontmatter pins verbatim
-        # (already pi-local-expanded above). The one loud case: a file
-        # left at the pre-move location would have sealed these seats, and
-        # falling through without saying so is exactly the silent re-seat
-        # onto the frontmatter pins the move was meant to make visible.
-        # Warning only -- the no-fallback decision stands.
-        if [[ -f "$HOME/.config/fork-sandbox/lkml-seats.yaml" ]]; then
-            echo "Warning: no seats file at '$seats_file'; the persona frontmatter" >&2
-            echo "pins stand. An older seats file remains at" >&2
-            echo "'$HOME/.config/fork-sandbox/lkml-seats.yaml', which is not read." >&2
-            echo "Move it to '$seats_file' if those pins are not the seats you want." >&2
-        fi
-        printf '%s\n%s\n%s\n%s\n\n' "$fm_harness" "$fm_model" "$fm_thinking" "$fm_network"
-    fi
+    # No seats file: today's behavior, the frontmatter pins verbatim
+    # (already pi-local-expanded above).
+    printf '%s\n%s\n%s\n%s\n\n' "$fm_harness" "$fm_model" "$fm_thinking" "$fm_network"
     exit 0
 fi
 

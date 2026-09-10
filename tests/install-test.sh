@@ -16,6 +16,9 @@
 #     any directory.
 #   - --check exits 0 when the config files are missing, and names them;
 #     an orphaned pre-move file at the old path is called out by name.
+#   - a link target that exists as a real directory is refused by name,
+#     not nested into (ln -sfn would link inside it and report success);
+#     the same install links cleanly once the directory is gone.
 #   - re-running the install is idempotent.
 
 set -uo pipefail
@@ -165,6 +168,48 @@ OUT="$(HOME="$home4" "$install" --check 2>&1)"; RC=$?
 check "--check with present config exits 0" "0" "$RC"
 contains "--check reports the seats file ok" "$OUT" "ok       $home4/.config/lkml/seats.yaml"
 contains "--check reports the summarize env ok" "$OUT" "ok       $home4/.config/lkml/summarize.env"
+
+printf '\n== install: a pre-existing real directory at a link target is refused ==\n'
+# The failure state: a hand-copied skill directory (and a stray
+# directory at a scripts target) instead of symlinks. ln -sfn would
+# create the links INSIDE those directories and report success, so the
+# install must refuse before linking anything, name the offender, and
+# leave the stale contents untouched.
+home5="$work/home-dirtarget"
+mkdir -p -- "$home5/.claude/scripts/lkml-round.sh" "$home5/.claude/skills/lkml-mode"
+printf 'stale hand-copied skill\n' > "$home5/.claude/skills/lkml-mode/SKILL.md"
+OUT="$(HOME="$home5" "$install" 2>&1)"; RC=$?
+if (( RC != 0 )); then ok "directory target: exits non-zero"; else no "directory target: exits non-zero" "exit 0"; fi
+contains "directory target: names the scripts directory" "$OUT" "$home5/.claude/scripts/lkml-round.sh"
+contains "directory target: says it is a real directory" "$OUT" "real directory"
+check "directory target: the stale skill file is untouched" \
+    "stale hand-copied skill" "$(cat "$home5/.claude/skills/lkml-mode/SKILL.md" 2>/dev/null)"
+if [[ -e "$home5/.claude/skills/lkml-mode/lkml-mode" ]]; then
+    no "directory target: nothing was nested inside" "$home5/.claude/skills/lkml-mode/lkml-mode exists"
+else
+    ok "directory target: nothing was nested inside"
+fi
+if [[ -e "$home5/.claude/skills/lkml-mode" && -L "$home5/.claude/skills/lkml-mode" ]]; then
+    no "directory target: no link was created" "a symlink now exists"
+else
+    ok "directory target: no link was created"
+fi
+# Moving the first offender aside gets the SECOND refusal (the farm
+# target), so both call sites of the guard are covered by the same run.
+rm -rf -- "$home5/.claude/scripts/lkml-round.sh"
+OUT="$(HOME="$home5" "$install" 2>&1)"; RC=$?
+if (( RC != 0 )); then ok "second directory target: still refuses"; else no "second directory target: still refuses" "exit 0"; fi
+contains "second directory target: names the farm directory" "$OUT" "$home5/.claude/skills/lkml-mode"
+# Once both directories are gone, the very same run installs cleanly.
+rm -rf -- "$home5/.claude/skills/lkml-mode"
+OUT="$(HOME="$home5" "$install" 2>&1)"; RC=$?
+check "after moving the directories aside: install exits 0" "0" "$RC"
+check "after moving the directories aside: the scripts link resolves" \
+    "$repo_dir/scripts/lkml-round.sh" "$(readlink -f -- "$home5/.claude/scripts/lkml-round.sh" 2>/dev/null || echo gone)"
+for farm in "${FARMS[@]}"; do
+    check "after moving the directories aside: skill resolves in $farm" \
+        "$repo_dir/skills/lkml-mode" "$(readlink -f -- "$farm/lkml-mode" 2>/dev/null || echo gone)"
+done
 
 printf '\n== re-running the install is idempotent ==\n'
 OUT="$(HOME="$home_dir" "$install" 2>&1)"; RC=$?

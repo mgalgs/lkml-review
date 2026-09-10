@@ -11,7 +11,10 @@
 #             $HOME/.pi/agent/skills    (the pi harness)
 #           (three because seats run under claude, pi and codex
 #           harnesses, and each looks in its own place). Re-running is
-#           safe: every link is replaced in place, nothing is appended.
+#           safe: every link is replaced in place, nothing is appended
+#           -- except a target that exists as a real directory, which
+#           is refused by name: ln -sfn would create the link INSIDE
+#           it and report success, never replacing the stale directory.
 # --check   Report, and never gate, the prerequisites: whether
 #           ~/.config/lkml/seats.yaml exists, whether
 #           ~/.config/lkml/summarize.env exists, and whether
@@ -122,6 +125,22 @@ fail_closed_check() {
     fi
 }
 
+# Refuse a real-directory link target instead of nesting into it:
+# ln -sfn treats an existing real directory by creating the symlink
+# inside it, exits 0, and prints success -- the stale directory would
+# never be replaced, the harness would keep reading it, and every
+# re-run would nest one level deeper. (A regular-file target is fine:
+# ln -sfn replaces it.)
+link_replace() {
+    local src="$1" dest="$2"
+    if [[ -d "$dest" && ! -L "$dest" ]]; then
+        echo "install: Error: $dest already exists and is a real directory, not a symlink." >&2
+        echo "install: Move it aside (or remove it) and re-run; a link cannot replace it in place." >&2
+        exit 1
+    fi
+    ln -sfn -- "$src" "$dest"
+}
+
 do_install() {
     fail_closed_check
     [[ -d "$skill_src" ]] || { echo "install: Error: $skill_src does not exist." >&2; exit 1; }
@@ -134,10 +153,10 @@ do_install() {
 
     local name
     for name in "${PORCELAIN[@]}"; do
-        ln -sfn -- "$scripts_src/$name" "$SCRIPTS_DIR/$name"
+        link_replace "$scripts_src/$name" "$SCRIPTS_DIR/$name"
     done
     for farm in "${SKILL_FARMS[@]}"; do
-        ln -sfn -- "$skill_src" "$farm/lkml-mode"
+        link_replace "$skill_src" "$farm/lkml-mode"
     done
 
     echo "install: linked ${#PORCELAIN[@]} porcelain scripts into $SCRIPTS_DIR"

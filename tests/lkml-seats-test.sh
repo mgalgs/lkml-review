@@ -498,6 +498,26 @@ HOME="$home_dir" LKML_SEATS_FILE="$work/nope.yaml" "$resolver" active "$personas
 check "active: an explicit missing path errors, not just inactivates" "1" "$?"
 contains "active: the error names the path" "$(cat "$work/err")" "nope.yaml"
 
+# A file left at the pre-move location while the owned path is missing:
+# `active` must name it on stderr, not just exit 1 silently --
+# lkml-round.sh's pre-pass stops at `active` on such a machine and
+# never reaches `resolve`, so a `resolve`-only warning would keep the
+# whole panel launching on the frontmatter pins with zero stderr.
+mkdir -p -- "$home_dir/.config/fork-sandbox"
+printf 'default:\n  harness: pi-local\n' > "$home_dir/.config/fork-sandbox/lkml-seats.yaml"
+HOME="$home_dir" LKML_SEATS_FILE='' "$resolver" active "$personas_test_dir" 2>"$work/err"
+check "active: an orphaned old file is still inactive" "1" "$?"
+contains "active: the orphan warning names the old path" "$(cat "$work/err")" \
+    "$home_dir/.config/fork-sandbox/lkml-seats.yaml"
+contains "active: the orphan warning names the wanted path" "$(cat "$work/err")" \
+    "$home_dir/.config/lkml/seats.yaml"
+contains "active: the orphan warning says the old file is not read" "$(cat "$work/err")" "which is not read"
+# With the old file gone, `active`'s inactivity stays silent.
+rm -rf -- "$home_dir/.config/fork-sandbox"
+HOME="$home_dir" LKML_SEATS_FILE='' "$resolver" active "$personas_test_dir" 2>"$work/err"
+check "active: a plain miss stays inactive" "1" "$?"
+check "active: a plain miss prints nothing to stderr" "" "$(cat "$work/err")"
+
 printf '\n== integration: lkml-round.sh against the stub ==\n'
 
 # A minimal series to round on, same shape as tests/lkml-round-test.sh.
