@@ -32,12 +32,15 @@ later, once review replies are in -- see fleet/personas/secretary.md):
     lkml-panel:
       members:
         - core
-        - security
         - tests
         - docs
         - architecture
         - newcomer
         - ci
+
+(@security is deliberately not in the standing crew — add it to this
+kickoff's To: or Cc: when the series touches a trust boundary. Keeping
+the expensive seats out of the default crew is the cost throttle.)
 
 Payload: pick ONE of the two variants below and delete the other.
 
