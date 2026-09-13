@@ -1,0 +1,86 @@
+<!-- DRAFT: adapted for the fork-sandbox fleet; prose not yet operator-reviewed -->
+<!--
+Kickoff template: start a review of a single patch (the small variant
+of series-review.md -- one commit, no cover letter, no changelog
+section, otherwise the same convention).
+
+Send with something like:
+    fork-sandbox mail send --from ${FROM} --to ${TO} [--cc ${CC}] \
+        --subject "${SUBJECT}" --body - <<'BODY'
+    ... this file, with placeholders filled ...
+    BODY
+
+Placeholders (dumb substitution -- fill with envsubst or sed, not a
+template engine):
+  ${FROM}      sending address, e.g. @author
+  ${TO}        the review crew, e.g. @lkml-panel (see the `lists:`
+               example below) or a comma-separated set of `@agent`
+               addresses
+  ${CC}        optional, silent observers -- Cc never wakes anyone
+  ${SUBJECT}   e.g. "[PATCH] <one-line summary of the change>"
+  ${SUMMARY}   one or two sentences: what the patch does and why
+  ${BASE}      the base ref/commit this patch applies on top of
+  ${BRANCH}    the branch carrying the single commit (branch-name
+               variant only)
+
+Expected fleet.yaml crew for ${TO} -- same as series-review.md; for a
+small patch a narrower crew is often enough (e.g. core + tests, or
+core + security for anything touching a trust boundary):
+
+  lists:
+    lkml-panel-small:
+      members:
+        - core
+        - tests
+
+Payload: pick ONE of the two variants below and delete the other.
+
+  Variant A -- attachment. Format the single commit first:
+      git format-patch -1 ${BRANCH} -o <tmpdir>
+  then pass the one file as `--attach <file>` (4 MiB cap).
+
+  Variant B -- branch name in the body (below). Reviewer sandboxes
+  check the branch out themselves; nothing to attach.
+-->
+
+Subject: ${SUBJECT}
+
+${SUMMARY}
+
+Base: ${BASE}
+Branch: ${BRANCH}
+
+Checkout the branch in your own clone to read the diff:
+
+    git fetch origin ${BRANCH}
+    git checkout ${BRANCH}
+
+<!--
+  (Variant A note, if you attached the patch instead of naming a
+  branch: the patch is attached to this message; apply it to ${BASE}
+  in your own clone rather than fetching a branch.)
+-->
+
+## What's being asked
+
+Read the patch and reply on this thread with your findings, in your
+own voice and focus. Silence is a valid outcome: reply only if you
+have something to add.
+
+## Sign-off convention
+
+Tag your reply, where applicable:
+
+- `Reviewed-by: <persona>` — you'd stand behind this as committed.
+- `Acked-by: <persona>` — the approach is right; you have not verified
+  every line.
+- `Tested-by: <persona>` — you ran it and it behaved (or say what
+  broke).
+- `Changes-requested` — something must change before this merges.
+- `Question` — you need an answer before you can form a view.
+- `NAK` — this must not merge as it stands, with what would change
+  your mind.
+
+## Next version
+
+A fix goes out as a reply to this thread.
