@@ -138,7 +138,7 @@ check "one --attach flag per produced patch (2 commits in the range)" "2" "$n_at
 
 printf '\n== single-patch range (one commit, --attach) ==\n'
 out_single="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" \
-    "$kickoff" "$project_dir" "HEAD~1..HEAD" \
+    "$kickoff" "$project_dir" "topic~1..topic" \
     --from '@author' --to '@lkml-panel' --subject 'subj' \
     --template "$repo_dir/fleet/kickoffs/single-patch.md" --attach 2>&1)"
 n_attach_single="$(grep -o -- '--attach' <<<"$out_single" | wc -l | tr -d '[:space:]')"
@@ -181,6 +181,13 @@ rc_empty_attach=$?
 if (( rc_empty_attach != 0 )); then ok "--attach with an empty range exits non-zero"; else no "--attach with an empty range exits non-zero" "exit 0: $out_empty_attach"; fi
 contains "--attach with an empty range names the problem" "$out_empty_attach" "produced no patches"
 
+printf '\n== branch-name variant (no --attach) with a range that produces no commits is also a hard error ==\n'
+out_empty_branch="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "topic..topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' 2>&1)"
+rc_empty_branch=$?
+if (( rc_empty_branch != 0 )); then ok "branch-name variant with an empty range exits non-zero"; else no "branch-name variant with an empty range exits non-zero" "exit 0: $out_empty_branch"; fi
+contains "branch-name variant with an empty range names the problem" "$out_empty_branch" "produced no patches"
+
 printf '\n== branch-name variant refuses a range whose right side is not a branch ==\n'
 out_bad_branch="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "HEAD~1..HEAD" \
     --from '@author' --to '@lkml-panel' --subject 'subj' \
@@ -188,6 +195,14 @@ out_bad_branch="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "HEAD~1..HEAD
 rc_bad_branch=$?
 if (( rc_bad_branch != 0 )); then ok "branch-name variant with a non-branch range exits non-zero"; else no "branch-name variant with a non-branch range exits non-zero" "exit 0: $out_bad_branch"; fi
 contains "branch-name variant names the problem" "$out_bad_branch" "does not resolve to a checkout-able branch name"
+
+printf '\n== --attach also refuses a range whose right side is not a branch, since the template always offers the checkout fallback too ==\n'
+out_bad_branch_attach="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "HEAD~1..HEAD" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --attach \
+    --template "$repo_dir/fleet/kickoffs/single-patch.md" 2>&1)"
+rc_bad_branch_attach=$?
+if (( rc_bad_branch_attach != 0 )); then ok "--attach with a non-branch range exits non-zero"; else no "--attach with a non-branch range exits non-zero" "exit 0: $out_bad_branch_attach"; fi
+contains "--attach with a non-branch range names the problem" "$out_bad_branch_attach" "does not resolve to a checkout-able branch name"
 
 printf '\n== a comment closing with trailing whitespace still strips cleanly ==\n'
 template_dir="$(mktemp -d)"; tmpdirs+=("$template_dir")

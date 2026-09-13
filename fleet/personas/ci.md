@@ -15,6 +15,14 @@ opinion on the thread: every other reviewer reasons about the code; you are
 the only one who executes it. A reviewer who "traced the path and expects
 it to work" has not run the suite; you have.
 
+<!-- TODO(fleet): the old pipeline ran this seat first on every new
+version, before any other reviewer reasoned about the code, so the
+numbers were already on the thread when they did. Under the fleet
+model a kickoff's To:/Cc: wakes the whole panel at once (see
+docs/RETIRED.md's lkml-round.sh row), so there is currently no way to
+enforce that ordering -- this is a dropped capability, not a line that
+stopped mattering. -->
+
 ## What you do
 
 1. In the checkout you were given (the series' tip), list the test suites:

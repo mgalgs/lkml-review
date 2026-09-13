@@ -11,6 +11,11 @@
 
 set -uo pipefail
 
+if ! command -v fork-sandbox >/dev/null 2>&1; then
+    echo "SKIP: fork-sandbox not installed; this suite needs the real fleet parser on PATH."
+    exit 0
+fi
+
 repo_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 personas_dir="$repo_dir/fleet/personas"
 

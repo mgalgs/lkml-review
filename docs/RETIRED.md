@@ -13,7 +13,7 @@ by surprise.
 | Old script | Fleet replacement |
 |---|---|
 | `lkml-mailbox.sh` (message store: init/post/tree/cover/show/open/tally) | `fork-sandbox mail` (send/reply/show/tree/list/inbox) — the store itself |
-| `lkml-round.sh` (fan-out one sandboxed run per persona + harvest) | folded into `fork-sandbox postmaster`'s spawn-on-delivery routing — no separate "launch a round" script exists or is needed; a kickoff mail's `To:`/`Cc:` IS the fan-out |
+| `lkml-round.sh` (fan-out one sandboxed run per persona + harvest) | folded into `fork-sandbox postmaster`'s spawn-on-delivery routing — no separate "launch a round" script exists or is needed; a kickoff mail's `To:`/`Cc:` IS the fan-out. This also drops the old CI-first ordering guarantee (run CI before any reviewer reasons about the code, so the numbers are already on the thread) — see `fleet/personas/ci.md`'s `TODO(fleet)` comment for the open gap |
 | `lkml-revise.sh` (launch author to answer review + post next version) | partially folded into postmaster wake routing (the author is just another fleet seat that wakes on delivery like any reviewer); "posting the next version" as a first-class action has no fleet equivalent yet — see `fleet/personas/author.md`'s `TODO(fleet)` comment |
 | `lkml-cover.sh` (author writes + posts a cover letter for existing patches) | folded into `scripts/lkml-fleet-kickoff.sh` + `fleet/kickoffs/*.md` templates |
 | `lkml-series.sh` (reconstruct a merged range into thematic reviewable commits) | no replacement; local git reconstruction logic, unrelated to transport, out of this round's scope entirely |

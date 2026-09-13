@@ -95,8 +95,8 @@ while IFS= read -r -d '' f; do
 done < <(find "$tmpdir" -maxdepth 1 -name '*.patch' -print0 | sort -z)
 patch_count="${#patches[@]}"
 
-if (( attach )) && (( patch_count == 0 )); then
-    echo "Error: range '$range' produced no patches; refusing to send an --attach kickoff with nothing attached." >&2
+if (( patch_count == 0 )); then
+    echo "Error: range '$range' produced no patches; refusing to send a kickoff with nothing to review." >&2
     exit 1
 fi
 
@@ -106,18 +106,18 @@ fi
 base="${range%%..*}"
 branch="${range##*..}"
 
-# The branch-name variant tells reviewers to `git fetch origin $branch;
-# git checkout $branch`, so $branch must actually be a branch (or other
-# symbolic ref) git can check out by that name -- not just whatever
-# string happened to be on the right of "..", e.g. "HEAD" from a range
-# like "HEAD~1..HEAD". --attach doesn't rely on the name, only on the
-# already-formatted patch files, so it is exempt from this check.
-if (( ! attach )); then
-    resolved_branch="$(git -C "$repo" rev-parse --abbrev-ref "$branch" 2>/dev/null || true)"
-    if [[ "$resolved_branch" != "$branch" ]]; then
-        echo "Error: range '$range' does not resolve to a checkout-able branch name on its right side ('$branch'); the branch-name variant needs a real branch for reviewers to fetch and check out. Use --attach instead, or pass a range like '<base>..<branch>'." >&2
-        exit 1
-    fi
+# The template body tells reviewers to `git fetch origin $branch; git
+# checkout $branch` as a genuine alternative to the attached patches --
+# unconditionally, in both variants -- so $branch must actually be a
+# branch (or other symbolic ref) git can check out by that name in
+# EITHER mode, not just whatever string happened to be on the right of
+# "..", e.g. "HEAD" from a range like "HEAD~1..HEAD". A reviewer who
+# takes that fallback with an unresolvable name silently reviews the
+# wrong tree, so this check applies whether or not --attach was passed.
+resolved_branch="$(git -C "$repo" rev-parse --abbrev-ref "$branch" 2>/dev/null || true)"
+if [[ "$resolved_branch" != "$branch" ]]; then
+    echo "Error: range '$range' does not resolve to a checkout-able branch name on its right side ('$branch'); the kickoff template always offers reviewers a fetch/checkout fallback and needs a real branch for it. Pass a range like '<base>..<branch>'." >&2
+    exit 1
 fi
 
 # fill <content-varname> <PLACEHOLDER-NAME> <value> — literal substring
