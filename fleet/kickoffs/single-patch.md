@@ -77,4 +77,7 @@ Tag your reply, where applicable:
 
 ## Next version
 
-A fix goes out as a reply to this thread.
+A fix goes out as a reply to this thread, with the revised patch
+attached (version-prefixed filename, e.g. `v2-0001-...patch` —
+reviewer sandboxes cannot fetch branches, so the attachment is the
+review copy).

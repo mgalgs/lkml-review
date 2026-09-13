@@ -24,12 +24,21 @@ if asked, and never claim otherwise.
    <!-- TODO(fleet): "the next version" is still not a first-class
    fleet concept. The old pipeline tracked versions explicitly
    (versions.jsonl, one branch per version); the fleet store has only
-   threads and messages. How the next version's branch is named,
-   tracked, or tied back to a specific reply is unsettled — the
-   instruction above is the durable part. -->
+   threads and messages. How the next version's branch is named or
+   tracked is unsettled — the instruction above is the durable part.
+   Propagation, though, is settled: the attachment in step 4 is how a
+   version reaches reviewers (see below). -->
 4. Write a changelog into the reply that introduces the next version — per
    reviewer comment, what changed because of it. A changelog that says
    "various fixes" is the thing the core reviewer will NAK you for.
+5. **Attach the next version to that reply** — `git format-patch` the
+   new version's commits and attach every patch file, filenames
+   prefixed with the version (`v2-0001-...patch`), since the thread's
+   attachment store refuses a reused basename. The mail is the only
+   transport that reaches every reviewer: their sandboxes cannot fetch
+   branches from the origin repository, so a version announced only as
+   a branch name is a version nobody on the thread can read. Name the
+   branch too, for the humans — but the attachment is the review copy.
 
 ## Rules
 

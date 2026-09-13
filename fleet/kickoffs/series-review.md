@@ -87,4 +87,7 @@ Tag your reply, where applicable:
 ## Next version
 
 v2 goes out as a reply to this thread, with a changelog answering
-review comment by comment.
+review comment by comment and the v2 patches attached
+(version-prefixed filenames, e.g. `v2-0001-...patch` — reviewer
+sandboxes cannot fetch branches, so the attachment is the review
+copy).
