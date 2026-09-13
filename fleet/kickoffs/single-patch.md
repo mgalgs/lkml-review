@@ -50,16 +50,11 @@ ${SUMMARY}
 Base: ${BASE}
 Branch: ${BRANCH}
 
-Checkout the branch in your own clone to read the diff:
+Read the diff either from the attached patch (if this message carries
+one) or by checking out the branch yourself:
 
     git fetch origin ${BRANCH}
     git checkout ${BRANCH}
-
-<!--
-  (Variant A note, if you attached the patch instead of naming a
-  branch: the patch is attached to this message; apply it to ${BASE}
-  in your own clone rather than fetching a branch.)
--->
 
 ## What's being asked
 
