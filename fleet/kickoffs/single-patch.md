@@ -1,4 +1,3 @@
-<!-- DRAFT: adapted for the fork-sandbox fleet; prose not yet operator-reviewed -->
 <!--
 Kickoff template: start a review of a single patch (the small variant
 of series-review.md -- one commit, no cover letter, no changelog
@@ -16,7 +15,9 @@ template engine):
   ${TO}        the review crew, e.g. @lkml-panel (see the `lists:`
                example below) or a comma-separated set of `@agent`
                addresses
-  ${CC}        optional, silent observers -- Cc never wakes anyone
+  ${CC}        optional observers -- a Cc'd seat still wakes by
+               default to read it (wake-on-cc gates this per agent),
+               but no response is requested of it
   ${SUBJECT}   e.g. "[PATCH] <one-line summary of the change>"
   ${SUMMARY}   one or two sentences: what the patch does and why
   ${BASE}      the base ref/commit this patch applies on top of

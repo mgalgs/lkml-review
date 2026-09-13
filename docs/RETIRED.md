@@ -1,7 +1,5 @@
 # Retirement map: old transport → fleet transport
 
-<!-- DRAFT: adapted for the fork-sandbox fleet; prose not yet operator-reviewed -->
-
 This is a mapping, not an announcement. **None of the old `scripts/lkml-*`
 scripts are being deleted this round** — they are still the shipping
 transport, described in `README.md`'s "The scripts" table. This table

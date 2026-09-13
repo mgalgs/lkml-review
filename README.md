@@ -39,9 +39,9 @@ work, producing messages describing changes no longer in the tree, and a
 misleading history is worse than an honest seam. `git log` in
 fork-sandbox is the record before the split.
 
-### Fleet transport (DRAFT)
+### Fleet transport
 
-**DRAFT — not yet operator-reviewed.** fork-sandbox has since grown a
+fork-sandbox has since grown a
 generic agent-mail subsystem — `fork-sandbox mail` / `fleet` /
 `postmaster` — covering the mailbox store, seat resolution, fan-out,
 spawn-on-delivery wakes, and rendering that this repo's own
@@ -50,8 +50,8 @@ used to carry alone. The plan is for that transport to move onto
 agent-mail, at which point this repo becomes personas, kickoff-email
 templates, and a thin kickoff harness — not a transport of its own.
 
-That shape exists today as drafts, not yet wired up or
-operator-reviewed: fleet-form personas under `fleet/personas/`,
+That shape exists today, not yet wired into the shipping path:
+fleet-form personas under `fleet/personas/`,
 kickoff-mail templates under `fleet/kickoffs/`, and a dogfood harness,
 `scripts/lkml-fleet-kickoff.sh`, that formats a patch series and
 composes a kickoff mail for `fork-sandbox mail send`. See
@@ -120,7 +120,7 @@ scheduling and reading are different jobs held by different sessions.
 | `lkml-render.py` | single-file HTML archive; `--text` for the agent/grep view |
 | `lkml-forklift.sh` | moves a series between repos |
 | `lkml-seats-parse.py`, `lkml-seats-resolve` | plumbing: read and resolve `seats.yaml` |
-| `lkml-fleet-kickoff.sh` | DRAFT dogfood harness: formats a series and composes a kickoff mail for the fleet transport above; prints the `fork-sandbox mail send` command, or runs it with `--send` |
+| `lkml-fleet-kickoff.sh` | Dogfood harness: formats a series and composes a kickoff mail for the fleet transport above; prints the `fork-sandbox mail send` command, or runs it with `--send` |
 
 ## Converging
 

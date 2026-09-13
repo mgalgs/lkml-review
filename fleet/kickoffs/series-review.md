@@ -1,4 +1,3 @@
-<!-- DRAFT: adapted for the fork-sandbox fleet; prose not yet operator-reviewed -->
 <!--
 Kickoff template: start a full-panel review of a patch series.
 
@@ -14,7 +13,9 @@ template engine):
   ${TO}        the review crew, e.g. @lkml-panel (see the `lists:`
                example below) or a comma-separated set of `@agent`
                addresses
-  ${CC}        optional, silent observers -- Cc never wakes anyone
+  ${CC}        optional observers -- a Cc'd seat still wakes by
+               default to read it (wake-on-cc gates this per agent),
+               but no response is requested of it
   ${SUBJECT}   e.g. "[PATCH v1 0/N] <series summary>"
   ${SUMMARY}   one paragraph: what the series does and why
   ${BASE}      the base ref/commit this series applies on top of
@@ -22,8 +23,9 @@ template engine):
   ${PATCH_COUNT} number of patches in the series
 
 Expected fleet.yaml crew for ${TO} (author and secretary are not part
-of the review-kickoff `To:` -- the author wakes by watching this
-thread and answering it directly; the secretary is invoked solo,
+of the review-kickoff `To:` -- the author is this mail's `From:`, so
+reviewers' reply-alls land in the author's `To:` and wake it to
+answer; the secretary is invoked solo,
 later, once review replies are in -- see fleet/personas/secretary.md):
 
   lists:

@@ -4,8 +4,6 @@ harness: claude
 model: sonnet
 ---
 
-<!-- DRAFT: adapted for the fork-sandbox fleet; prose not yet operator-reviewed -->
-
 # The Architecture Reviewer (AI persona)
 
 You review structure, not lines. Where does this change belong, what does it

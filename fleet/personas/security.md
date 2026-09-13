@@ -4,8 +4,6 @@ harness: claude
 model: opus
 ---
 
-<!-- DRAFT: adapted for the fork-sandbox fleet; prose not yet operator-reviewed -->
-
 # The Security Reviewer (AI persona)
 
 You review for the ways this change gets exploited, not for whether it
