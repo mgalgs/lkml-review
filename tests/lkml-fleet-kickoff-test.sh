@@ -91,7 +91,8 @@ contains "printed command names fork-sandbox mail send" "$out" "fork-sandbox mai
 contains "printed command carries --from" "$out" "--from @author"
 contains "printed command carries --to" "$out" "--to @lkml-panel"
 contains "printed command carries the subject" "$out" "PATCH\\ v1\\ 0/2"
-contains "printed command points --body at a tempfile" "$out" "--body /tmp/"
+tmp_prefix="${TMPDIR:-/tmp}"; tmp_prefix="${tmp_prefix%/}"
+contains "printed command points --body at a tempfile" "$out" "--body $tmp_prefix/"
 case "$out" in
     *"--attach"*) no "print-only, no --attach, carries no --attach flag" "$out" ;;
     *) ok "print-only, no --attach, carries no --attach flag" ;;
@@ -106,7 +107,10 @@ body_file="$(printf '%s' "$out" | grep -o -- '--body [^ ]*' | awk '{print $2}')"
 if [[ -f "$body_file" ]]; then
     ok "print-only mode's body file is left in place for the printed command to use"
     body_text="$(cat "$body_file")"
-    contains "body has the filled subject" "$body_text" "Subject: [PATCH v1 0/2] a series"
+    case "$body_text" in
+        'Subject:'*) no "body does not repeat the mail Subject header" "$body_text" ;;
+        *) ok "body does not repeat the mail Subject header" ;;
+    esac
     contains "body has the filled summary" "$body_text" "does a thing"
     contains "body has the base" "$body_text" "Base: master"
     contains "body has the branch" "$body_text" "Branch: topic"
@@ -162,6 +166,51 @@ out_missing="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic"
 rc_missing=$?
 if (( rc_missing != 0 )); then ok "missing --subject exits non-zero"; else no "missing --subject exits non-zero" "exit 0: $out_missing"; fi
 contains "missing --subject names the flag" "$out_missing" "--subject is required"
+
+printf '\n== a trailing flag with no value names the flag, not $2: unbound ==\n'
+out_trailing="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --from 2>&1)"
+rc_trailing=$?
+if (( rc_trailing != 0 )); then ok "trailing --from with no value exits non-zero"; else no "trailing --from with no value exits non-zero" "exit 0: $out_trailing"; fi
+contains "trailing --from with no value names the flag" "$out_trailing" "--from requires a value"
+
+printf '\n== --attach with a range that produces no commits is a hard error ==\n'
+out_empty_attach="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "HEAD..HEAD" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --attach 2>&1)"
+rc_empty_attach=$?
+if (( rc_empty_attach != 0 )); then ok "--attach with an empty range exits non-zero"; else no "--attach with an empty range exits non-zero" "exit 0: $out_empty_attach"; fi
+contains "--attach with an empty range names the problem" "$out_empty_attach" "produced no patches"
+
+printf '\n== branch-name variant refuses a range whose right side is not a branch ==\n'
+out_bad_branch="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "HEAD~1..HEAD" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' \
+    --template "$repo_dir/fleet/kickoffs/single-patch.md" 2>&1)"
+rc_bad_branch=$?
+if (( rc_bad_branch != 0 )); then ok "branch-name variant with a non-branch range exits non-zero"; else no "branch-name variant with a non-branch range exits non-zero" "exit 0: $out_bad_branch"; fi
+contains "branch-name variant names the problem" "$out_bad_branch" "does not resolve to a checkout-able branch name"
+
+printf '\n== a comment closing with trailing whitespace still strips cleanly ==\n'
+template_dir="$(mktemp -d)"; tmpdirs+=("$template_dir")
+trailing_ws_template="$template_dir/trailing-ws.md"
+printf '<!-- DRAFT: adapted for the fork-sandbox fleet --> \nReal body text: ${SUMMARY}\n' > "$trailing_ws_template"
+out_trailing_ws="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --summary 'does a thing' \
+    --template "$trailing_ws_template" 2>&1)"
+rc_trailing_ws=$?
+check "trailing-whitespace-comment template exits 0" "0" "$rc_trailing_ws"
+trailing_ws_body_file="$(printf '%s' "$out_trailing_ws" | grep -o -- '--body [^ ]*' | awk '{print $2}')"
+trailing_ws_body_text="$([[ -f "$trailing_ws_body_file" ]] && cat "$trailing_ws_body_file")"
+contains "body survives a comment whose closing --> has trailing whitespace" \
+    "$trailing_ws_body_text" "Real body text: does a thing"
+
+printf '\n== a template whose comment never closes is a hard error, not an empty mail ==\n'
+unterminated_template="$template_dir/unterminated.md"
+printf '<!-- DRAFT: never closed\nBody text that should never be reached.\n' > "$unterminated_template"
+out_unterminated="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --template "$unterminated_template" 2>&1)"
+rc_unterminated=$?
+if (( rc_unterminated != 0 )); then ok "unterminated comment exits non-zero"; else no "unterminated comment exits non-zero" "exit 0: $out_unterminated"; fi
+contains "unterminated comment names the problem" "$out_unterminated" "produced an empty body"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))

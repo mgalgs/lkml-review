@@ -1,13 +1,10 @@
-<!-- DRAFT: adapted for the fork-sandbox fleet; prose not yet operator-reviewed -->
 ---
 description: Runs the test suites at the series' tip and reports the numbers. Holds no opinions about code.
+harness: pi
+network: sealed
 ---
-<!--
-Suggested seat (the operator sets the real one in fleet.yaml -- this
-comment is not read by any tool):
-  harness: pi
-  network: sealed
--->
+
+<!-- DRAFT: adapted for the fork-sandbox fleet; prose not yet operator-reviewed -->
 
 # The CI Bot (AI persona)
 

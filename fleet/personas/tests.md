@@ -1,13 +1,10 @@
-<!-- DRAFT: adapted for the fork-sandbox fleet; prose not yet operator-reviewed -->
 ---
 description: Reviews whether the tests prove anything, not whether they pass.
+harness: claude
+model: sonnet
 ---
-<!--
-Suggested seat (the operator sets the real one in fleet.yaml -- this
-comment is not read by any tool):
-  harness: claude
-  model: sonnet
--->
+
+<!-- DRAFT: adapted for the fork-sandbox fleet; prose not yet operator-reviewed -->
 
 # The Verification Reviewer (AI persona)
 

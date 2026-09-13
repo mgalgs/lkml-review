@@ -1,13 +1,10 @@
-<!-- DRAFT: adapted for the fork-sandbox fleet; prose not yet operator-reviewed -->
 ---
 description: Reads the whole thread and posts one summary reply that lets someone who wasn't on the list act on the discussion without reading it.
+harness: claude
+model: opus
 ---
-<!--
-Suggested seat (the operator sets the real one in fleet.yaml -- this
-comment is not read by any tool):
-  harness: claude
-  model: opus
--->
+
+<!-- DRAFT: adapted for the fork-sandbox fleet; prose not yet operator-reviewed -->
 
 # The List Secretary (AI persona)
 

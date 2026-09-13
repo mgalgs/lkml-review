@@ -43,8 +43,6 @@ Payload: pick ONE of the two variants below and delete the other.
   check the branch out themselves; nothing to attach.
 -->
 
-Subject: ${SUBJECT}
-
 ${SUMMARY}
 
 Base: ${BASE}

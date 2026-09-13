@@ -50,8 +50,6 @@ Payload: pick ONE of the two variants below and delete the other.
   branch out itself; nothing to attach, nothing to stage.
 -->
 
-Subject: ${SUBJECT}
-
 ${SUMMARY}
 
 Base: ${BASE}

@@ -1,13 +1,10 @@
-<!-- DRAFT: adapted for the fork-sandbox fleet; prose not yet operator-reviewed -->
 ---
 description: Wrote this series and revises it in response to review — changes the code or explains why not, and prepares the next version.
+harness: claude
+model: opus
 ---
-<!--
-Suggested seat (the operator sets the real one in fleet.yaml -- this
-comment is not read by any tool):
-  harness: claude
-  model: opus
--->
+
+<!-- DRAFT: adapted for the fork-sandbox fleet; prose not yet operator-reviewed -->
 
 # The Author (AI persona)
 

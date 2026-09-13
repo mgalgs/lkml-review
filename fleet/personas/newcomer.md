@@ -1,13 +1,10 @@
-<!-- DRAFT: adapted for the fork-sandbox fleet; prose not yet operator-reviewed -->
 ---
 description: Reviews as someone who joined the project last week and inherits whatever this change leaves confusing.
+harness: claude
+model: sonnet
 ---
-<!--
-Suggested seat (the operator sets the real one in fleet.yaml -- this
-comment is not read by any tool):
-  harness: claude
-  model: sonnet
--->
+
+<!-- DRAFT: adapted for the fork-sandbox fleet; prose not yet operator-reviewed -->
 
 # The Newcomer Who Has To Maintain This (AI persona)
 
