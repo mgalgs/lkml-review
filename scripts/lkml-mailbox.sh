@@ -609,6 +609,17 @@ cmd_init() {
         echo "branch -- lkml-round.sh will refuse the version." >&2
         return 1
     fi
+    if [[ -n "$version" ]]; then
+        if [[ ! "$version" =~ ^[0-9]+$ ]] || [[ "$version" =~ ^0+$ ]]; then
+            echo "Error: init: --version '$version' must be a positive decimal integer." >&2
+            return 1
+        fi
+        # Strip leading zeroes so subjects and the JSON ledger use one
+        # canonical spelling of each version number.
+        while [[ ${#version} -gt 1 && "$version" == 0* ]]; do
+            version="${version#0}"
+        done
+    fi
     if [[ -n "$checkout" ]]; then
         if [[ ! "$checkout" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
             echo "Error: init: --checkout '$checkout' must match ^[A-Za-z0-9][A-Za-z0-9._/-]*$ for JSON-safe ledger storage." >&2

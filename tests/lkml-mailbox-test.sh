@@ -125,6 +125,16 @@ if (( rc != 0 )); then ok "refuses both checkout choices"; else no "refuses both
 "$mailbox" init ledger-none --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author --no-checkout >/dev/null
 check "--no-checkout writes no ledger" "0" "$(find "$LKML_MAILBOX_ROOT/ledger-none" -name versions.jsonl | wc -l)"
 
+out="$(cd "$ledger_repo" && "$mailbox" init ledger-bad-version --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author --version abc --checkout lkml/widget-frob 2>&1)"
+rc=$?
+if (( rc != 0 )); then ok "refuses a non-decimal version before posting"; else no "refuses a non-decimal version before posting" "it succeeded"; fi
+contains "non-decimal version refusal names --version" "$out" "--version"
+check "non-decimal version leaves no messages" "0" "$(find "$LKML_MAILBOX_ROOT/ledger-bad-version" -name '*.msg' 2>/dev/null | wc -l)"
+check "non-decimal version leaves no ledger" "0" "$(find "$LKML_MAILBOX_ROOT/ledger-bad-version" -name versions.jsonl 2>/dev/null | wc -l)"
+
+out="$(cd "$ledger_repo" && "$mailbox" init ledger-normal-version --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author --version 001 --checkout lkml/widget-frob 2>/dev/null)"
+check "leading-zero version is normalized in ledger" '{"version":1,"branch":"lkml/widget-frob"}' "$(<"$LKML_MAILBOX_ROOT/ledger-normal-version/versions.jsonl")"
+
 printf '== init ==\n'
 
 export LKML_MAILBOX_ROOT; LKML_MAILBOX_ROOT="$(new_root)"

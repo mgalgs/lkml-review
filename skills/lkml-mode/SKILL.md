@@ -255,10 +255,13 @@ are not personas and keep their own env file.
 ## The loop
 
 1. **`init` the series** from a branch: `lkml-mailbox.sh init <series>
-   --cover <file> --patches <dir> --from author ...`, where `<dir>` is a
-   `git format-patch <base>..<branch>` output directory and the cover
-   letter is either something you write yourself or something you ask the
-   `author` persona to write in its own short sandboxed run first.
+   --cover <file> --patches <dir> --from author --checkout <branch> ...`,
+   where `<dir>` is a `git format-patch <base>..<branch>` output directory
+   and the cover letter is either something you write yourself or something
+   you ask the `author` persona to write in its own short sandboxed run
+   first. `--checkout` records the branch for later rounds; use
+   `--no-checkout` only for a deliberately branchless series, which
+   `lkml-round.sh` cannot review.
 2. **Build the panel** (always `core`; see above). Round 0: `ci` alone,
    `lkml-round.sh <series> --project <path> --checkout <branch> --base
    <base-ref> --personas ci`. Round 1: every persona reviews the whole
