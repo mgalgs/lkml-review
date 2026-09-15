@@ -127,7 +127,51 @@ the single moment at which the number can be chosen at all.
   panel's reasoning better informed; it does not make the numbers correct.
   The worked example above is a case where the NAK was real output and the
   right response was to contest it, not to fix anything.
-- **It says nothing about seats that need services.** A `ci` seat that
-  cannot reach a populated environment produces environment-shaped red, and
-  ordering that red first only means the panel is well-informed about the
-  environment. That is a separate problem with a separate owner.
+- **It says nothing about seats that need services** — and that is a
+  precondition of the shape, not a footnote to it. Read the next section
+  before implementing any of the above.
+
+## The precondition: a repo where `ci` cannot run at all
+
+The two-wave graph assumes the `ci` seat exists and executes. Where it does
+not, the shape does not degrade -- it stops.
+
+An earlier version of this document treated only the weak form: a `ci` seat
+that cannot reach a populated environment produces environment-shaped red,
+and ordering that red first only means the panel is well-informed about the
+environment. True, and not the case that bites.
+
+The case that bites is the strong form, reported from real use. For a repo
+whose suite needs postgres, opensearch and redis, `ci` cannot run in a
+sandbox at all, and the operator drops the seat from the panel. Under the old
+scheduler, a panel with no `ci` seat simply reviewed without test numbers.
+Under the two-wave graph **the kickoff addresses only `ci`** -- so with the
+seat dropped the kickoff addresses nobody, no reply is ever sent, the panel
+is never addressed, and no seat wakes.
+
+**The whole panel silently does not start.** Not an error: hops are intact,
+the mailbox is well-formed, nothing failed. It looks exactly like a round
+that has not got going yet, which is the most expensive shape a failure can
+have -- and it is strictly worse than the ordering gap this document exists
+to close. So it is a gate on adopting the shape, not a caveat beside it:
+
+> **Before addressing a kickoff to `ci` alone, establish that `ci` will run
+> in this repo.** If it will not, do not adopt the two-wave graph there until
+> one of the answers below is in place.
+
+Two answers, and it is a real fork rather than a detail:
+
+- **A services-backed `ci` seat** -- give the seat the stack its suite needs,
+  so it executes for real. Strongest, because it preserves the property that
+  makes `ci` worth ordering first at all: it is the only seat that executes
+  rather than predicts. Costs a per-seat environment.
+- **An explicit "tests were run elsewhere" injection** -- no `ci` seat runs;
+  the kickoff itself carries test results produced somewhere that has the
+  services, with their provenance stated. Cheaper, and honest so long as the
+  evidence says where it came from. The numbers are then as old as their
+  source, which the panel must be able to see.
+
+A third option that is **not** on the list: addressing the kickoff to the
+panel directly when `ci` is absent, "just for this repo." That silently
+restores the ordering this document exists to fix, and does so in the repo
+least able to notice -- nobody there has seen a wave-one message to miss.
