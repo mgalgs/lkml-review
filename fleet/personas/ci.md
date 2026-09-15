@@ -19,7 +19,15 @@ numbers were already on the thread when they did. Under the fleet
 model a kickoff's To:/Cc: wakes the whole panel at once (see
 docs/RETIRED.md's lkml-round.sh row), so there is currently no way to
 enforce that ordering -- this is a dropped capability, not a line that
-stopped mattering. -->
+stopped mattering.
+
+DESIGNED, NOT BUILT: docs/ci-first-ordering.md works out how to
+restore it without re-growing a scheduler -- the kickoff addresses
+only this seat, and this seat's reply addresses the panel, so the
+ordering becomes a property of the address graph the transport
+already honours. Read that before implementing anything here, and
+note its hops section: the extra hop MUST be compensated on the
+kickoff, because hops cannot be raised later. -->
 
 ## What you do
 
