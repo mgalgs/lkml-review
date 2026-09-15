@@ -169,6 +169,17 @@ check "versions.jsonl gets exactly one line" "1" "$(wc -l < "$versions_file" | t
 check "versions.jsonl records version 1" "1" "$(jq -r '.version' "$versions_file")"
 check "versions.jsonl records the --checkout branch" "cover-branch" "$(jq -r '.branch' "$versions_file")"
 
+printf '\n== existing v1 ledger ==\n'
+export LKML_MAILBOX_ROOT; LKML_MAILBOX_ROOT="$(mktemp -d)"; tmpdirs+=("$LKML_MAILBOX_ROOT")
+mkdir -p "$LKML_MAILBOX_ROOT/widget-frob"
+printf '{"version":1,"branch":"cover-branch"}\n' > "$LKML_MAILBOX_ROOT/widget-frob/versions.jsonl"
+write_stub 1
+out="$(PATH="$stub_bin:$PATH" "$cover" widget-frob --project "$real_repo" \
+    --checkout cover-branch --base "$base_sha" --patches "$patches_dir" 2>&1)"
+rc=$?
+check "posts v1 when lkml-series already recorded it" "0" "$rc"
+check "existing v1 ledger remains one line" "1" "$(wc -l < "$LKML_MAILBOX_ROOT/widget-frob/versions.jsonl" | tr -d '[:space:]')"
+
 printf '\n== refusal: no cover letter was written ==\n'
 export LKML_MAILBOX_ROOT; LKML_MAILBOX_ROOT="$(mktemp -d)"; tmpdirs+=("$LKML_MAILBOX_ROOT")
 write_stub 0

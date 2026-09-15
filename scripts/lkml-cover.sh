@@ -92,11 +92,10 @@
 # consequence of lkml-mailbox.sh init posting immediately rather than
 # returning a body for further editing.
 #
-# On success, appends {"version": <n>, "branch": "<checkout>"} to
-# <series>/versions.jsonl, the same ledger lkml-series.sh/lkml-revise.sh
-# write -- the branch given via --checkout IS the version's branch here,
-# since this run makes no commits and the branch already exists in the
-# real repo from lkml-series.sh or lkml-revise.sh.
+# The mailbox init call records {"version": <n>, "branch": "<checkout>"}
+# in <series>/versions.jsonl. The branch given via --checkout is the posted
+# version's branch here, since this run makes no commits and already exists
+# in the real repo from lkml-series.sh or lkml-revise.sh.
 
 set -uo pipefail
 
@@ -425,7 +424,7 @@ fi
 
 init_args=(init "$series" --cover "$completed_cover" --patches "$patches_dir" \
     --from "$author_persona" --display "$display" --harness "$harness" --model "$model" \
-    --network "$network" --diffstat "$base_ref..$checkout_ref")
+    --network "$network" --diffstat "$base_ref..$checkout_ref" --checkout "$checkout_ref")
 [[ -n "$version" ]] && init_args+=(--version "$version")
 [[ -n "$smoke_file" ]] && init_args+=(--smoke "$smoke_file")
 for f in "${attach_files[@]}"; do
@@ -445,6 +444,3 @@ if [[ -z "$posted_version" ]]; then
     posted_version="$("$mailbox" show "$series" "$cover_id" 2>/dev/null | sed -n 's/^X-Version: //p')"
 fi
 echo "fork-sandbox lkml-cover: posted v$posted_version, cover ${cover_id:0:7}." >&2
-
-jq -nc --argjson version "$posted_version" --arg branch "$checkout_ref" \
-    '{version:$version, branch:$branch}' >> "$ledger_root/$series/versions.jsonl"

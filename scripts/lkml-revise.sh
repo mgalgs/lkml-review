@@ -488,17 +488,12 @@ fi
 new_cover_id="$(cd "$real_repo" && "$mailbox" init "$series" --cover "$cover_file" --patches "$patch_dir" \
     --from "$author_persona" --display "$display" --version "$next_version" \
     --harness "$harness" --model "$model" --network "$network" \
-    --diffstat "$series_base_sha..$real_branch")" || {
+    --diffstat "$series_base_sha..$real_branch" --checkout "$real_branch")" || {
     echo "Error: lkml-mailbox.sh init failed -- v$next_version was not posted." >&2
     echo "Patches are sitting at $patch_dir; branch $real_branch was not" >&2
     echo "recorded in $ledger_root/$series/versions.jsonl." >&2
     exit 1
 }
 echo "fork-sandbox lkml-revise: posted v$next_version, cover ${new_cover_id:0:7}." >&2
-
-# Same version-to-branch ledger lkml-series.sh writes for v1 -- lets
-# lkml-forklift.sh find a version's branch without guessing its timestamp.
-jq -nc --argjson version "$next_version" --arg branch "$real_branch" \
-    '{version:$version, branch:$branch}' >> "$ledger_root/$series/versions.jsonl"
 
 rm -rf -- "$patch_dir"
