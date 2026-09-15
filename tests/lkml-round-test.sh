@@ -87,7 +87,7 @@ printf 'Add the frobnicator\n\nBody.\n' > cover.txt
 mkdir patches
 printf 'Subject: [PATCH 1/1] frob: add core\n\ndiff\n' > patches/0001.patch
 "$mailbox" init widget-frob --cover cover.txt --patches patches --from author \
-    --harness claude --model opus >/dev/null 2>&1
+    --harness claude --model opus --no-checkout >/dev/null 2>&1
 patch_id="$("$mailbox" tree widget-frob | awk 'NR==3{print $1}')"
 # The full, un-truncated id in RFC-822 form -- what a persona sees in
 # `Message-ID: <uuid@lkml.local>` when its handoff embeds `mailbox show`
@@ -103,7 +103,7 @@ printf 'Add the second frobnicator\n\nV2 body.\n' > cover2.txt
 mkdir patches2
 printf 'Subject: [PATCH 1/1] frob: second\n\ndiff\n' > patches2/0001.patch
 "$mailbox" init widget-frob --cover cover2.txt --patches patches2 --from author \
-    --harness claude --model opus --version 2 >/dev/null 2>&1
+    --harness claude --model opus --version 2 --no-checkout >/dev/null 2>&1
 patch2_id="$("$mailbox" tree widget-frob | awk '/^=== v2 ===/{found=1; next} found && /^[[:alnum:]]/{print $1; exit}')"
 printf '{"version":2,"branch":"otherbranch"}\n' >> "$LKML_MAILBOX_ROOT/widget-frob/versions.jsonl"
 

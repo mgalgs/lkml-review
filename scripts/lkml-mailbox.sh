@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # lkml-mailbox.sh — A Maildir-like message store for one lkml-mode series
 #
-# Usage: lkml-mailbox.sh init <series> --cover <file> --patches <dir> --from <persona> [--display <name>] [--version <n>] [--harness <h>] [--model <m>] [--network <pinned|sealed>] [--attach <file>]... [--diffstat <range>] [--smoke <file>]
+# Usage: lkml-mailbox.sh init <series> --cover <file> --patches <dir> --from <persona> (--checkout <branch> | --no-checkout) [--display <name>] [--version <n>] [--harness <h>] [--model <m>] [--network <pinned|sealed>] [--attach <file>]... [--diffstat <range>] [--smoke <file>]
 #        lkml-mailbox.sh post <series> --from <persona> --reply-to <id> --file <file|-> [--display <name>] [--subject <s>] [--tags <t1,t2>] [--harness <h>] [--model <m>] [--network <pinned|sealed>] [--attach <file>]...
 #        lkml-mailbox.sh tree <series> [--version <n>]
 #        lkml-mailbox.sh cover <series> [--version <n>]
@@ -22,6 +22,14 @@
 # that file's contents verbatim. Refuses cleanly if the range fails to diff
 # (e.g. cwd is not a git repo, or the range is nonsense) or the smoke file
 # does not exist.
+#
+# --checkout records the posted version and its local branch in
+# <series>/versions.jsonl. The branch is resolved under refs/heads/ (like
+# lkml-round.sh resolves the ledger), and its name is limited to a compact
+# JSON-safe charset rather than adding a JSON dependency or escaping layer.
+# One of --checkout and --no-checkout is mandatory: the former makes a later
+# round's checkout cross-check possible; the latter explicitly acknowledges
+# that lkml-round.sh will refuse this deliberately branchless series.
 #
 # Attachments. --attach <file> may repeat on `init` (attaches to the cover
 # letter) or `post` (attaches to that one reply). Each file is copied into
@@ -568,7 +576,7 @@ cmd_init() {
     shift
     local cover="" patches="" from="" display="" version="" harness="unknown" model="unknown"
     local network="unknown"
-    local diffstat_range="" smoke_file=""
+    local diffstat_range="" smoke_file="" checkout="" no_checkout=0
     local -a attach_files=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -583,6 +591,8 @@ cmd_init() {
             --attach) attach_files+=("${2:?--attach requires a file}"); shift 2 ;;
             --diffstat) diffstat_range="${2:?--diffstat requires a range}"; shift 2 ;;
             --smoke) smoke_file="${2:?--smoke requires a file}"; shift 2 ;;
+            --checkout) checkout="${2:?--checkout requires a branch}"; shift 2 ;;
+            --no-checkout) no_checkout=1; shift ;;
             -h|--help) usage; exit 0 ;;
             *) echo "Error: init: unknown option '$1'." >&2; return 1 ;;
         esac
@@ -591,10 +601,29 @@ cmd_init() {
     [[ -n "$from" ]] || { echo "Error: init: --from is required (the persona posting the cover letter)." >&2; return 1; }
     [[ -f "$cover" ]] || { echo "Error: init: --cover file '$cover' not found." >&2; return 1; }
     [[ -d "$patches" ]] || { echo "Error: init: --patches directory '$patches' not found." >&2; return 1; }
+    if [[ -z "$checkout" && "$no_checkout" == 0 ]] || [[ -n "$checkout" && "$no_checkout" == 1 ]]; then
+        echo "Error: init: one of --checkout <branch> or --no-checkout is required." >&2
+        echo "--checkout records this version's branch in <series>/versions.jsonl," >&2
+        echo "which lkml-round.sh needs to launch a panel against it. Pass" >&2
+        echo "--no-checkout only when this series is deliberately not tied to a" >&2
+        echo "branch -- lkml-round.sh will refuse the version." >&2
+        return 1
+    fi
+    if [[ -n "$checkout" ]]; then
+        if [[ ! "$checkout" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
+            echo "Error: init: --checkout '$checkout' must match ^[A-Za-z0-9][A-Za-z0-9._/-]*$ for JSON-safe ledger storage." >&2
+            return 1
+        fi
+        if ! git rev-parse --verify --quiet "refs/heads/$checkout^{commit}" >/dev/null; then
+            echo "Error: init: --checkout '$checkout' is not a local branch in $(pwd)." >&2
+            echo "The ledger records branch names, which lkml-round.sh resolves under" >&2
+            echo "refs/heads/. Create it first, e.g.:" >&2
+            echo "  git branch $checkout <commit>" >&2
+            return 1
+        fi
+    fi
 
     local dir; dir="$(lkml_series_dir "$series")"
-    mkdir -p -- "$dir/cur"
-
     lkml_load_series "$series"
     local maxv=0 i
     for i in "${!LKML_VERSION[@]}"; do
@@ -611,6 +640,21 @@ cmd_init() {
         done
     fi
 
+    if [[ -n "$checkout" && -f "$dir/versions.jsonl" ]]; then
+        local ledger_line ledger_version ledger_branch
+        local ledger_re='^\{"version":([0-9]+),"branch":"([A-Za-z0-9._/-]+)"\}$'
+        while IFS= read -r ledger_line; do
+            if [[ "$ledger_line" =~ $ledger_re ]]; then
+                ledger_version="${BASH_REMATCH[1]}"
+                ledger_branch="${BASH_REMATCH[2]}"
+                if [[ "$ledger_version" == "$version" && "$ledger_branch" != "$checkout" ]]; then
+                    echo "Error: init: version $version is already recorded for branch '$ledger_branch', not '$checkout'." >&2
+                    return 1
+                fi
+            fi
+        done < "$dir/versions.jsonl"
+    fi
+
     local -a patch_files=()
     while IFS= read -r f; do
         patch_files+=("$f")
@@ -620,6 +664,8 @@ cmd_init() {
         echo "Error: init: no *.patch files found in '$patches'." >&2
         return 1
     fi
+
+    mkdir -p -- "$dir/cur"
 
     local attach_csv=""
     if (( ${#attach_files[@]} > 0 )); then
@@ -667,6 +713,15 @@ cmd_init() {
             "" "" "$network"
         echo "fork-sandbox lkml: posted patch ${id:0:7} as v$version $n/$m" >&2
     done
+    if [[ -n "$checkout" ]]; then
+        local recorded=0
+        if [[ -f "$dir/versions.jsonl" ]]; then
+            while IFS= read -r ledger_line; do
+                [[ "$ledger_line" == "{\"version\":$version,\"branch\":\"$checkout\"}" ]] && recorded=1
+            done < "$dir/versions.jsonl"
+        fi
+        (( recorded )) || printf '{"version":%s,"branch":"%s"}\n' "$version" "$checkout" >> "$dir/versions.jsonl"
+    fi
     printf '%s\n' "$cover_id"
 }
 

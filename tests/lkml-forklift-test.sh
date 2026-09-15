@@ -54,9 +54,7 @@ if ! command -v git >/dev/null 2>&1; then
 fi
 
 # Posts a one-patch cover letter for $1=series --version $2, on top of
-# $3=base_sha..$4=branch, into the shared mailbox root -- and appends the
-# {version, branch} ledger entry lkml-series.sh/lkml-revise.sh would have
-# written.
+# $3=base_sha..$4=branch, into the shared mailbox root.
 post_version() {
     local series="$1" version="$2" base_sha="$3" branch="$4" real_repo="$5"
     local patch_dir; patch_dir="$(mktemp -d)"; tmpdirs+=("$patch_dir")
@@ -64,9 +62,7 @@ post_version() {
     local cover_file; cover_file="$(mktemp)"; tmpdirs+=("$cover_file")
     printf 'v%s cover for %s\n' "$version" "$series" > "$cover_file"
     (cd "$real_repo" && "$mailbox" init "$series" --cover "$cover_file" --patches "$patch_dir" \
-        --from author --version "$version" >/dev/null)
-    jq -nc --argjson version "$version" --arg branch "$branch" \
-        '{version:$version, branch:$branch}' >> "$LKML_MAILBOX_ROOT/$series/versions.jsonl"
+        --from author --version "$version" --checkout "$branch" >/dev/null)
 }
 
 export LKML_MAILBOX_ROOT; LKML_MAILBOX_ROOT="$(mktemp -d)"; tmpdirs+=("$LKML_MAILBOX_ROOT")

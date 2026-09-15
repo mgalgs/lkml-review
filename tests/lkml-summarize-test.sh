@@ -104,7 +104,7 @@ printf 'Add the frobnicator\n\nBody.\n' > cover.txt
 mkdir patches
 printf 'Subject: [PATCH 1/1] frob: add core\n\ndiff\n' > patches/0001.patch
 "$mailbox" init widget-frob --cover cover.txt --patches patches --from author \
-    --harness claude --model opus >/dev/null 2>&1
+    --harness claude --model opus --no-checkout >/dev/null 2>&1
 patch_id="$("$mailbox" tree widget-frob | awk 'NR==3{print $1}')"
 printf 'the frob looks flaky under load\n' > r.txt
 "$mailbox" post widget-frob --from core --reply-to "$patch_id" --file r.txt \
@@ -272,7 +272,7 @@ mkdir patches2
 printf 'Subject: [PATCH 1/1] frob: add core\n\ndiff\n' > patches2/0001.patch
 printf 'Add the noledger thing\n\nBody.\n' > cover2.txt
 "$mailbox" init nolegacy --cover cover2.txt --patches patches2 --from author \
-    --harness claude --model opus >/dev/null 2>&1
+    --harness claude --model opus --no-checkout >/dev/null 2>&1
 run "no version ledger" 1 nolegacy --project "$project_dir"
 contains "no version ledger fails loudly and names the file" "$(cat "$out_file")" "versions.jsonl"
 run "unrecorded version" 1 widget-frob --project "$project_dir" --version 3
@@ -468,7 +468,7 @@ printf 'Add the second frobnicator\n\nV2 body.\n' > cover3.txt
 mkdir patches3
 printf 'Subject: [PATCH 1/1] frob: second\n\ndiff\n' > patches3/0001.patch
 "$mailbox" init widget-frob --cover cover3.txt --patches patches3 --from author \
-    --harness claude --model opus --version 2 >/dev/null 2>&1
+    --harness claude --model opus --version 2 --no-checkout >/dev/null 2>&1
 printf '{"version":2,"branch":"main"}\n' >> "$series_dir/versions.jsonl"
 
 cap2="$(mktemp -d)"; tmpdirs+=("$cap2")

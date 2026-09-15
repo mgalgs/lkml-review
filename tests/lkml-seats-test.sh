@@ -533,7 +533,7 @@ printf 'Add the seats fixture\n\nBody.\n' > cover.txt
 mkdir patches
 printf 'Subject: [PATCH 1/1] seats: fixture\n\ndiff\n' > patches/0001.patch
 "$mailbox" init widget-seats --cover cover.txt --patches patches --from author \
-    --harness claude --model opus >/dev/null 2>&1
+    --harness claude --model opus --no-checkout >/dev/null 2>&1
 printf '{"version":1,"branch":"somebranch"}\n' > "$LKML_MAILBOX_ROOT/widget-seats/versions.jsonl"
 
 # The stub replaces fork-sandbox.sh entirely: no clone, no sandbox, no

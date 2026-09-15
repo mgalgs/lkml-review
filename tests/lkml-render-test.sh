@@ -63,7 +63,7 @@ printf '%s\n' \
     'diff --git a/demo.c b/demo.c' '+two' > "$work/patches/0002-two.patch"
 
 "$mailbox" init render-fixture --cover "$work/cover.txt" --patches "$work/patches" \
-    --from author --harness test --model fixture >/dev/null 2>/dev/null
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
 tree="$($mailbox tree render-fixture)"
 patch_id="$(printf '%s\n' "$tree" | awk '/\[PATCH v1 1\/2\]/{print $1}')"
 
@@ -235,7 +235,7 @@ contains "counts: zero NAKs standing" "$html" '<div class="count"><b>0</b><span>
 # so the gap is restored in the stored msg -- a mailbox is a directory
 # of .msg files and the renderer must render what is stored.
 "$mailbox" init gap-fixture --cover "$work/cover.txt" --patches "$work/patches" \
-    --from author --harness test --model fixture >/dev/null 2>/dev/null
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
 gap_p3="$(printf '%s\n' "$("$mailbox" tree gap-fixture)" | awk '/\[PATCH v1 2\/2\]/{print $1}')"
 sed -i 's/^Subject: \[PATCH v1 2\/2\].*$/Subject: [PATCH v1 3\/2] demo: add two/' \
     "$LKML_MAILBOX_ROOT/gap-fixture/cur/${gap_p3}"*.msg  # tree truncates ids; the file is the full uuid
@@ -379,7 +379,7 @@ contains "withdrawn NAK: core's chip is reviewed-by again" "$ahtml" '<span class
 # the index skips it and the banner falls back to "the series", the
 # same way a NAK on the cover already does.
 "$mailbox" init nak-cover --cover "$work/cover.txt" --patches "$work/patches" \
-    --from author --harness test --model fixture >/dev/null 2>/dev/null
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
 nc_tree="$("$mailbox" tree nak-cover)"
 nc_cover="$(printf '%s\n' "$nc_tree" | awk '/\[PATCH v1 0\/2\]/{print $1}')"
 nc_d1="$("$mailbox" post nak-cover --from core --reply-to "$nc_cover" --file "$work/review.txt" \
@@ -419,7 +419,7 @@ printf '\n== fresh series: no panels of its own, honest zeros ==\n'
 # A freshly init-ed series (no replies yet) must not render an empty
 # reviewer panel; the counts panel still stands, with true zeros.
 "$mailbox" init render-empty --cover "$work/cover.txt" --patches "$work/patches" \
-    --from author --harness test --model fixture >/dev/null 2>/dev/null
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
 empty_html="$work/empty.html"
 python3 "$renderer" "$LKML_MAILBOX_ROOT/render-empty" -o "$empty_html"
 ehtml="$(<"$empty_html")"
@@ -462,7 +462,7 @@ printf '\n== the blocking banner ==\n'
 mkdir -p "$work/patches-b"
 cp "$work/patches/0001-one.patch" "$work/patches/0002-two.patch" "$work/patches-b/"
 "$mailbox" init banner-fixture --cover "$work/cover.txt" --patches "$work/patches-b" \
-    --from author --harness test --model fixture >/dev/null 2>/dev/null
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
 b_tree="$("$mailbox" tree banner-fixture)"
 b_p1="$(printf '%s\n' "$b_tree" | awk '/\[PATCH v1 1\/2\]/{print $1}')"
 b_p2="$(printf '%s\n' "$b_tree" | awk '/\[PATCH v1 2\/2\]/{print $1}')"
@@ -491,7 +491,7 @@ contains "the NAK banner still names the patch" "$khtml" '<h2>A NAK stands on pa
 # fresh series where every open thread sits on one patch and nothing is
 # signed off: the warning banner.
 "$mailbox" init banner-one --cover "$work/cover.txt" --patches "$work/patches-b" \
-    --from author --harness test --model fixture >/dev/null 2>/dev/null
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
 o_tree="$("$mailbox" tree banner-one)"
 o_p1="$(printf '%s\n' "$o_tree" | awk '/\[PATCH v1 1\/2\]/{print $1}')"
 "$mailbox" post banner-one --from core --reply-to "$o_p1" --file "$work/q1.txt" --harness test --model fixture >/dev/null 2>/dev/null
@@ -504,7 +504,7 @@ contains "the convergence banner names the patch and the count" "$ohtml" '<h2>Al
 case "$ohtml" in *'banner crit'*) no "the warning banner is not styled critical" ;; *) ok "the warning banner is not styled critical" ;; esac
 # A single open thread is not convergence.
 "$mailbox" init banner-solo --cover "$work/cover.txt" --patches "$work/patches-b" \
-    --from author --harness test --model fixture >/dev/null 2>/dev/null
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
 s_tree="$("$mailbox" tree banner-solo)"
 s_p1="$(printf '%s\n' "$s_tree" | awk '/\[PATCH v1 1\/2\]/{print $1}')"
 "$mailbox" post banner-solo --from core --reply-to "$s_p1" --file "$work/q1.txt" --harness test --model fixture >/dev/null 2>/dev/null
@@ -520,7 +520,7 @@ printf '\n== verdict strength: reviewed-by outranks acked-by ==\n'
 mkdir -p "$work/patches-prio"
 cp "$work/patches/0001-one.patch" "$work/patches/0002-two.patch" "$work/patches-prio/"
 "$mailbox" init prio-fixture --cover "$work/cover.txt" --patches "$work/patches-prio" \
-    --from author --harness test --model fixture >/dev/null 2>/dev/null
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
 pr_tree="$("$mailbox" tree prio-fixture)"
 pr_p1="$(printf '%s\n' "$pr_tree" | awk '/\[PATCH v1 1\/2\]/{print $1}')"
 pr_p2="$(printf '%s\n' "$pr_tree" | awk '/\[PATCH v1 2\/2\]/{print $1}')"
@@ -558,7 +558,7 @@ printf '\n== deep threads: one chain is one open thread, and it keeps its indent
 mkdir -p "$work/patches-d"
 cp "$work/patches/0001-one.patch" "$work/patches/0002-two.patch" "$work/patches-d/"
 "$mailbox" init deep-fixture --cover "$work/cover.txt" --patches "$work/patches-d" \
-    --from author --harness test --model fixture >/dev/null 2>/dev/null
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
 d_tree="$("$mailbox" tree deep-fixture)"
 d_p1="$(printf '%s\n' "$d_tree" | awk '/\[PATCH v1 1\/2\]/{print $1}')"
 d_r1="$("$mailbox" post deep-fixture --from core --reply-to "$d_p1" --file "$work/q1.txt" \
@@ -665,7 +665,7 @@ for i in $(seq 1 14); do
         'diff --git a/demo.c b/demo.c' "+line$i" > "$work/patches14/$(printf '%04d' "$i")-p$i.patch"
 done
 "$mailbox" init pad-14 --cover "$work/cover.txt" --patches "$work/patches14" \
-    --from author --harness test --model fixture >/dev/null 2>/dev/null
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
 pad_out="$work/pad.html"
 python3 "$renderer" "$LKML_MAILBOX_ROOT/pad-14" -o "$pad_out"
 ph="$(<"$pad_out")"
@@ -768,7 +768,7 @@ printf '%s\n' \
     'Commit message.' '' '---' ' demo.c | 1 +' ' 1 file changed, 1 insertion(+)' '' \
     'diff --git a/demo.c b/demo.c' '+x' > "$work/patches-long/0001-long.patch"
 "$mailbox" init long-subj --cover "$work/cover.txt" --patches "$work/patches-long" \
-    --from author --harness test --model fixture >/dev/null 2>/dev/null
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
 long_out="$work/long.txt"
 python3 "$renderer" --text "$LKML_MAILBOX_ROOT/long-subj" > "$long_out"
 lt="$(<"$long_out")"
@@ -827,7 +827,7 @@ printf '\n== text tally: the tag columns squeeze the label budget ==\n'
 # label column 16 columns: the [PATCH vN i/M] prefix no longer fits, but
 # the cut must still be marked and no line may pass 120.
 "$mailbox" init squeeze --cover "$work/cover.txt" --patches "$work/patches-long" \
-    --from author --harness test --model fixture >/dev/null 2>/dev/null
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
 sq_tree="$("$mailbox" tree squeeze)"
 sq_patch_id="$(printf '%s\n' "$sq_tree" | awk '/\[PATCH v1 1\/1\]/{print $1}')"
 sl4() { printf '%s%s' "$(printf 'a%.0s' $(seq 1 22))" "$1"; }
@@ -845,7 +845,7 @@ if [[ -z "$(awk 'length > 120' <<<"$sqally")" ]]; then ok "text: no tally line e
 # negative-sliced fragment of the label (which would push the rows far
 # past 120 and drop the label's tail unmarked).
 "$mailbox" init panel --cover "$work/cover.txt" --patches "$work/patches-long" \
-    --from author --harness test --model fixture >/dev/null 2>/dev/null
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
 pn_tree="$("$mailbox" tree panel)"
 pn_patch_id="$(printf '%s\n' "$pn_tree" | awk '/\[PATCH v1 1\/1\]/{print $1}')"
 for i in $(seq 0 15); do
@@ -929,7 +929,7 @@ printf '\n== text mode: a sealed seat stays visible (X-AI-Network) ==\n'
 # the seats announce use. A message with no header at all (a pre-axis
 # archive) must render EXACTLY as it did before: absence is not a value.
 "$mailbox" init render-net --cover "$work/cover.txt" --patches "$work/patches" \
-    --from author --harness test --model fixture >/dev/null 2>/dev/null
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
 rn_tree="$("$mailbox" tree render-net)"
 rn_p1="$(printf '%s\n' "$rn_tree" | awk '/\[PATCH v1 1\/2\]/{print $1}')"
 printf '%s\n' 'sealed review' > "$work/rn1.txt"
@@ -1031,7 +1031,7 @@ printf '\n== text mode: [PATCH]-subjected reply and series separation ==\n'
 # real patches of the second series carry the diff-omitted note.
 printf '%s\n' 's-two cover.' > "$work/cover2.txt"
 "$mailbox" init s-two --cover "$work/cover2.txt" --patches "$work/patches" \
-    --from author --harness test --model fixture >/dev/null 2>/dev/null
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
 s2_tree="$("$mailbox" tree s-two)"
 s2_patch_id="$(printf '%s\n' "$s2_tree" | awk '/\[PATCH v1 1\/2\]/{print $1}')"
 printf '%s\n' 'This reply carries a [PATCH] subject, but it is a reply.' '' \
@@ -1239,9 +1239,9 @@ printf '\n== summary card: the current version only ==\n'
 # results file for v1 only renders without a card (v2 stands current
 # and unsummarized), and the file moves to v2 when v2 is summarized.
 "$mailbox" init res-two --cover "$work/cover.txt" --patches "$work/patches" \
-    --from author --harness test --model fixture >/dev/null 2>/dev/null
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
 "$mailbox" init res-two --cover "$work/cover.txt" --patches "$work/patches" \
-    --from author --harness test --model fixture --version 2 >/dev/null 2>/dev/null
+    --from author --harness test --model fixture --version 2 --no-checkout >/dev/null 2>/dev/null
 printf '%s\n' '# Summary' 'v1 results summary.' '' '# Details' 'v1 results details.' \
     > "$LKML_MAILBOX_ROOT/res-two/results-v1.md"
 two_html="$work/res-two.html"
@@ -1416,7 +1416,7 @@ printf '\n== series card: page-level card, --text block, byte-identical absence 
 # covers ALL versions -- a token from an EARLIER version than the latest
 # still links.
 "$mailbox" init ser-card --cover "$work/cover.txt" --patches "$work/patches" \
-    --from author --harness test --model fixture >/dev/null 2>/dev/null
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
 sc_tree="$("$mailbox" tree ser-card)"
 sc_patch_id="$(printf '%s\n' "$sc_tree" | awk '/\[PATCH v1 1\/2\]/{print $1}')"
 printf '%s\n' 'Reviewed-by: The Reviewer' > "$work/sc-review.txt"
@@ -1424,7 +1424,7 @@ printf '%s\n' 'Reviewed-by: The Reviewer' > "$work/sc-review.txt"
     --tags Reviewed-by --harness test --model fixture > "$work/sc-review-id" 2>/dev/null
 sc_review_id="$(<"$work/sc-review-id")"
 "$mailbox" init ser-card --cover "$work/cover.txt" --patches "$work/patches" \
-    --from author --harness test --model fixture --version 2 >/dev/null 2>/dev/null
+    --from author --harness test --model fixture --version 2 --no-checkout >/dev/null 2>/dev/null
 SERIES_RESULTS="$LKML_MAILBOX_ROOT/ser-card/results-series.md"
 
 # The absence baseline, before any results-series.md exists: both
@@ -1573,7 +1573,7 @@ case "$sf" in *'class="results-fold"'*) no "series card: summary-only file drops
 # series' content (where it would read as that series' summary).
 printf '%s\n' '# Summary' 'Card A narrative: converged.' > "$SERIES_RESULTS"
 "$mailbox" init ser-card-b --cover "$work/cover.txt" --patches "$work/patches" \
-    --from author --harness test --model fixture >/dev/null 2>/dev/null
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
 printf '%s\n' '# Summary' 'Card B narrative: still open.' > "$LKML_MAILBOX_ROOT/ser-card-b/results-series.md"
 multi_html="$work/ser-multi.html"
 python3 "$renderer" "$LKML_MAILBOX_ROOT/ser-card" "$LKML_MAILBOX_ROOT/ser-card-b" -o "$multi_html"
@@ -1658,7 +1658,7 @@ contains "the footer carries one line per series (current-version reply counts)"
 # must be namespaced the same way: two series carrying a current-version
 # results file both at v1 would otherwise carry two summary-v1 ids.
 "$mailbox" init ser-card-c --cover "$work/cover.txt" --patches "$work/patches" \
-    --from author --harness test --model fixture >/dev/null 2>/dev/null
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
 printf '%s\n' '# Summary' 'sum b' > "$LKML_MAILBOX_ROOT/ser-card-b/results-v1.md"
 printf '%s\n' '# Summary' 'sum c' > "$LKML_MAILBOX_ROOT/ser-card-c/results-v1.md"
 multi3="$work/multi3.html"

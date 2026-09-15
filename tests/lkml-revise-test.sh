@@ -104,7 +104,7 @@ printf 'Add the frobnicator\n\nBody.\n' > cover.txt
 mkdir patches
 printf 'Subject: [PATCH 1/1] frob: add core\n\ndiff\n' > patches/0001.patch
 "$mailbox" init widget-frob --cover cover.txt --patches patches --from author \
-    --harness claude --model opus >/dev/null 2>&1
+    --harness claude --model opus --no-checkout >/dev/null 2>&1
 patch_id="$("$mailbox" tree widget-frob | awk 'NR==3{print $1}')"
 echo "please fix the return value" > q.txt
 r1="$("$mailbox" post widget-frob --from core --reply-to "$patch_id" --file q.txt \

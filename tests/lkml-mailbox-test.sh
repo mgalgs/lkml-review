@@ -71,6 +71,60 @@ fixture_patches() {
         > "$dir/0002-add-tests.patch"
 }
 
+printf '== init checkout ledger ==\n'
+
+ledger_repo="$(mktemp -d)"; tmpdirs+=("$ledger_repo")
+git -C "$ledger_repo" init -q
+git -C "$ledger_repo" config user.email author@example.com
+git -C "$ledger_repo" config user.name Author
+git -C "$ledger_repo" commit --allow-empty -qm base
+git -C "$ledger_repo" branch lkml/widget-frob
+git -C "$ledger_repo" branch lkml/other
+git -C "$ledger_repo" tag ledger-tag
+fixture_cover "$work/ledger-cover.txt"
+fixture_patches "$work/ledger-patches"
+export LKML_MAILBOX_ROOT; LKML_MAILBOX_ROOT="$(new_root)"
+
+out="$(cd "$ledger_repo" && "$mailbox" init ledger-auto --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author --checkout lkml/widget-frob 2>"$work/ledger-diag.txt")"
+rc=$?
+check "init --checkout exits 0" "0" "$rc"
+check "checkout writes one compact v1 ledger entry" '{"version":1,"branch":"lkml/widget-frob"}' "$(<"$LKML_MAILBOX_ROOT/ledger-auto/versions.jsonl")"
+out="$(cd "$ledger_repo" && "$mailbox" init ledger-auto --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author --checkout lkml/widget-frob 2>/dev/null)"
+check "auto-computed v2 is recorded" '{"version":2,"branch":"lkml/widget-frob"}' "$(tail -n1 "$LKML_MAILBOX_ROOT/ledger-auto/versions.jsonl")"
+
+for bad in missing ledger-tag 'bad"branch'; do
+    series="ledger-bad-${bad//[^a-zA-Z0-9]/x}"
+    out="$(cd "$ledger_repo" && "$mailbox" init "$series" --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author --checkout "$bad" 2>&1)"
+    rc=$?
+    if (( rc != 0 )); then ok "refuses invalid checkout '$bad' before posting"; else no "refuses invalid checkout '$bad' before posting" "it succeeded"; fi
+    check "invalid checkout '$bad' leaves no messages" "0" "$(find "$LKML_MAILBOX_ROOT/$series" -name '*.msg' 2>/dev/null | wc -l)"
+    check "invalid checkout '$bad' leaves no ledger" "0" "$(find "$LKML_MAILBOX_ROOT/$series" -name versions.jsonl 2>/dev/null | wc -l)"
+done
+contains "missing branch suggests git branch" "$(cd "$ledger_repo" && "$mailbox" init ledger-missing --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author --checkout missing 2>&1)" "git branch missing"
+
+mkdir -p "$LKML_MAILBOX_ROOT/ledger-same"
+printf '{"version":1,"branch":"lkml/widget-frob"}\n' > "$LKML_MAILBOX_ROOT/ledger-same/versions.jsonl"
+(cd "$ledger_repo" && "$mailbox" init ledger-same --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author --checkout lkml/widget-frob >/dev/null)
+check "same version and branch is not duplicated" "1" "$(wc -l < "$LKML_MAILBOX_ROOT/ledger-same/versions.jsonl" | tr -d ' ')"
+
+mkdir -p "$LKML_MAILBOX_ROOT/ledger-conflict"
+printf '{"version":1,"branch":"lkml/other"}\n' > "$LKML_MAILBOX_ROOT/ledger-conflict/versions.jsonl"
+out="$(cd "$ledger_repo" && "$mailbox" init ledger-conflict --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author --checkout lkml/widget-frob 2>&1)"
+rc=$?
+if (( rc != 0 )); then ok "refuses a different branch for an existing ledger version"; else no "refuses a different branch for an existing ledger version" "it succeeded"; fi
+contains "conflict names both branches" "$out" "lkml/other"
+check "conflict posts no messages" "0" "$(find "$LKML_MAILBOX_ROOT/ledger-conflict" -name '*.msg' 2>/dev/null | wc -l)"
+
+out="$("$mailbox" init ledger-required --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author 2>&1)"
+rc=$?
+if (( rc != 0 )); then ok "requires checkout choice"; else no "requires checkout choice" "it succeeded"; fi
+contains "required-choice refusal names both flags" "$out" "--no-checkout"
+out="$(cd "$ledger_repo" && "$mailbox" init ledger-both --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author --checkout lkml/widget-frob --no-checkout 2>&1)"
+rc=$?
+if (( rc != 0 )); then ok "refuses both checkout choices"; else no "refuses both checkout choices" "it succeeded"; fi
+"$mailbox" init ledger-none --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author --no-checkout >/dev/null
+check "--no-checkout writes no ledger" "0" "$(find "$LKML_MAILBOX_ROOT/ledger-none" -name versions.jsonl | wc -l)"
+
 printf '== init ==\n'
 
 export LKML_MAILBOX_ROOT; LKML_MAILBOX_ROOT="$(new_root)"
@@ -78,7 +132,7 @@ fixture_cover cover.txt
 fixture_patches patches
 
 out="$("$mailbox" init widget-frob --cover cover.txt --patches patches --from author \
-    --harness claude --model opus --network sealed 2>diag.txt)"
+    --harness claude --model opus --network sealed --no-checkout 2>diag.txt)"
 rc=$?
 check "init exits 0" "0" "$rc"
 cover_id="$out"
@@ -307,7 +361,7 @@ printf '\n== a second version ==\n'
 printf 'Add frobnicator locking\n\nThis v2 adds a mutex around the frobnicator.\n' > cover2.txt
 fixture_patches patches2
 "$mailbox" init widget-frob --cover cover2.txt --patches patches2 --from author \
-    --harness claude --model opus >/dev/null 2>diag.txt
+    --harness claude --model opus --no-checkout >/dev/null 2>diag.txt
 
 tree_out2="$("$mailbox" tree widget-frob)"
 contains "tree still shows v1" "$tree_out2" "=== v1 ==="
@@ -316,7 +370,7 @@ contains "a bare init with no --version posts v2" "$tree_out2" "=== v2 ==="
 cover_out2="$("$mailbox" cover widget-frob)"
 contains "cover now returns the LATEST version's letter, not v1's" "$cover_out2" "adds a mutex around the frobnicator"
 
-out="$("$mailbox" init widget-frob --cover cover2.txt --patches patches2 --from author --version 1 2>&1)"
+out="$("$mailbox" init widget-frob --cover cover2.txt --patches patches2 --from author --version 1 --no-checkout 2>&1)"
 rc=$?
 if (( rc != 0 )); then
     ok "refuses --version 1 a second time"
@@ -330,10 +384,10 @@ printf '%s\n' 'Ladder v1 cover' > ladder-cover.txt
 mkdir -p ladder-patches
 printf 'Subject: [PATCH 1/1] docs: Describe addenda archiving across legs\n\nFrom abcdef1234567890 Mon Sep 17 00:00:00 2001\npatch body v1\n' > ladder-patches/0001-v1.patch
 $mailbox init resolver-ladder --cover ladder-cover.txt --patches ladder-patches \
-    --from author --version 1 >/dev/null 2>&1
+    --from author --version 1 --no-checkout >/dev/null 2>&1
 printf '%s\n' 'Ladder v2 cover' > ladder-cover2.txt
 ladder_v2_cover="$($mailbox init resolver-ladder --cover ladder-cover2.txt --patches ladder-patches \
-    --from author --version 2 2>/dev/null)"
+    --from author --version 2 --no-checkout 2>/dev/null)"
 ladder_tree="$($mailbox tree resolver-ladder)"
 ladder_patch7="$(printf '%s\n' "$ladder_tree" | awk '/\[PATCH v2 1\/1\]/{print $1}')"
 ladder_patch_file="$(find "$LKML_MAILBOX_ROOT/resolver-ladder/cur" -name "$ladder_patch7*.msg" -print -quit)"
@@ -385,7 +439,7 @@ for i in $(seq 1 14); do
         "$i" "$i" "$(printf '%040d' "$i")" "$i" > "pad-patches/$(printf '%04d' "$i")-p$i.patch"
 done
 "$mailbox" init pad-resolve --cover ladder-cover.txt --patches pad-patches \
-    --from author --harness claude --model opus >/dev/null 2>/dev/null
+    --from author --harness claude --model opus --no-checkout >/dev/null 2>/dev/null
 pad_tree="$("$mailbox" tree pad-resolve)"
 pad_id_for() { printf '%s\n' "$pad_tree" | awk -v pat="$1" 'index($0, pat) { print $1; exit }'; }
 pad2_id="$(pad_id_for '[PATCH v1 02/14]')"
@@ -435,7 +489,7 @@ printf 'Subject: [PATCH 1/2] sha: owner\n\nFrom abcdef1234567890 Mon Sep 17 00:0
 printf 'Subject: [PATCH 2/2] sha: dependent\n\nFrom deadbeef1234567890 Mon Sep 17 00:00:00 2001\ndependency note mentions abcdef1\nFrom abcdef1234567890 Mon Sep 17 00:00:00 2001\n' \
     > sha-patches/0002-dependent.patch
 $mailbox init sha-header --cover ladder-cover.txt --patches sha-patches \
-    --from author --harness claude --model opus >/dev/null 2>&1
+    --from author --harness claude --model opus --no-checkout >/dev/null 2>&1
 sha_tree="$($mailbox tree sha-header)"
 sha_owner7="$(printf '%s\n' "$sha_tree" | awk '/\[PATCH v1 1\/2\]/{print $1}')"
 sha_owner_file="$(find "$LKML_MAILBOX_ROOT/sha-header/cur" -name "$sha_owner7*.msg" -print -quit)"
@@ -452,7 +506,7 @@ printf 'Subject: [PATCH 1/2] sha: first\n\nFrom abcdef1234567890 Mon Sep 17 00:0
 printf 'Subject: [PATCH 2/2] sha: second\n\nFrom abcdef1234567890 Mon Sep 17 00:00:00 2001\nsecond\n' \
     > ambiguous-sha-patches/0002-second.patch
 "$mailbox" init sha-ambiguous --cover ladder-cover.txt --patches ambiguous-sha-patches \
-    --from author --harness claude --model opus >/dev/null 2>/dev/null
+    --from author --harness claude --model opus --no-checkout >/dev/null 2>/dev/null
 out="$($mailbox post sha-ambiguous --from reviewer --reply-to abcdef1 --file infer.txt \
     --harness claude --model opus 2>sha-ambiguous-diag.txt)"
 rc=$?
@@ -477,7 +531,7 @@ printf '\n== attachments ==\n'
 
 printf 'a screenshot, pretend\n' > shot.png
 out="$("$mailbox" init widget-frob --cover cover.txt --patches patches --from author \
-    --harness claude --model opus --attach shot.png 2>diag.txt)"
+    --harness claude --model opus --attach shot.png --no-checkout 2>diag.txt)"
 rc=$?
 check "init --attach exits 0" "0" "$rc"
 attach_cover_id="$out"
@@ -549,7 +603,7 @@ tip_sha="$(git -C "$diffstat_repo" rev-parse --verify --quiet HEAD)"
 printf 'all tests passed: 42/42\n' > smoke.txt
 
 out="$(cd "$diffstat_repo" && "$mailbox" init widget-frob --cover "$work/cover.txt" --patches "$work/patches" \
-    --from author --harness claude --model opus --diffstat "$base_sha..$tip_sha" --smoke "$work/smoke.txt" 2>diag.txt)"
+    --from author --harness claude --model opus --diffstat "$base_sha..$tip_sha" --smoke "$work/smoke.txt" --no-checkout 2>diag.txt)"
 rc=$?
 check "init --diffstat/--smoke exits 0" "0" "$rc"
 diffstat_cover_id="$out"
@@ -560,17 +614,17 @@ contains "cover body gets a Test results section" "$raw_diffstat" "## Test resul
 contains "the Test results section carries the smoke file verbatim" "$raw_diffstat" "all tests passed: 42/42"
 
 out="$(cd "$diffstat_repo" && "$mailbox" init widget-frob --cover "$work/cover.txt" --patches "$work/patches" \
-    --from author --harness claude --model opus --smoke "$work/nosuchfile.txt" 2>&1)"
+    --from author --harness claude --model opus --smoke "$work/nosuchfile.txt" --no-checkout 2>&1)"
 rc=$?
 if (( rc != 0 )); then ok "refuses a --smoke file that does not exist"; else no "refuses a --smoke file that does not exist" "it succeeded"; fi
 
 out="$(cd "$diffstat_repo" && "$mailbox" init widget-frob --cover "$work/cover.txt" --patches "$work/patches" \
-    --from author --harness claude --model opus --diffstat "nonsense..alsobogus" 2>&1)"
+    --from author --harness claude --model opus --diffstat "nonsense..alsobogus" --no-checkout 2>&1)"
 rc=$?
 if (( rc != 0 )); then ok "refuses a --diffstat range that fails to diff"; else no "refuses a --diffstat range that fails to diff" "it succeeded"; fi
 
 out="$("$mailbox" init widget-frob --cover "$work/cover.txt" --patches "$work/patches" \
-    --from author --harness claude --model opus --diffstat "$base_sha..$tip_sha" 2>&1)"
+    --from author --harness claude --model opus --diffstat "$base_sha..$tip_sha" --no-checkout 2>&1)"
 rc=$?
 if (( rc != 0 )); then ok "refuses a --diffstat range when cwd is not a git repo"; else no "refuses a --diffstat range when cwd is not a git repo" "it succeeded"; fi
 
@@ -585,7 +639,7 @@ export LKML_MAILBOX_ROOT; LKML_MAILBOX_ROOT="$(new_root)"
 fixture_cover cover.txt
 fixture_patches patches
 "$mailbox" init widget-frob --cover cover.txt --patches patches --from author \
-    --harness claude --model opus >/dev/null 2>&1
+    --harness claude --model opus --no-checkout >/dev/null 2>&1
 perf_patch_id="$("$mailbox" tree widget-frob | awk 'NR==3{print $1}')"
 big_body="$(mktemp)"
 printf 'große Antwort mit Umlauten — %d\n' $(seq 6000) > "$big_body"
