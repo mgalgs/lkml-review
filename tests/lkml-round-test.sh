@@ -399,6 +399,16 @@ rc3=$?
 if (( rc3 != 0 )); then ok "unrecorded checkout exits non-zero"; else no "unrecorded checkout exits non-zero"; fi
 contains "unrecorded checkout error names recorded branches" "$out3" "somebranch"
 
+printf '\n== a missing version ledger is refused ==\n'
+mv "$LKML_MAILBOX_ROOT/widget-frob/versions.jsonl" "$LKML_MAILBOX_ROOT/widget-frob/versions.jsonl.saved"
+out_no_ledger="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$capture_dir2" STUB_RUN_PREFIX="$run_prefix_dir" \
+    "$round" widget-frob --project "$project_dir" --checkout somebranch \
+    --personas core --personas-dir "$work" --reply-to "$patch_id" 2>&1)"
+rc_no_ledger=$?
+if (( rc_no_ledger != 0 )); then ok "missing ledger exits non-zero"; else no "missing ledger exits non-zero"; fi
+contains "missing ledger says how to record it" "$out_no_ledger" "pass --checkout <branch> to"
+mv "$LKML_MAILBOX_ROOT/widget-frob/versions.jsonl.saved" "$LKML_MAILBOX_ROOT/widget-frob/versions.jsonl"
+
 printf '\n== an ambiguous checkout ref cannot bypass the branch SHA check ==\n'
 git -C "$project_dir" branch release somebranch
 git -C "$project_dir" tag release unrecorded

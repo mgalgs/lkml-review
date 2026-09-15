@@ -289,6 +289,8 @@ ledger_root="${LKML_MAILBOX_ROOT:-/var/tmp/claude-scratch/lkml}"
 versions_file="$ledger_root/$series/versions.jsonl"
 [[ -f "$versions_file" ]] || {
     echo "Error: no recorded checkout branches for series '$series' in $versions_file." >&2
+    echo "Post the version through lkml-cover.sh, or pass --checkout <branch> to" >&2
+    echo "lkml-mailbox.sh init, so the version→branch ledger gets written." >&2
     exit 1
 }
 checkout_sha="$(git -C "$project" rev-parse --verify --quiet "$checkout_ref^{commit}" 2>/dev/null)" || {
