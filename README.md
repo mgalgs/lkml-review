@@ -50,11 +50,26 @@ used to carry alone. The plan is for that transport to move onto
 agent-mail, at which point this repo becomes personas, kickoff-email
 templates, and a thin kickoff harness — not a transport of its own.
 
-That shape exists today, not yet wired into the shipping path:
-fleet-form personas under `fleet/personas/`,
-kickoff-mail templates under `fleet/kickoffs/`, and a dogfood harness,
-`scripts/lkml-fleet-kickoff.sh`, that formats a patch series and
-composes a kickoff mail for `fork-sandbox mail send`. See
+The fleet transport is runnable through `lkml-fleet.sh`: it selects this
+checkout's personas under `fleet/personas/` and isolates lkml from any
+machine-wide fleet registry. Kickoff-mail templates live under
+`fleet/kickoffs/`, and `lkml-fleet-kickoff.sh` formats a patch series and
+composes the kickoff mail.
+
+For a first run, use the wrapper to see the built-in panel and start the
+router, then send a kickoff:
+
+```bash
+lkml-fleet.sh fleet expand @all
+lkml-fleet.sh postmaster deliver --project <path>
+lkml-fleet-kickoff.sh <repo> <range> --from <addr> --to @all \
+  --subject <subject> --send
+```
+
+`fleet expand @all` works from the persona frontmatter alone. An optional
+`~/.config/lkml/fleet.yaml` (overridable with `LKML_FLEET_FILE`) can add a
+`@panel` list, `triage:` settings, and site-specific harness or model
+overrides; `fleet roster` and `fleet check` need that optional file. See
 `docs/RETIRED.md` for how each old script below maps onto the new
 transport, and where a gap still has no replacement.
 
@@ -74,15 +89,17 @@ lived in fork-sandbox — `lkml-round.sh` is still `lkml-round.sh`.
 
 ## Configure
 
-Two files, in `~/.config/lkml/`:
+Two required files and one optional file, in `~/.config/lkml/`:
 
 | File | What it holds |
 |---|---|
 | `seats.yaml` | the reviewer panel — which personas sit, on which harness and model |
 | `summarize.env` | tuning for the summarize leg, including its input-size cap |
+| `fleet.yaml` (optional) | fleet lists, triage settings, and site-specific fleet overrides |
 
 Override either per invocation with `LKML_SEATS_FILE` or
-`LKML_SUMMARIZE_ENV_FILE`.
+`LKML_SUMMARIZE_ENV_FILE`; override the optional fleet file with
+`LKML_FLEET_FILE`.
 
 There is **no fallback to any other location, deliberately.** A missing
 file fails at launch and names the path it wanted, rather than silently
@@ -120,6 +137,7 @@ scheduling and reading are different jobs held by different sessions.
 | `lkml-render.py` | single-file HTML archive; `--text` for the agent/grep view |
 | `lkml-forklift.sh` | moves a series between repos |
 | `lkml-seats-parse.py`, `lkml-seats-resolve` | plumbing: read and resolve `seats.yaml` |
+| `lkml-fleet.sh` | fleet transport wrapper: selects lkml's personas and isolated optional fleet file, then passes its arguments to `fork-sandbox` |
 | `lkml-fleet-kickoff.sh` | Dogfood harness: formats a series and composes a kickoff mail for the fleet transport above; prints the `fork-sandbox mail send` command, or runs it with `--send`. `--ci-first <ci-addr>` addresses the kickoff to the CI seat alone so its reply is what wakes the panel — see `docs/ci-first-ordering.md` |
 
 ## Converging

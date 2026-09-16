@@ -56,6 +56,7 @@ SKILL_FARMS=(
 
 PORCELAIN=(
     lkml-cover.sh
+    lkml-fleet.sh
     lkml-fleet-kickoff.sh
     lkml-fleet-status.sh
     lkml-forklift.sh

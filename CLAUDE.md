@@ -53,9 +53,11 @@ Read from `~/.config/lkml/`:
 |---|---|
 | `seats.yaml` | the reviewer panel: which personas sit, on which harness and model |
 | `summarize.env` | tuning for the summarize leg, including its input-size cap |
+| `fleet.yaml` (optional) | fleet lists, triage settings, and site-specific fleet overrides |
 
 Overridable per invocation with `LKML_SEATS_FILE` and
-`LKML_SUMMARIZE_ENV_FILE`.
+`LKML_SUMMARIZE_ENV_FILE`; the optional fleet file is overridable with
+`LKML_FLEET_FILE`.
 
 **There is deliberately no fallback to any other location.** A missing
 file fails at launch, naming the path it wanted. It never silently reads

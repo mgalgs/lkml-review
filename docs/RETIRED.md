@@ -19,7 +19,7 @@ by surprise.
 | `lkml-summarize.sh` (two-tier extraction/synthesis results doc, written to a file outside the thread) | no replacement; the `secretary` persona is the closest analogue but it posts in-thread, this script's file-writing role has no fleet equivalent yet |
 | `lkml-render.py` (HTML archive + `--text` agent view) | `fork-sandbox-mail-render.py` — full replacement. It has both a default HTML-archive mode (single self-contained file, inline CSS, light+dark, html-escaped) matching the old script's default output, and `--text`, the agent view the postmaster's own wake handoff uses. No gap here. |
 | `lkml-forklift.sh` (fold a reviewed version onto a real branch) | no replacement; local git operation, unrelated to transport, not in scope |
-| `lkml-seats-parse.py` + `lkml-seats-resolve` (old seats.yaml plumbing) | `fork-sandbox fleet` (fleet.yaml + `fleet resolve`/`fleet check`/`fleet expand`) — direct conceptual replacement |
+| `lkml-seats-parse.py` + `lkml-seats-resolve` (old seats.yaml plumbing) | `lkml-fleet.sh fleet` reaches `fork-sandbox fleet` against lkml's own persona registry. The panel resolves from persona frontmatter and `fleet expand @all` needs no `fleet.yaml`; an optional `~/.config/lkml/fleet.yaml` (or `LKML_FLEET_FILE`) can add `@panel`, `triage:`, and site-specific harness/model overrides, while `fleet roster` and `fleet check` require it. |
 
 `scripts/lkml-fleet-kickoff.sh` is new, not a replacement for a single
 old script — it doesn't appear on the left above. It's closest in
