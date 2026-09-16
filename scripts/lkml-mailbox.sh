@@ -621,7 +621,12 @@ cmd_init() {
         done
     fi
     if [[ -n "$checkout" ]]; then
-        if ! git rev-parse --verify --quiet "refs/heads/$checkout^{commit}" >/dev/null; then
+        # git's own stderr is discarded, not just its stdout: outside a
+        # repository rev-parse prints "fatal: not a git repository" BEFORE
+        # the diagnostic below, so an operator's first line reads like the
+        # tool crashed rather than like a branch that does not resolve.
+        # --quiet suppresses the not-a-valid-ref message, not that one.
+        if ! git rev-parse --verify --quiet "refs/heads/$checkout^{commit}" >/dev/null 2>&1; then
             echo "Error: init: --checkout '$checkout' is not a local branch in $(pwd)." >&2
             echo "The ledger records branch names, which lkml-round.sh resolves under" >&2
             echo "refs/heads/. Create it first, e.g.:" >&2

@@ -114,6 +114,18 @@ for bad in missing ledger-tag 'bad"branch'; do
 done
 contains "missing branch suggests git branch" "$(cd "$ledger_repo" && "$mailbox" init ledger-missing --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author --checkout missing 2>&1)" "git branch missing"
 
+# Run from somewhere that is not a git repository at all. rev-parse's own
+# "fatal: not a git repository" would otherwise be the FIRST line printed,
+# ahead of our diagnostic, so the operator's first impression is a crash
+# rather than a branch that does not resolve.
+notgit_dir="$(mktemp -d)"; tmpdirs+=("$notgit_dir")
+notgit_out="$(cd "$notgit_dir" && "$mailbox" init ledger-notgit --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author --checkout somebranch 2>&1)"
+check "outside a git repo, git's own fatal: is not leaked" "0" \
+    "$(printf '%s\n' "$notgit_out" | grep -c '^fatal:')"
+contains "outside a git repo, the diagnostic still names the branch" "$notgit_out" "is not a local branch"
+check "outside a git repo, nothing is posted" "0" \
+    "$(find "$LKML_MAILBOX_ROOT/ledger-notgit" -name '*.msg' 2>/dev/null | wc -l)"
+
 mkdir -p "$LKML_MAILBOX_ROOT/ledger-same"
 printf '{"version":1,"branch":"lkml/widget-frob"}\n' > "$LKML_MAILBOX_ROOT/ledger-same/versions.jsonl"
 (cd "$ledger_repo" && "$mailbox" init ledger-same --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author --checkout lkml/widget-frob >/dev/null)
