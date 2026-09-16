@@ -404,6 +404,31 @@ contains "the high handoff names the outbox the way the preamble does" \
 contains "the high handoff fixes the Summary word budget" \
     "$high_handoff" "hard-capped at 200"
 
+printf '\n== result-file replacement preserves old inodes ==\n'
+# Hard-link sentinels deterministically distinguish replacement by rename
+# from an in-place overwrite: each destination must exist before linking.
+printf 'OLD-CONTENT\n' > "$series_dir/results-v1.json"
+printf 'OLD-CONTENT\n' > "$series_dir/results-v1.md"
+sentinel_dir="$(mktemp -d)"; tmpdirs+=("$sentinel_dir")
+ln "$series_dir/results-v1.json" "$sentinel_dir/results-v1.json"
+ln "$series_dir/results-v1.md" "$sentinel_dir/results-v1.md"
+ATOMIC_JSON='{"replacement":"NEW-CONTENT"}'
+ATOMIC_MD='# Summary
+NEW-CONTENT
+
+# Details
+replacement'
+cap_atomic="$(mktemp -d)"; tmpdirs+=("$cap_atomic")
+PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_atomic" STUB_RUN_PREFIX="$run_prefix_dir" \
+    STUB_JSON="$ATOMIC_JSON" STUB_MD="$ATOMIC_MD" \
+    "$summarize" widget-frob --project "$project_dir" --version 1 >/dev/null 2>&1
+check "results-v1.json replaces the destination without changing its sentinel" \
+    'NEW-CONTENT|OLD-CONTENT' \
+    "$(jq -r .replacement "$series_dir/results-v1.json")|$(cat "$sentinel_dir/results-v1.json")"
+check "results-v1.md replaces the destination without changing its sentinel" \
+    'NEW-CONTENT|OLD-CONTENT' \
+    "$(sed -n '2p' "$series_dir/results-v1.md")|$(cat "$sentinel_dir/results-v1.md")"
+
 printf '\n== handoff input-size cap ==\n'
 capC="$(mktemp -d)"; tmpdirs+=("$capC")
 small_cap_env="$work/lkml-summarize-small-cap.env"
@@ -644,6 +669,9 @@ Flakiness under load (deadbee) still stands.
 Recommended next actions
 Author to address the flakiness claim and post v3.'
 
+printf 'OLD-CONTENT\n' > "$series_dir/results-series.md"
+series_sentinel_dir="$(mktemp -d)"; tmpdirs+=("$series_sentinel_dir")
+ln "$series_dir/results-series.md" "$series_sentinel_dir/results-series.md"
 capS="$(mktemp -d)"; tmpdirs+=("$capS")
 stdout="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$capS" STUB_RUN_PREFIX="$run_prefix_dir" \
     STUB_JSON="$DEFAULT_JSON" STUB_MD="$SERIES_MD" \
@@ -664,6 +692,9 @@ if cmp -s <(printf '%s\n' "$SERIES_MD") "$series_dir/results-series.md"; then
 else
     no "results-series.md is the series run's outbox file, verbatim" "$(cat "$series_dir/results-series.md")"
 fi
+check "results-series.md replaces the destination without changing its sentinel" \
+    'The series adds the frobnicator across two versions; v2 stands with the v1 flakiness claim still open.|OLD-CONTENT' \
+    "$(sed -n '2p' "$series_dir/results-series.md")|$(cat "$series_sentinel_dir/results-series.md")"
 check "exactly one run launched, the series run" "summarize-series" "$(tr -d '\r' < "$capS/order")"
 series_branch="$(sed -n 's/^BRANCH=//p' "$capS/summarize-series.argv")"
 case "$series_branch" in

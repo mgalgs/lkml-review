@@ -62,7 +62,10 @@
 #      run's OUTBOX, harvested as <series>/results-v<N>.md.
 # Re-summarizing a version overwrites both files once both tiers have
 # delivered their outbox files (a failed high tier leaves the previous
-# pair untouched); the written paths are the last stdout lines.
+# pair untouched); each result file is individually written by a
+# same-directory temp-then-rename, so a concurrent reader never sees a
+# partial file. The json/md pair is not atomic with respect to each other.
+# The written paths are the last stdout lines.
 #
 # results-v<N>.md is a FORMAT CONTRACT, not a free-form essay -- a
 # render round is meant to show # Summary as a small collapsed card
@@ -84,6 +87,24 @@ render_py="$script_dir/lkml-render.py"
 
 usage() {
     sed -n '2,/^set -uo/{ /^#/s/^# \?//p }' "$0"
+}
+
+# Replace one file atomically for concurrent renderers. The temp must live
+# beside its destination so mv is a same-filesystem rename; a json/md pair
+# still lands as two independent replacements.
+atomic_replace() {
+    local source="$1" destination="$2" dir base tmp
+    dir="$(dirname -- "$destination")"
+    base="$(basename -- "$destination")"
+    tmp="$(mktemp "$dir/.${base}.tmp.XXXXXX")" || return 1
+    if ! cp -- "$source" "$tmp"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    if ! mv -- "$tmp" "$destination"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
 }
 
 # --help must be scanned over "$@" before the positional <series> is
@@ -696,7 +717,10 @@ if [[ -n "$series_mode" ]]; then
         exit 1
     fi
     md_path="$series_dir/results-series.md"
-    cp -f -- "$series_outbox_md" "$md_path"
+    if ! atomic_replace "$series_outbox_md" "$md_path"; then
+        echo "Error: could not atomically harvest $md_path." >&2
+        exit 1
+    fi
     echo "fork-sandbox lkml-summarize: harvested $md_path" >&2
     warn_summary_length "$md_path" 150
 
@@ -773,9 +797,15 @@ fi
 # once the md is in hand, so a failed high run leaves the previous
 # run's pair untouched instead of a fresh intermediate beside a stale
 # md.
-cp -f -- "$low_outbox_json" "$json_path"
+if ! atomic_replace "$low_outbox_json" "$json_path"; then
+    echo "Error: could not atomically harvest $json_path." >&2
+    exit 1
+fi
 echo "fork-sandbox lkml-summarize: harvested $json_path" >&2
-cp -f -- "$high_outbox_md" "$md_path"
+if ! atomic_replace "$high_outbox_md" "$md_path"; then
+    echo "Error: could not atomically harvest $md_path." >&2
+    exit 1
+fi
 echo "fork-sandbox lkml-summarize: harvested $md_path" >&2
 warn_summary_length "$md_path" 120
 
