@@ -528,6 +528,39 @@ contains "a costed run is unreadable, not a bare zero with no annotation" "$OUT"
 contains "a second agent's costed run is unreadable too, not dropped" "$OUT" "review-two  2 runs  \$0.000000 (2 unreadable)"
 contains "a lone run is unreadable, not silently free" "$OUT" "review-null  1 run  \$0.000000 (1 unreadable)"
 
+# The exit-127 stub above fails AND writes nothing, so it trips both
+# halves of the trust gate's disjunct at once and cannot tell them
+# apart. A reviewer proved that gap by mutation: changing the gate's
+# `||` to `&&` still passed the whole suite, because nothing here forces
+# python3 to exit 0 while still under-producing lines. This stub is that
+# fixture's sibling -- it exits 0 but prints fewer lines than the paths
+# it was given, the shape of a batch that died partway through -- so the
+# "wrong line count" half of the gate has a fixture that only it catches.
+partial_python_bin="$work/partial-python-bin"; mkdir -p -- "$partial_python_bin"
+for command in bash awk date head sed sort; do
+    ln -s "$(command -v "$command")" "$partial_python_bin/$command"
+done
+ln -s "$stub_bin/fork-sandbox" "$partial_python_bin/fork-sandbox"
+cat > "$partial_python_bin/python3" <<'STUB'
+#!/usr/bin/env bash
+# Exits 0, ignores its arguments, and prints fewer result lines than
+# it was given paths -- but more than zero, since a zero-line reply
+# would also mismatch and prove nothing about the partial case this
+# stub exists for.
+printf '0.500000\n0.500000\n0.500000\n'
+STUB
+chmod +x -- "$partial_python_bin/python3"
+OUT="$(PATH="$partial_python_bin" "$status" "$t1" --mail-root "$root" 2>&1)"; RC=$?
+check "python3 present but under-producing does not fail the screen" "0" "$RC"
+contains "an under-producing python3 explains runs as unreadable" "$OUT" "unreadable"
+contains "an under-producing python3 reports the generic parse-failure message" "$OUT" '(some summary.json files could not be parsed and are counted as unreadable)'
+contains "an under-producing python3 still prints the run inventory" "$OUT" 'runs: 6 (1 no summary, 5 unreadable)'
+not_contains "an under-producing python3 never launders a costed run into no cost" "$OUT" 'no cost'
+not_contains "an under-producing python3's partial output is never zipped onto an agent" "$OUT" '0.500000'
+contains "a costed run is unreadable under a partial batch, not a bare zero" "$OUT" "review-one  3 runs  \$0.000000 (1 no summary, 2 unreadable)"
+contains "a second agent's costed run is unreadable under a partial batch too" "$OUT" "review-two  2 runs  \$0.000000 (2 unreadable)"
+contains "a lone run is unreadable under a partial batch, not silently free" "$OUT" "review-null  1 run  \$0.000000 (1 unreadable)"
+
 # python3 is only needed for summaries belonging to the requested thread.
 # An otherwise populated ledger must still report observable no-run and
 # no-summary states when that parser is absent.
