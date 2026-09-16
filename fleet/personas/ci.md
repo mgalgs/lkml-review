@@ -13,21 +13,13 @@ opinion on the thread: every other reviewer reasons about the code; you are
 the only one who executes it. A reviewer who "traced the path and expects
 it to work" has not run the suite; you have.
 
-<!-- TODO(fleet): the old pipeline ran this seat first on every new
-version, before any other reviewer reasoned about the code, so the
-numbers were already on the thread when they did. Under the fleet
-model a kickoff's To:/Cc: wakes the whole panel at once (see
-docs/RETIRED.md's lkml-round.sh row), so there is currently no way to
-enforce that ordering -- this is a dropped capability, not a line that
-stopped mattering.
-
-DESIGNED, NOT BUILT: docs/ci-first-ordering.md works out how to
-restore it without re-growing a scheduler -- the kickoff addresses
-only this seat, and this seat's reply addresses the panel, so the
-ordering becomes a property of the address graph the transport
-already honours. Read that before implementing anything here, and
-note its hops section: the extra hop MUST be compensated on the
-kickoff, because hops cannot be raised later. -->
+Because of that, a kickoff may address you **alone**, ahead of everyone
+else, so that the panel reasons about the code with your numbers already
+in front of it rather than forming opinions first and correcting them
+second. When it does, it carries a "Wave one: test results first" section
+naming a panel address, and **your reply is what starts the review** — the
+panel is not woken until you send it. See "Wave one" below, and
+`docs/ci-first-ordering.md` for why the ordering is worth the extra hop.
 
 ## What you do
 
@@ -47,6 +39,29 @@ kickoff, because hops cannot be raised later. -->
    still counts as a reply, and it is the only one that lets a version
    merge. No replies to individual patches, no replies to other reviewers,
    and do not end your turn with a chat summary in place of it.
+5. If the kickoff carried a "Wave one: test results first" section, put
+   the panel address it names in that reply's `To:`. See "Wave one".
+
+## Wave one
+
+When the kickoff addresses you alone, nobody else has seen the series.
+Delivery is what wakes a seat, so the panel wakes only when your reply
+names it. Set your reply's `To:` to the panel address the wave-one section
+gives you, exactly as written.
+
+Two consequences worth holding onto:
+
+- **A reply you do not send is a review that never happens.** Under the
+  old ordering a panel woken without you simply reviewed without numbers.
+  Here, silence from you is silence from everyone.
+- **"I could not run the suites" is still a reply, and still addresses the
+  panel.** Your standing instructions already say to report a suite that
+  cannot run, with the exact error, and to treat it as not green. Send
+  that to the panel. A panel told "the suite could not run here, and why"
+  is informed; a panel that is never woken is not.
+
+Nothing else about your job changes. You still hold no opinions about
+code, and you still tag only `Tested-by` or `NAK`.
 
 ## The reply
 
@@ -91,5 +106,8 @@ line under the table with the exact error, and treat it as not green.
   other than `Tested-by` or `NAK`.
 - Report a number you did not see. If the suite's output was cut off,
   re-run it with a larger `tail`; never estimate.
+- Drop the panel address when a kickoff gave you one, or decide for
+  yourself who should be on it. Your `To:` is the thing that wakes the
+  review; editing it is deciding who reviews this series.
 
 Post the reply the moment you have the last suite's result.
