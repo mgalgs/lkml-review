@@ -51,9 +51,14 @@
 #              stop is printed loudly with its reason; absent router state
 #              is distinguished from an exhausted budget.
 #   cost per agent  completed router runs, grouped by agent. Runs without a
-#              summary stay visible as "no summary", while summaries with
-#              no usable cost stay visible as "no cost", rather than
-#              becoming misleading zero-cost entries.
+#              summary stay visible as "no summary", summaries with no
+#              usable cost field (absent, null, or the wrong JSON type)
+#              stay visible as "no cost", and summaries that could not be
+#              parsed at all -- because python3 itself is unavailable, or
+#              because the file is truncated, corrupt, or unreadable --
+#              stay visible as "unreadable". None of the three is folded
+#              into another: each is a different kind of not knowing, and
+#              collapsing them would misreport which.
 #   unanswered see the design decision below.
 #
 # Design decision -- tags: Reviewed-by, Acked-by, Tested-by,
@@ -301,19 +306,36 @@ print_hop_and_spawns() {
 
 }
 
+# Prints " (X no summary, Y no cost, Z unreadable)" for whichever counts
+# are non-zero, or nothing at all if all three are zero.  Shared between
+# the totals line and each per-agent row so the three states are joined
+# identically in both places.
+fs_cost_annotation() {
+    local missing="$1" no_cost="$2" unreadable="$3" joined
+    local parts=()
+    (( missing > 0 )) && parts+=("$missing no summary")
+    (( no_cost > 0 )) && parts+=("$no_cost no cost")
+    (( unreadable > 0 )) && parts+=("$unreadable unreadable")
+    (( ${#parts[@]} == 0 )) && return 0
+    printf -v joined '%s, ' "${parts[@]}"
+    printf ' (%s)' "${joined%, }"
+}
+
 # The router writes its run ledger as KEY=value files.  Read those values
 # directly rather than sourcing them: router state is data, not shell code.
 print_cost_per_agent() {
     local pm="$MAIL_ROOT/.postmaster" env line key value agent thread run_dir
-    local cost prev total_runs=0 missing_summary=0 no_cost=0
-    local agent_missing agent_no_cost run_word
-    declare -A RUN_COUNT=() MISSING_COUNT=() NO_COST_COUNT=() COST_BY_AGENT=()
+    local prev total_runs=0 missing_summary=0 no_cost=0 unreadable=0
+    local have_python=1 run_word
+    declare -A RUN_COUNT=() MISSING_COUNT=() NO_COST_COUNT=() UNREADABLE_COUNT=() COST_BY_AGENT=()
+    local parse_agents=() parse_paths=()
 
     printf '\n== Cost per agent ==\n'
     if [[ ! -d "$pm/runs" ]]; then
         echo '(no runs recorded)'
         return 0
     fi
+    command -v python3 >/dev/null 2>&1 || have_python=0
     for env in "$pm/runs"/*.env; do
         [[ -r "$env" ]] || continue
         agent=""; thread=""; run_dir=""
@@ -336,55 +358,113 @@ print_cost_per_agent() {
             MISSING_COUNT[$agent]=$(( ${MISSING_COUNT[$agent]:-0} + 1 ))
             continue
         fi
-        if ! command -v jq >/dev/null 2>&1; then
-            echo '(cost data unavailable: jq is required to parse summary.json)'
-            return 0
-        fi
-        # A routed continuation includes the prior context cost in
-        # total_cost_usd.  Older summaries have only cost_usd.
-        cost="$(jq -er '
-            if (.total_cost_usd | type) == "number" then .total_cost_usd
-            elif (.cost_usd | type) == "number" then .cost_usd
-            else empty
-            end
-        ' "$run_dir/summary.json" 2>/dev/null)"
-        if [[ ! "$cost" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-            no_cost=$(( no_cost + 1 ))
-            NO_COST_COUNT[$agent]=$(( ${NO_COST_COUNT[$agent]:-0} + 1 ))
+        if (( ! have_python )); then
+            unreadable=$(( unreadable + 1 ))
+            UNREADABLE_COUNT[$agent]=$(( ${UNREADABLE_COUNT[$agent]:-0} + 1 ))
             continue
         fi
-        prev="${COST_BY_AGENT[$agent]:-0}"
-        COST_BY_AGENT[$agent]="$(awk -v a="$prev" -v b="$cost" 'BEGIN { printf "%.6f", a + b }')"
+        parse_agents+=("$agent")
+        parse_paths+=("$run_dir/summary.json")
     done
 
     if (( total_runs == 0 )); then
         echo '(no runs recorded)'
         return 0
     fi
-    printf 'runs: %s' "$total_runs"
-    if (( missing_summary > 0 || no_cost > 0 )); then
-        printf ' ('
-        (( missing_summary > 0 )) && printf '%s no summary' "$missing_summary"
-        (( missing_summary > 0 && no_cost > 0 )) && printf ', '
-        (( no_cost > 0 )) && printf '%s no cost' "$no_cost"
-        printf ')\n'
-    else
-        printf '\n'
+
+    # One interpreter for the whole ledger, not one per summary file: seq/
+    # is never reset (see Hop and Spawns above), so a thread's run count
+    # only grows, and a per-file fork that is invisible at ten runs comes
+    # to dominate this section at hundreds. Each path prints exactly one
+    # result line, in argv order, so the loop below can zip it back onto
+    # the (agent, path) pair recorded above -- but only once the batch is
+    # confirmed intact: a python3 that fails to run, or dies partway
+    # through, must not be allowed to desync that zip and silently
+    # misattribute one run's fate to another's.
+    if (( ${#parse_paths[@]} > 0 )); then
+        local results py_rc res
+        local -a result_lines=()
+        results="$(python3 -c '
+import json, sys
+
+# A routed continuation includes the prior context cost in total_cost_usd.
+# Older summaries have only cost_usd. A JSON bool is excluded explicitly:
+# isinstance(True, int) is true in Python, and a JSON true would
+# otherwise be summed as 1. A file that cannot be opened or parsed as
+# JSON is reported separately from one that parses but has no usable
+# cost field: the two are different kinds of not knowing.
+for path in sys.argv[1:]:
+    try:
+        data = json.load(open(path))
+    except Exception:
+        print("UNREADABLE")
+        continue
+    result = "NOCOST"
+    try:
+        for key in ("total_cost_usd", "cost_usd"):
+            value = data.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            # Fixed-point, never exponent notation: repr() switches to
+            # exponent form below 1e-4, which would fail the plain-digit
+            # gate below and misreport a known, tiny, real cost as
+            # unknown. This does not gate out extreme magnitudes either
+            # (a huge value is still a real number, just an ugly one) --
+            # it only tells a real number apart from the two sentinels
+            # above.
+            result = format(value, "f")
+            break
+    except Exception:
+        pass
+    print(result)
+' "${parse_paths[@]}" 2>/dev/null)" && py_rc=0 || py_rc=$?
+        if [[ -n "$results" ]]; then
+            while IFS= read -r res; do
+                result_lines+=("$res")
+            done <<< "$results"
+        fi
+        if (( py_rc != 0 )) || (( ${#result_lines[@]} != ${#parse_paths[@]} )); then
+            # python3 exited non-zero, or produced a different number of
+            # result lines than paths given to it (a crash partway
+            # through, an OOM kill, a broken shim on PATH that runs but
+            # writes nothing): there is no reliable way to tell which
+            # line belonged to which path, so nothing in this batch is
+            # trusted as "no cost" -- every path in it is unreadable.
+            for agent in "${parse_agents[@]}"; do
+                unreadable=$(( unreadable + 1 ))
+                UNREADABLE_COUNT[$agent]=$(( ${UNREADABLE_COUNT[$agent]:-0} + 1 ))
+            done
+        else
+            for i in "${!result_lines[@]}"; do
+                res="${result_lines[$i]}"
+                agent="${parse_agents[$i]}"
+                if [[ "$res" == "UNREADABLE" ]]; then
+                    unreadable=$(( unreadable + 1 ))
+                    UNREADABLE_COUNT[$agent]=$(( ${UNREADABLE_COUNT[$agent]:-0} + 1 ))
+                elif [[ "$res" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+                    prev="${COST_BY_AGENT[$agent]:-0}"
+                    COST_BY_AGENT[$agent]="$(awk -v a="$prev" -v b="$res" 'BEGIN { printf "%.6f", a + b }')"
+                else
+                    no_cost=$(( no_cost + 1 ))
+                    NO_COST_COUNT[$agent]=$(( ${NO_COST_COUNT[$agent]:-0} + 1 ))
+                fi
+            done
+        fi
     fi
+
+    if (( unreadable > 0 )); then
+        if (( ! have_python )); then
+            echo '(python3 not found: those summaries could not be parsed and are counted as unreadable)'
+        else
+            echo '(some summary.json files could not be parsed and are counted as unreadable)'
+        fi
+    fi
+    printf 'runs: %s%s\n' "$total_runs" "$(fs_cost_annotation "$missing_summary" "$no_cost" "$unreadable")"
     for agent in $(printf '%s\n' "${!RUN_COUNT[@]}" | sort); do
         run_word=runs
         (( RUN_COUNT[$agent] == 1 )) && run_word=run
-        printf '%s  %s %s  $%s' "$agent" "${RUN_COUNT[$agent]}" "$run_word" "${COST_BY_AGENT[$agent]:-0.000000}"
-        agent_missing="${MISSING_COUNT[$agent]:-0}"
-        agent_no_cost="${NO_COST_COUNT[$agent]:-0}"
-        if (( agent_missing > 0 || agent_no_cost > 0 )); then
-            printf ' ('
-            (( agent_missing > 0 )) && printf '%s no summary' "$agent_missing"
-            (( agent_missing > 0 && agent_no_cost > 0 )) && printf ', '
-            (( agent_no_cost > 0 )) && printf '%s no cost' "$agent_no_cost"
-            printf ')'
-        fi
-        printf '\n'
+        printf '%s  %s %s  $%s%s\n' "$agent" "${RUN_COUNT[$agent]}" "$run_word" "${COST_BY_AGENT[$agent]:-0.000000}" \
+            "$(fs_cost_annotation "${MISSING_COUNT[$agent]:-0}" "${NO_COST_COUNT[$agent]:-0}" "${UNREADABLE_COUNT[$agent]:-0}")"
     done
 }
 

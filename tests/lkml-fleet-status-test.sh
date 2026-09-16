@@ -151,6 +151,14 @@ write_msg "$root" '.stray' 001 d0010000-0000-4000-8000-000000000001 "$(D 0)" \
 write_msg "$root2" "$t3" 001 e0010000-0000-4000-8000-000000000001 "$(D 0)" \
     '@author' '@panel' '' 'Discussion: where to keep the state' 8 '' 'No patches here.'
 
+# a fourth thread used only to exercise summary.json parser semantics
+# (string cost, boolean cost, two real costs summed) in isolation, so
+# it never perturbs t1's hand-counted totals.
+t4="44444444-dddd-4ddd-8ddd-dddddddddddd"
+mkdir -p -- "$root/threads/$t4"
+write_msg "$root" "$t4" 001 f0010000-0000-4000-8000-000000000001 "$(D 0)" \
+    '@author' '@panel' '' 'Parser semantics fixture' 8 '' 'No patches here either.'
+
 # .postmaster router state for the t1/t2 threads. t1: an operator
 # mail zeroed spawns/ from 5 down to 3 (seq/ is never reset). t2:
 # spawns/ zeroed to 0 and the thread flagged needs-operator. store2
@@ -188,6 +196,28 @@ printf 'agent=review-two\nthread=%s\nrun_dir=%s\n' "$t1" "$run_null" > "$pm/runs
 printf 'agent=review-one\nthread=%s\nrun_dir=%s\n' "$t1" "$run_garbage" > "$pm/runs/run-f.env"
 printf 'agent=review-null\nthread=%s\nrun_dir=%s\n' "$t1" "$run_only_null" > "$pm/runs/run-g.env"
 printf 'agent=other-agent\nthread=%s\nrun_dir=%s\n' "$t2" "$run_other" > "$pm/runs/run-d.env"
+
+# Parser-semantics fixture (thread t4): a string cost, a boolean cost
+# (the isinstance(bool, int) trap), two real costs for one agent that
+# must sum, and a magnitude far beyond any real invoice, as a JSON
+# integer -- repr() of a Python int never uses exponent notation
+# regardless of size, so this is a real, if absurd-looking, cost and
+# must be summed rather than filtered out by size.
+run_parser_string="$work/run-parser-string"; mkdir -p -- "$run_parser_string"
+run_parser_bool="$work/run-parser-bool"; mkdir -p -- "$run_parser_bool"
+run_parser_sum_a="$work/run-parser-sum-a"; mkdir -p -- "$run_parser_sum_a"
+run_parser_sum_b="$work/run-parser-sum-b"; mkdir -p -- "$run_parser_sum_b"
+run_parser_huge="$work/run-parser-huge"; mkdir -p -- "$run_parser_huge"
+printf '{"total_cost_usd": "1.23"}\n' > "$run_parser_string/summary.json"
+printf '{"total_cost_usd": true}\n' > "$run_parser_bool/summary.json"
+printf '{"total_cost_usd": 1.5}\n' > "$run_parser_sum_a/summary.json"
+printf '{"cost_usd": 2.25}\n' > "$run_parser_sum_b/summary.json"
+printf '{"total_cost_usd": 1000000000000000000000000000000}\n' > "$run_parser_huge/summary.json"
+printf 'agent=parser-string\nthread=%s\nrun_dir=%s\n' "$t4" "$run_parser_string" > "$pm/runs/run-h.env"
+printf 'agent=parser-bool\nthread=%s\nrun_dir=%s\n' "$t4" "$run_parser_bool" > "$pm/runs/run-i.env"
+printf 'agent=parser-sum\nthread=%s\nrun_dir=%s\n' "$t4" "$run_parser_sum_a" > "$pm/runs/run-j.env"
+printf 'agent=parser-sum\nthread=%s\nrun_dir=%s\n' "$t4" "$run_parser_sum_b" > "$pm/runs/run-k.env"
+printf 'agent=parser-huge\nthread=%s\nrun_dir=%s\n' "$t4" "$run_parser_huge" > "$pm/runs/run-l.env"
 
 # Stub fork-sandbox: only the one call the script is allowed to make.
 stub_bin="$work/stub"; mkdir -p -- "$stub_bin"
@@ -240,7 +270,7 @@ contains "missing mail root names the path it wanted" "$OUT" "$work/no-such-root
 printf '\n== --list: one line per thread ==\n'
 OUT="$(PATH="$STUB_PATH" "$status" --list --mail-root "$root" 2>&1)"; RC=$?
 check "--list exits 0" "0" "$RC"
-check "--list prints one line per thread" "2" "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')"
+check "--list prints one line per thread" "3" "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')"
 contains "--list shows t1's short id" "$OUT" "1111111"
 contains "--list shows t2's root Subject" "$OUT" "Unrelated thread"
 contains "--list shows t1's root Subject" "$OUT" "[PATCH v1 0/2] Improve the thing"
@@ -315,44 +345,87 @@ contains "hops still reported from the messages" "$OUT" "hops: lowest 8, newest 
 printf '\n== cost per agent: the router run ledger ==\n'
 OUT="$(PATH="$STUB_PATH" "$status" "$t1" --mail-root "$root" 2>&1)"; RC=$?
 check "cost screen exits 0" "0" "$RC"
-contains "cost prefers a completed run's total cost" "$OUT" "review-one  3 runs  \$4.750000 (1 no summary, 1 no cost)"
+contains "cost prefers a completed run's total cost" "$OUT" "review-one  3 runs  \$4.750000 (1 no summary, 1 unreadable)"
 contains "cost sums a completed run for the second agent" "$OUT" "review-two  2 runs  \$2.500000 (1 no cost)"
-contains "missing summary is counted in the run total" "$OUT" 'runs: 6 (1 no summary, 3 no cost)'
+contains "missing summary is counted in the run total" "$OUT" 'runs: 6 (1 no summary, 2 no cost, 1 unreadable)'
 not_contains "a different thread run is not counted" "$OUT" 'other-agent'
 contains "null cost is counted and annotated" "$OUT" "review-two  2 runs  \$2.500000 (1 no cost)"
 contains "null cost does not add zero to an agent's sum" "$OUT" "review-two  2 runs  \$2.500000 (1 no cost)"
 contains "only-null-cost agent is annotated" "$OUT" "review-null  1 run  \$0.000000 (1 no cost)"
-contains "missing summary and malformed cost co-occur per agent" "$OUT" "review-one  3 runs  \$4.750000 (1 no summary, 1 no cost)"
-contains "all runs including null and malformed costs are counted" "$OUT" 'runs: 6 (1 no summary, 3 no cost)'
-contains "missing summary and no cost co-occur in the total" "$OUT" '(1 no summary, 3 no cost)'
-contains "garbage summary is annotated as no cost" "$OUT" "review-one  3 runs  \$4.750000 (1 no summary, 1 no cost)"
+contains "missing summary and unreadable cost co-occur per agent" "$OUT" "review-one  3 runs  \$4.750000 (1 no summary, 1 unreadable)"
+contains "all runs including null and unparseable costs are counted" "$OUT" 'runs: 6 (1 no summary, 2 no cost, 1 unreadable)'
+contains "missing summary and no cost co-occur in the total" "$OUT" '(1 no summary, 2 no cost, 1 unreadable)'
+contains "garbage summary is annotated as unreadable, not no cost" "$OUT" "review-one  3 runs  \$4.750000 (1 no summary, 1 unreadable)"
 
-printf '\n== cost parser unavailable ==\n'
-no_jq_bin="$work/no-jq-bin"; mkdir -p -- "$no_jq_bin"
+printf '\n== cost per agent: parser semantics (string, bool, sum) ==\n'
+OUT="$(PATH="$STUB_PATH" "$status" "$t4" --mail-root "$root" 2>&1)"; RC=$?
+check "parser semantics screen exits 0" "0" "$RC"
+contains "a JSON string cost is not summed" "$OUT" "parser-string  1 run  \$0.000000 (1 no cost)"
+contains "a JSON true cost is not summed (the isinstance(bool, int) trap)" "$OUT" "parser-bool  1 run  \$0.000000 (1 no cost)"
+contains "two real-number runs by one agent sum correctly" "$OUT" "parser-sum  2 runs  \$3.750000"
+contains "a huge magnitude is a real cost and is summed, not filtered by size" "$OUT" "parser-huge  1 run  \$1000000000000000019884624838656.000000"
+contains "totals count only the string and bool runs as no cost" "$OUT" 'runs: 5 (2 no cost)'
+
+printf '\n== cost parser unavailable: the inventory must survive ==\n'
+not_contains "unreadable never appears when python3 is available" "$OUT" 'unreadable)'
+
+no_python_bin="$work/no-python-bin"; mkdir -p -- "$no_python_bin"
 for command in bash awk date head sed sort; do
-    ln -s "$(command -v "$command")" "$no_jq_bin/$command"
+    ln -s "$(command -v "$command")" "$no_python_bin/$command"
 done
-ln -s "$stub_bin/fork-sandbox" "$no_jq_bin/fork-sandbox"
-OUT="$(PATH="$no_jq_bin" "$status" "$t1" --mail-root "$root" 2>&1)"; RC=$?
-check "missing jq does not fail the screen" "0" "$RC"
-contains "missing jq is reported explicitly" "$OUT" "cost data unavailable: jq is required to parse summary.json"
-not_contains "missing jq is not reported as no-cost runs" "$OUT" 'runs: 6 (1 no summary, 3 no cost)'
+ln -s "$stub_bin/fork-sandbox" "$no_python_bin/fork-sandbox"
+OUT="$(PATH="$no_python_bin" "$status" "$t1" --mail-root "$root" 2>&1)"; RC=$?
+check "missing python3 does not fail the screen" "0" "$RC"
+contains "missing python3 is reported explicitly, naming python3" "$OUT" "python3"
+contains "missing python3 explains runs as unreadable" "$OUT" "unreadable"
+contains "missing python3 still prints the run inventory" "$OUT" 'runs: 6 (1 no summary, 5 unreadable)'
+not_contains "missing python3 is not reported as no-cost runs" "$OUT" 'runs: 6 (1 no summary, 3 no cost)'
+not_contains "unreadable never collapses into no cost" "$OUT" 'no cost'
+contains "missing python3 still prints per-agent rows" "$OUT" "review-one  3 runs  \$0.000000 (1 no summary, 2 unreadable)"
+contains "a run with a summary.json is unreadable, not no-cost, without python3" "$OUT" "review-two  2 runs  \$0.000000 (2 unreadable)"
+contains "an absent summary.json is still no summary, not unreadable, without python3" "$OUT" "review-one  3 runs  \$0.000000 (1 no summary, 2 unreadable)"
+contains "a lone unreadable run is annotated too" "$OUT" "review-null  1 run  \$0.000000 (1 unreadable)"
 
-# jq is only needed for summaries belonging to the requested thread.  An
-# otherwise populated ledger must still report observable no-run and
+printf '\n== cost per agent: python3 present but failing must not read as no cost ==\n'
+bad_python_bin="$work/bad-python-bin"; mkdir -p -- "$bad_python_bin"
+for command in bash awk date head sed sort; do
+    ln -s "$(command -v "$command")" "$bad_python_bin/$command"
+done
+ln -s "$stub_bin/fork-sandbox" "$bad_python_bin/fork-sandbox"
+cat > "$bad_python_bin/python3" <<'STUB'
+#!/usr/bin/env bash
+# On PATH, but writes nothing and fails: the shape of a stale
+# pyenv/conda shim, an exec failure, or an OOM kill.
+exit 127
+STUB
+chmod +x -- "$bad_python_bin/python3"
+OUT="$(PATH="$bad_python_bin" "$status" "$t1" --mail-root "$root" 2>&1)"; RC=$?
+check "python3 present but failing does not fail the screen" "0" "$RC"
+contains "a failing python3 explains runs as unreadable" "$OUT" "unreadable"
+contains "a failing python3 reports the generic parse-failure message" "$OUT" '(some summary.json files could not be parsed and are counted as unreadable)'
+not_contains "a failing python3 is not reported as python3 missing" "$OUT" "python3 not found"
+contains "a failing python3 still prints the run inventory" "$OUT" 'runs: 6 (1 no summary, 5 unreadable)'
+not_contains "a failing python3 never launders a costed run into no cost" "$OUT" 'no cost'
+contains "a costed run is unreadable, not a bare zero with no annotation" "$OUT" "review-one  3 runs  \$0.000000 (1 no summary, 2 unreadable)"
+contains "a second agent's costed run is unreadable too, not dropped" "$OUT" "review-two  2 runs  \$0.000000 (2 unreadable)"
+contains "a lone run is unreadable, not silently free" "$OUT" "review-null  1 run  \$0.000000 (1 unreadable)"
+
+# python3 is only needed for summaries belonging to the requested thread.
+# An otherwise populated ledger must still report observable no-run and
 # no-summary states when that parser is absent.
 rm -- "$pm/runs/run-d.env"
-OUT="$(PATH="$no_jq_bin" "$status" "$t2" --mail-root "$root" 2>&1)"; RC=$?
-check "missing jq with only other-thread runs does not fail" "0" "$RC"
+OUT="$(PATH="$no_python_bin" "$status" "$t2" --mail-root "$root" 2>&1)"; RC=$?
+check "missing python3 with only other-thread runs does not fail" "0" "$RC"
 contains "other-thread runs still report no runs" "$OUT" '(no runs recorded)'
-not_contains "other-thread runs do not require jq" "$OUT" 'cost data unavailable: jq is required to parse summary.json'
+not_contains "an empty ledger does not mention python3" "$OUT" 'python3'
 
 mkdir -p -- "$root2/.postmaster/runs"
 printf 'agent=review-pending\nthread=%s\nrun_dir=%s\n' "$t3" "$work/no-summary" > "$root2/.postmaster/runs/run-pending.env"
-OUT="$(PATH="$no_jq_bin" "$status" "$t3" --mail-root "$root2" 2>&1)"; RC=$?
-check "missing jq with missing summary does not fail" "0" "$RC"
-contains "missing summaries remain countable without jq" "$OUT" 'runs: 1 (1 no summary)'
-not_contains "missing summary does not require jq" "$OUT" 'cost data unavailable: jq is required to parse summary.json'
+OUT="$(PATH="$no_python_bin" "$status" "$t3" --mail-root "$root2" 2>&1)"; RC=$?
+check "missing python3 with missing summary does not fail" "0" "$RC"
+contains "missing summaries remain countable without python3" "$OUT" 'runs: 1 (1 no summary)'
+not_contains "a run classified purely as no summary does not mention python3" "$OUT" 'python3'
+not_contains "an absent summary.json is never counted as unreadable" "$OUT" 'unreadable)'
 
 printf '\n== prefix resolution ==\n'
 OUT="$(PATH="$STUB_PATH" "$status" "${t1:0:12}" --mail-root "$root" 2>&1)"; RC=$?
