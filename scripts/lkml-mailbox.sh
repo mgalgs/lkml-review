@@ -25,8 +25,8 @@
 #
 # --checkout records the posted version and its local branch in
 # <series>/versions.jsonl. The branch is resolved under refs/heads/ (like
-# lkml-round.sh resolves the ledger), and its name is limited to a compact
-# JSON-safe charset rather than adding a JSON dependency or escaping layer.
+# lkml-round.sh resolves the ledger), and JSON encoding preserves any branch
+# name Git permits.
 # One of --checkout and --no-checkout is mandatory: the former makes a later
 # round's checkout cross-check possible; the latter explicitly acknowledges
 # that lkml-round.sh will refuse this deliberately branchless series.
@@ -621,10 +621,6 @@ cmd_init() {
         done
     fi
     if [[ -n "$checkout" ]]; then
-        if [[ ! "$checkout" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
-            echo "Error: init: --checkout '$checkout' must match ^[A-Za-z0-9][A-Za-z0-9._/-]*$ for JSON-safe ledger storage." >&2
-            return 1
-        fi
         if ! git rev-parse --verify --quiet "refs/heads/$checkout^{commit}" >/dev/null; then
             echo "Error: init: --checkout '$checkout' is not a local branch in $(pwd)." >&2
             echo "The ledger records branch names, which lkml-round.sh resolves under" >&2
@@ -632,6 +628,10 @@ cmd_init() {
             echo "  git branch $checkout <commit>" >&2
             return 1
         fi
+        command -v jq >/dev/null 2>&1 || {
+            echo "Error: init: jq not found on PATH; it is needed to encode the checkout branch in versions.jsonl." >&2
+            return 1
+        }
     fi
 
     local dir; dir="$(lkml_series_dir "$series")"
@@ -652,18 +652,13 @@ cmd_init() {
     fi
 
     if [[ -n "$checkout" && -f "$dir/versions.jsonl" ]]; then
-        local ledger_line ledger_version ledger_branch
-        local ledger_re='^\{"version":([0-9]+),"branch":"([A-Za-z0-9._/-]+)"\}$'
-        while IFS= read -r ledger_line; do
-            if [[ "$ledger_line" =~ $ledger_re ]]; then
-                ledger_version="${BASH_REMATCH[1]}"
-                ledger_branch="${BASH_REMATCH[2]}"
-                if [[ "$ledger_version" == "$version" && "$ledger_branch" != "$checkout" ]]; then
-                    echo "Error: init: version $version is already recorded for branch '$ledger_branch', not '$checkout'." >&2
-                    return 1
-                fi
+        local ledger_version ledger_branch
+        while IFS=$'\t' read -r ledger_version ledger_branch; do
+            if [[ "$ledger_version" == "$version" && "$ledger_branch" != "$checkout" ]]; then
+                echo "Error: init: version $version is already recorded for branch '$ledger_branch', not '$checkout'." >&2
+                return 1
             fi
-        done < "$dir/versions.jsonl"
+        done < <(jq -r 'select((.version|type)=="number" and (.branch|type)=="string") | [.version,.branch] | @tsv' "$dir/versions.jsonl")
     fi
 
     local -a patch_files=()
@@ -727,11 +722,12 @@ cmd_init() {
     if [[ -n "$checkout" ]]; then
         local recorded=0
         if [[ -f "$dir/versions.jsonl" ]]; then
-            while IFS= read -r ledger_line; do
-                [[ "$ledger_line" == "{\"version\":$version,\"branch\":\"$checkout\"}" ]] && recorded=1
-            done < "$dir/versions.jsonl"
+            while IFS=$'\t' read -r ledger_version ledger_branch; do
+                [[ "$ledger_version" == "$version" && "$ledger_branch" == "$checkout" ]] && recorded=1
+            done < <(jq -r 'select((.version|type)=="number" and (.branch|type)=="string") | [.version,.branch] | @tsv' "$dir/versions.jsonl")
         fi
-        (( recorded )) || printf '{"version":%s,"branch":"%s"}\n' "$version" "$checkout" >> "$dir/versions.jsonl"
+        (( recorded )) || jq -nc --argjson version "$version" --arg branch "$checkout" \
+            '{version:$version, branch:$branch}' >> "$dir/versions.jsonl"
     fi
     printf '%s\n' "$cover_id"
 }

@@ -92,6 +92,18 @@ check "checkout writes one compact v1 ledger entry" '{"version":1,"branch":"lkml
 out="$(cd "$ledger_repo" && "$mailbox" init ledger-auto --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author --checkout lkml/widget-frob 2>/dev/null)"
 check "auto-computed v2 is recorded" '{"version":2,"branch":"lkml/widget-frob"}' "$(tail -n1 "$LKML_MAILBOX_ROOT/ledger-auto/versions.jsonl")"
 
+# Branch names are Git refnames, not a hand-written JSON-safe subset.  In
+# particular, quotes need JSON escaping and non-ASCII names must round-trip.
+for branch in _scratch user@example/foo plus+branch 'topic/café' 'quote"branch'; do
+    git -C "$ledger_repo" branch -- "$branch"
+    series="ledger-special-${branch//[^a-zA-Z0-9]/x}"
+    out="$(cd "$ledger_repo" && "$mailbox" init "$series" --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author --checkout "$branch" 2>&1)"
+    rc=$?
+    if (( rc == 0 )); then ok "accepts Git-valid checkout '$branch'"; else no "accepts Git-valid checkout '$branch'" "$out"; fi
+    check "checkout '$branch' round-trips through JSON" "$branch" \
+        "$(jq -r '.branch' "$LKML_MAILBOX_ROOT/$series/versions.jsonl" 2>/dev/null)"
+done
+
 for bad in missing ledger-tag 'bad"branch'; do
     series="ledger-bad-${bad//[^a-zA-Z0-9]/x}"
     out="$(cd "$ledger_repo" && "$mailbox" init "$series" --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author --checkout "$bad" 2>&1)"
