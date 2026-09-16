@@ -213,6 +213,16 @@ printf '{"total_cost_usd": "1.23"}\n' > "$run_parser_string/summary.json"
 printf '{"total_cost_usd": true}\n' > "$run_parser_bool/summary.json"
 printf '{"total_cost_usd": 1.5}\n' > "$run_parser_sum_a/summary.json"
 printf '{"cost_usd": 2.25}\n' > "$run_parser_sum_b/summary.json"
+# The expected digits pinned at the assertion below are not 10^30 --
+# they are its float64 round-trip. json.load() gives this literal as a
+# Python int, but format(value, "f") converts it to float first, the
+# same way format(2**60+1, "f") prints ...846976 where str() of the
+# same int gives the exact ...846977. Do not "correct" those digits to
+# the exact value; the display path cannot produce it. The rounding is
+# on that display path, inside the parser, so it survives unchanged
+# even if per-agent summation later moves into the single Python
+# invocation -- only a deliberate switch away from float formatting
+# would change it, and nobody has proposed that.
 printf '{"total_cost_usd": 1000000000000000000000000000000}\n' > "$run_parser_huge/summary.json"
 # A magnitude beyond a double's range (~1.8e308): math.isfinite() and
 # format(value, "f") both raise OverflowError converting it to float, so
@@ -479,6 +489,8 @@ check "parser semantics screen exits 0" "0" "$RC"
 contains "a JSON string cost is not summed" "$OUT" "parser-string  1 run  \$0.000000 (1 no cost)"
 contains "a JSON true cost is not summed (the isinstance(bool, int) trap)" "$OUT" "parser-bool  1 run  \$0.000000 (1 no cost)"
 contains "two real-number runs by one agent sum correctly" "$OUT" "parser-sum  2 runs  \$3.750000"
+# These digits are the float64 round-trip of the 10^30 fixture above,
+# not 10^30 itself -- see the comment there before touching them.
 contains "a huge magnitude is a real cost and is summed, not filtered by size" "$OUT" "parser-huge  1 run  \$1000000000000000019884624838656.000000"
 contains "a magnitude beyond float range is invalid, not silently no cost" "$OUT" "parser-overflow  1 run  \$0.000000 (1 invalid)"
 contains "a real cost below 1e-4 is summed, not lost to exponent notation" "$OUT" "parser-tiny  1 run  \$0.000012"
