@@ -82,5 +82,5 @@ Tag your reply, where applicable:
 
 A fix goes out as a reply to this thread, with the revised patch
 inline in the body as a fenced code block headed by its filename.
-Reviewer sandboxes cannot fetch branches and a reply cannot carry
-attachments, so the inline copy is the review copy.
+Reviewer sandboxes cannot fetch branches, and a wake's reply cannot
+carry attachments, so the inline copy is the review copy.

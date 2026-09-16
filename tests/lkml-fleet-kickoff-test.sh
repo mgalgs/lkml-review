@@ -358,5 +358,142 @@ rc_unterminated=$?
 if (( rc_unterminated != 0 )); then ok "unterminated comment exits non-zero"; else no "unterminated comment exits non-zero" "exit 0: $out_unterminated"; fi
 contains "unterminated comment names the problem" "$out_unterminated" "produced an empty body"
 
+printf '\n== focused-review template: a follow-up round that fills through the harness ==\n'
+focused_template="$repo_dir/fleet/kickoffs/focused-review.md"
+if [[ -f "$focused_template" ]]; then
+    ok "focused-review template exists in fleet/kickoffs"
+else
+    no "focused-review template exists in fleet/kickoffs"
+fi
+
+# The operator's focus is filled into the copy before the harness runs;
+# the harness must carry it into the body intact and leave no
+# placeholder behind. Asserting the literal ${FOCUS} is absent is the
+# point: a missed substitution ships silently.
+focused_copy="$template_dir/focused-filled.md"
+sed 's/\${FOCUS}/concentrate on the error handling in the mail path/' \
+    "$focused_template" > "$focused_copy"
+out_focus="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' \
+    --summary 'answers round one' \
+    --template "$focused_copy" 2>&1)"
+rc_focus=$?
+check "focused-review template composes through the harness" "0" "$rc_focus"
+focus_body_file="$(printf '%s' "$out_focus" | grep -o -- '--body [^ ]*' | awk '{print $2}')"
+focus_body_text="$([[ -f "$focus_body_file" ]] && cat "$focus_body_file")"
+contains "the operator's focus reaches the body" "$focus_body_text" "concentrate on the error handling in the mail path"
+case "$focus_body_text" in
+    *'${FOCUS}'*) no "focused body has no leftover FOCUS placeholder" "$focus_body_text" ;;
+    *) ok "focused body has no leftover FOCUS placeholder" ;;
+esac
+case "$focus_body_text" in
+    *'${'*) no "focused body has no leftover unfilled placeholders" "$focus_body_text" ;;
+    *) ok "focused body has no leftover unfilled placeholders" ;;
+esac
+check "focused body leaves no unsubstituted HANDOFF placeholder" "0" \
+    "$(grep -c 'HANDOFF' "$focus_body_file")"
+check "focused body opens on the focus line, not a blank" \
+    "This round is for: concentrate on the error handling in the mail path" \
+    "$(head -n1 "$focus_body_file" 2>/dev/null)"
+
+out_focus_ci="$(PATH="$stub_bin:$PATH" STUB_EXPAND_LOG="$expand_log" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --ci-first '@ci' \
+    --template "$focused_copy" 2>&1)"
+rc_focus_ci=$?
+check "--ci-first composes the focused-review template" "0" "$rc_focus_ci"
+focus_ci_body_file="$(printf '%s' "$out_focus_ci" | grep -o -- '--body [^ ]*' | awk '{print $2}')"
+check "--ci-first focused body opens on the wave-one heading, not a blank" \
+    "## Wave one: test results first" "$(head -n1 "$focus_ci_body_file" 2>/dev/null)"
+contains "--ci-first focused body keeps the focus below the handoff" \
+    "$([[ -f "$focus_ci_body_file" ]] && cat "$focus_ci_body_file")" \
+    "This round is for: concentrate on the error handling in the mail path"
+
+printf '\n== --focus fills ${FOCUS}; omitting it for a focused template is refused ==\n'
+out_focus_flag="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' \
+    --summary 'answers round one' \
+    --focus 'concentrate on the error handling in the mail path' \
+    --template "$focused_template" 2>&1)"
+rc_focus_flag=$?
+check "--focus composes the focused-review template" "0" "$rc_focus_flag"
+focus_flag_body_file="$(printf '%s' "$out_focus_flag" | grep -o -- '--body [^ ]*' | awk '{print $2}')"
+focus_flag_body_text="$([[ -f "$focus_flag_body_file" ]] && cat "$focus_flag_body_file")"
+contains "--focus reaches the body" "$focus_flag_body_text" "concentrate on the error handling in the mail path"
+case "$focus_flag_body_text" in
+    *'${FOCUS}'*) no "--focus leaves no FOCUS placeholder" "$focus_flag_body_text" ;;
+    *) ok "--focus leaves no FOCUS placeholder" ;;
+esac
+contains "print-only focused compose warns the sent command starts a new thread" "$out_focus_flag" "starts a new thread"
+contains "the focused print-only warning names the mail reply bridge" "$out_focus_flag" "mail reply"
+
+# A ${FOCUS} template is a reply template, and --send would run
+# `mail send` on it, starting a new thread and throwing away the
+# earlier round the focus points at: refuse, and run nothing.
+rm -f -- "$capture_dir/argv"
+out_focus_send="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' \
+    --focus 'concentrate on the error handling in the mail path' \
+    --template "$focused_template" --send 2>&1)"
+rc_focus_send=$?
+if (( rc_focus_send != 0 )); then ok "a focused template with --send refuses"; else no "a focused template with --send refuses" "exit 0: $out_focus_send"; fi
+contains "the focused --send refusal says send starts a new thread" "$out_focus_send" "starts a new thread"
+contains "the focused --send refusal names the mail reply bridge" "$out_focus_send" "mail reply"
+if [[ -f "$capture_dir/argv" ]]; then
+    no "a refused focused --send ran no fork-sandbox command" "$(cat "$capture_dir/argv")"
+else
+    ok "a refused focused --send ran no fork-sandbox command"
+fi
+
+out_focus_missing="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' \
+    --template "$focused_template" 2>&1)"
+rc_focus_missing=$?
+if (( rc_focus_missing != 0 )); then ok "a focused template without --focus refuses"; else no "a focused template without --focus refuses" "exit 0: $out_focus_missing"; fi
+contains "the missing-focus refusal names --focus" "$out_focus_missing" "--focus"
+
+out_nofocus_plain="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --summary 'does a thing' \
+    --template "$repo_dir/fleet/kickoffs/series-review.md" 2>&1)"
+rc_nofocus_plain=$?
+check "a template without the FOCUS placeholder is unaffected by omitting --focus" "0" "$rc_nofocus_plain"
+contains "the unfocused plain kickoff still composes normally" "$out_nofocus_plain" "fork-sandbox mail send"
+
+printf '\n== --focus for a template without ${FOCUS} warns; the text does not reach the mail ==\n'
+# The mirror of the missing-focus refusal above: the operator asked for a
+# focused round, but this template has nowhere to put it. Composing must
+# still succeed -- the mail is a valid ordinary kickoff -- and the warning
+# is the thing that keeps the panel from silently waking to a full review
+# while the command line says the round was focused.
+out_focus_noph="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' \
+    --focus 'ONLY the mail error paths' \
+    --template "$repo_dir/fleet/kickoffs/series-review.md" 2>&1)"
+rc_focus_noph=$?
+check "--focus on an unfocused template still composes" "0" "$rc_focus_noph"
+contains "--focus on an unfocused template warns about the missing placeholder" "$out_focus_noph" 'has no ${FOCUS} placeholder'
+contains "the unfocused --focus warning names the focus text that will not land" "$out_focus_noph" "ONLY the mail error paths"
+contains "the unfocused --focus compose still prints the mail send command" "$out_focus_noph" "fork-sandbox mail send"
+focus_noph_body_file="$(printf '%s' "$out_focus_noph" | grep -o -- '--body [^ ]*' | awk '{print $2}')"
+case "$(cat "$focus_noph_body_file" 2>/dev/null)" in
+    *'ONLY the mail error paths'*) no "an unfocused template drops the focus text out of the body" "focus text found in body" ;;
+    *) ok "an unfocused template drops the focus text out of the body" ;;
+esac
+
+printf '\n== kickoff templates keep the no-attachment guard on the author reply ==\n'
+# A wake's harvested reply carries no attachment path (the postmaster
+# builds `mail reply` without --attach), so the "Next version" sections
+# must keep stating that the inline copy is the review copy -- the
+# silent false-green the inline convention exists to prevent. A host
+# `mail reply` can attach, but that is a different actor from the wake
+# these sections govern.
+series_tail="$(sed -n '/^## Next version/,$p' "$repo_dir/fleet/kickoffs/series-review.md")"
+contains "series-review Next version keeps the wake no-attachment guard" "$series_tail" "a wake's reply cannot carry"
+contains "series-review Next version keeps the inline-copy convention" "$series_tail" "inline copy is the review copy"
+single_tail="$(sed -n '/^## Next version/,$p' "$repo_dir/fleet/kickoffs/single-patch.md")"
+contains "single-patch Next version keeps the wake no-attachment guard" "$single_tail" "a wake's reply cannot"
+contains "single-patch Next version keeps the inline-copy convention" "$single_tail" "inline copy is the review copy"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))

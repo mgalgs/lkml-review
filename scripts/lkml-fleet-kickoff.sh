@@ -4,8 +4,8 @@
 #
 # Usage: lkml-fleet-kickoff.sh <repo> <range> --from <addr> --to <addr>
 #            [--cc <addr>] --subject <subject> [--summary <text>]
-#            [--template <file>] [--hops <n>] [--ci-first <ci-addr>]
-#            [--attach] [--send]
+#            [--focus <text>] [--template <file>] [--hops <n>]
+#            [--ci-first <ci-addr>] [--attach] [--send]
 #
 # <repo>       path to a local git repository.
 # <range>      a revision range passed straight to `git format-patch`
@@ -17,6 +17,23 @@
 #              --ci-first, whose kickoff must address CI alone.
 # --subject    the mail subject (required).
 # --summary    one paragraph/sentence filled into ${SUMMARY}; default empty.
+# --focus      what this round is concentrating on, filled into
+#              ${FOCUS}; default empty. Refused when the template
+#              contains ${FOCUS} and --focus was not given: a focused
+#              round with nothing to concentrate on wakes the whole
+#              panel for nothing, the same reason an empty range is
+#              refused below. Warned when --focus was given and the
+#              template has no ${FOCUS}: the focus text would never
+#              reach the mail, and the panel would wake to an ordinary
+#              round while the command line says this one is focused.
+#              A template that contains ${FOCUS} is a
+#              reply template: a focused round lands inside an
+#              existing thread, and this harness composes
+#              `fork-sandbox mail send`, which starts a new thread and
+#              throws the earlier round away. --send is refused for
+#              such a template; print-only mode warns and leaves the
+#              body file for a manual `fork-sandbox mail reply
+#              --reply-to <message-id>`.
 # --template   kickoff template to fill; defaults to this repo's own
 #              fleet/kickoffs/series-review.md.
 # --hops       non-negative mail reply-hop budget. Omit it to retain the
@@ -61,6 +78,7 @@ to=""
 cc=""
 subject=""
 summary=""
+focus=""
 template="$default_template"
 attach=0
 send=0
@@ -69,7 +87,7 @@ ci_first=""
 
 while (( $# > 0 )); do
     case "$1" in
-        --from|--to|--cc|--subject|--summary|--template|--hops|--ci-first)
+        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first)
             (( $# >= 2 )) || { echo "Error: $1 requires a value. See --help." >&2; exit 1; }
             ;;
     esac
@@ -79,6 +97,7 @@ while (( $# > 0 )); do
         --cc) cc="$2"; shift 2 ;;
         --subject) subject="$2"; shift 2 ;;
         --summary) summary="$2"; shift 2 ;;
+        --focus) focus="$2"; shift 2 ;;
         --template) template="$2"; shift 2 ;;
         --hops) hops="$2"; shift 2 ;;
         --ci-first) ci_first="$2"; shift 2 ;;
@@ -246,11 +265,45 @@ if [[ -n "$ci_first" && "$body" != *'${HANDOFF}'* ]]; then
     echo "Error: --ci-first requires template '$template' to contain \${HANDOFF} in its body so CI receives the wave-one routing instructions." >&2
     exit 1
 fi
+# shellcheck disable=SC2016  # ${FOCUS} is the literal placeholder text
+# being searched for in the stripped body, not a variable to expand.
+# Keyed on the placeholder, not a filename, so a site's own focused
+# template gets the same refusal.
+if [[ -z "$focus" && "$body" == *'${FOCUS}'* ]]; then
+    echo "Error: template '$template' contains \${FOCUS} but --focus was not given; a focused round with nothing to concentrate on wakes the whole panel for nothing. Pass --focus <text>." >&2
+    exit 1
+fi
+# shellcheck disable=SC2016  # ${FOCUS} is the literal placeholder text
+# being searched for in the stripped body, not a variable to expand.
+# Same key as the refusal above: a ${FOCUS} template is a reply
+# template, and this harness builds `fork-sandbox mail send`, which
+# starts a new thread. --send would throw away the earlier round the
+# focus points at, so it is refused; print-only mode only warns,
+# because its leftover body file is the input to the manual
+# `mail reply` bridge.
+if [[ "$body" == *'${FOCUS}'* ]]; then
+    if (( send )); then
+        echo "Error: template '$template' contains \${FOCUS}: a focused round is a reply inside the thread it concentrates, but --send would run \`fork-sandbox mail send\`, which starts a new thread and throws away the earlier round. Compose without --send and send the leftover body file with \`fork-sandbox mail reply --reply-to <message-id>\`, or use a non-focused template for a new thread." >&2
+        exit 1
+    fi
+    echo "Warning: template '$template' contains \${FOCUS}: a focused round is a reply inside an existing thread, and the command below is \`fork-sandbox mail send\`, which starts a new thread and throws away the earlier round. To run this round, send the body file with \`fork-sandbox mail reply --reply-to <message-id>\` (add --attach files if the seats cannot check the branch out)." >&2
+fi
+# shellcheck disable=SC2016  # ${FOCUS} is the literal placeholder text
+# being searched for in the stripped body, not a variable to expand.
+# The mirror of the refusal above, from the operator's side: a --focus
+# for a template with no ${FOCUS} would be dropped by the fill below
+# and the panel would wake to an ordinary round while the command line
+# says this one is focused. A warning, not a refusal: the mail still
+# composes, the same way an unfilled --summary does.
+if [[ -n "$focus" && "$body" != *'${FOCUS}'* ]]; then
+    echo "Warning: template '$template' has no \${FOCUS} placeholder, so --focus '$focus' does not reach the mail and the panel will wake to an ordinary round. Use a focused template, or fold the focus into --summary." >&2
+fi
 fill body FROM "$from"
 fill body TO "$to"
 fill body CC "$cc"
 fill body SUBJECT "$subject"
 fill body SUMMARY "$summary"
+fill body FOCUS "$focus"
 fill body BASE "$base"
 fill body BRANCH "$branch"
 fill body PATCH_COUNT "$patch_count"
