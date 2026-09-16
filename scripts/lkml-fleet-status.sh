@@ -46,6 +46,13 @@
 #              thing on the screen: a seat that was woken and never spoke
 #              is indistinguishable from one that agreed, and those are
 #              opposite states.
+#   hop and spawns  the lowest and newest X-Hops values, plus the router's
+#              resettable spawn budget and never-reset sequence. A router
+#              stop is printed loudly with its reason; absent router state
+#              is distinguished from an exhausted budget.
+#   cost per agent  completed router runs, grouped by agent. Runs without a
+#              summary stay visible as "no summary" rather than becoming a
+#              misleading zero-cost entry.
 #   unanswered see the design decision below.
 #
 # Design decision -- tags: Reviewed-by, Acked-by, Tested-by,
@@ -229,6 +236,138 @@ load_thread() {
     (( ${#MSG_FILE[@]} > 0 )) || die "thread '$t' has no messages."
 }
 
+# Counts records in a router state file.  The caller checks readability so
+# zero here means a readable, empty file rather than an unreadable one.
+router_line_count() {
+    local file="$1" line count=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        count=$(( count + 1 ))
+    done < "$file"
+    printf '%s' "$count"
+}
+
+# Router state is intentionally read as files instead of through a
+# postmaster command: this reporter remains useful where that command is
+# absent.  A partial or unreadable state is reported as unknown, never as a
+# plausible-looking zero.
+print_hop_and_spawns() {
+    local i hop lowest="" newest="${MSG_HOPS[$(( n - 1 ))]}"
+    local pm spawn_file seq_file flag_file spawns seq reason
+
+    printf '\n== Hop and Spawns ==\n'
+    for (( i = 0; i < n; i++ )); do
+        hop="${MSG_HOPS[$i]}"
+        [[ "$hop" =~ ^[0-9]+$ ]] || continue
+        if [[ -z "$lowest" || "$hop" -lt "$lowest" ]]; then
+            lowest="$hop"
+        fi
+    done
+    if [[ -n "$lowest" && "$newest" =~ ^[0-9]+$ ]]; then
+        printf 'hops: lowest %s, newest %s\n' "$lowest" "$newest"
+    else
+        echo 'hops: unknown (missing or malformed X-Hops)'
+    fi
+
+    pm="$MAIL_ROOT/.postmaster"
+    if [[ ! -d "$pm" ]]; then
+        echo '(no router state for this thread -- not routed yet)'
+        return 0
+    fi
+
+    spawn_file="$pm/spawns/$RESOLVED"
+    seq_file="$pm/seq/$RESOLVED"
+    flag_file="$pm/needs-operator/$RESOLVED"
+    if [[ -e "$flag_file" ]]; then
+        if [[ -r "$flag_file" ]]; then
+            reason="$(< "$flag_file")"
+            [[ -n "$reason" ]] || reason='unknown reason'
+        else
+            reason='unknown reason (flag unreadable)'
+        fi
+        printf 'NEEDS OPERATOR: %s\n' "$reason"
+        echo 'This thread will not restart until someone mails into it.'
+    fi
+
+    if [[ ! -r "$spawn_file" || ! -r "$seq_file" ]]; then
+        echo '(router state unknown -- missing or unreadable budget files)'
+        return 0
+    fi
+    spawns="$(router_line_count "$spawn_file")"
+    seq="$(router_line_count "$seq_file")"
+    printf 'spawns (budget): %s\n' "$spawns"
+    printf 'seq (never reset): %s\n' "$seq"
+    printf 'seq - spawns = %s (zeroed by an operator mail)\n' "$(( seq - spawns ))"
+
+}
+
+# The router writes its run ledger as KEY=value files.  Read those values
+# directly rather than sourcing them: router state is data, not shell code.
+print_cost_per_agent() {
+    local pm="$MAIL_ROOT/.postmaster" env line key value agent thread run_dir
+    local cost prev total_runs=0 missing_summary=0 agent_missing run_word
+    declare -A RUN_COUNT=() MISSING_COUNT=() COST_BY_AGENT=()
+
+    printf '\n== Cost per agent ==\n'
+    if [[ ! -d "$pm/runs" ]]; then
+        echo '(no runs recorded)'
+        return 0
+    fi
+
+    for env in "$pm/runs"/*.env; do
+        [[ -r "$env" ]] || continue
+        agent=""; thread=""; run_dir=""
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            [[ "$line" == *=* ]] || continue
+            key="${line%%=*}"
+            value="${line#*=}"
+            case "$key" in
+                agent|AGENT) agent="$value" ;;
+                thread|THREAD|thread_id|THREAD_ID) thread="$value" ;;
+                run_dir|RUN_DIR) run_dir="$value" ;;
+            esac
+        done < "$env"
+        [[ "$thread" == "$RESOLVED" ]] || continue
+        [[ -n "$agent" ]] || agent='unknown agent'
+        total_runs=$(( total_runs + 1 ))
+        RUN_COUNT[$agent]=$(( ${RUN_COUNT[$agent]:-0} + 1 ))
+        if [[ -z "$run_dir" || ! -f "$run_dir/summary.json" ]]; then
+            missing_summary=$(( missing_summary + 1 ))
+            MISSING_COUNT[$agent]=$(( ${MISSING_COUNT[$agent]:-0} + 1 ))
+            continue
+        fi
+        # A routed continuation includes the prior context cost in
+        # total_cost_usd.  Older summaries have only cost_usd.
+        cost="$(sed -nE 's/.*"total_cost_usd"[[:space:]]*:[[:space:]]*([0-9]+(\.[0-9]+)?).*/\1/p' "$run_dir/summary.json" | head -n1)"
+        if [[ ! "$cost" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+            cost="$(sed -nE 's/.*"cost_usd"[[:space:]]*:[[:space:]]*([0-9]+(\.[0-9]+)?).*/\1/p' "$run_dir/summary.json" | head -n1)"
+        fi
+        [[ "$cost" =~ ^[0-9]+([.][0-9]+)?$ ]] || cost=0
+        prev="${COST_BY_AGENT[$agent]:-0}"
+        COST_BY_AGENT[$agent]="$(awk -v a="$prev" -v b="$cost" 'BEGIN { printf "%.6f", a + b }')"
+    done
+
+    if (( total_runs == 0 )); then
+        echo '(no runs recorded)'
+        return 0
+    fi
+    printf 'runs: %s' "$total_runs"
+    if (( missing_summary > 0 )); then
+        printf ' (%s no summary)\n' "$missing_summary"
+    else
+        printf '\n'
+    fi
+    for agent in $(printf '%s\n' "${!RUN_COUNT[@]}" | sort); do
+        run_word=runs
+        (( RUN_COUNT[$agent] == 1 )) && run_word=run
+        printf '%s  %s %s  $%s' "$agent" "${RUN_COUNT[$agent]}" "$run_word" "${COST_BY_AGENT[$agent]:-0.000000}"
+        agent_missing="${MISSING_COUNT[$agent]:-0}"
+        if (( agent_missing > 0 )); then
+            printf ' (%s no summary)' "$agent_missing"
+        fi
+        printf '\n'
+    done
+}
+
 # --- --list: one line per thread ------------------------------------------
 if (( list_mode )); then
     threads="$(list_threads)"
@@ -343,6 +482,9 @@ else
         fi
     done
 fi
+
+print_hop_and_spawns
+print_cost_per_agent
 
 printf '\n== Unanswered ==\n'
 found=0

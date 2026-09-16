@@ -16,7 +16,7 @@
 set -uo pipefail
 
 repo_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
-status="$repo_dir/scripts/lkml-fleet-status.sh"
+status="${LKML_FLEET_STATUS:-$repo_dir/scripts/lkml-fleet-status.sh}"
 
 pass=0; fail=0; tmpdirs=()
 cleanup() { local d; for d in "${tmpdirs[@]-}"; do [[ -n "$d" && -d "$d" ]] && rm -rf -- "$d"; done; }
@@ -151,6 +151,35 @@ write_msg "$root" '.stray' 001 d0010000-0000-4000-8000-000000000001 "$(D 0)" \
 write_msg "$root2" "$t3" 001 e0010000-0000-4000-8000-000000000001 "$(D 0)" \
     '@author' '@panel' '' 'Discussion: where to keep the state' 8 '' 'No patches here.'
 
+# .postmaster router state for the t1/t2 threads. t1: an operator
+# mail zeroed spawns/ from 5 down to 3 (seq/ is never reset). t2:
+# spawns/ zeroed to 0 and the thread flagged needs-operator. store2
+# (t3) deliberately has NO .postmaster at all: the normal case for a
+# thread nobody has routed yet.
+pm="$root/.postmaster"
+mkdir -p -- "$pm/spawns" "$pm/seq" "$pm/needs-operator" "$pm/runs"
+printf 'run-a1\nrun-a2\nrun-a3\n' > "$pm/spawns/$t1"
+printf 'run-a1\nrun-a2\nrun-a3\nrun-a4\nrun-a5\n' > "$pm/seq/$t1"
+: > "$pm/spawns/$t2"
+printf 'run-b1\n' > "$pm/seq/$t2"
+printf 'hops exhausted at c0010000-0000-4000-8000-000000000001\n' > "$pm/needs-operator/$t2"
+
+# Run ledger fixture: two completed t1 runs have different agents, while a
+# third t1 run is still in flight. A completed t2 run must not leak into
+# t1's cost report.
+run_one="$work/run-one"; mkdir -p -- "$run_one"
+run_two="$work/run-two"; mkdir -p -- "$run_two"
+run_three="$work/run-three"; mkdir -p -- "$run_three"
+run_other="$work/run-other"; mkdir -p -- "$run_other"
+# Continuation summaries include a total that accounts for earlier context.
+printf '{"cost_usd": 1.25, "total_cost_usd": 4.75}\n' > "$run_one/summary.json"
+printf '{"cost_usd": 2.50}\n' > "$run_two/summary.json"
+printf '{"cost_usd": 99.00}\n' > "$run_other/summary.json"
+printf 'agent=review-one\nthread=%s\nrun_dir=%s\n' "$t1" "$run_one" > "$pm/runs/run-a.env"
+printf 'agent=review-two\nthread=%s\nrun_dir=%s\n' "$t1" "$run_two" > "$pm/runs/run-b.env"
+printf 'agent=review-one\nthread=%s\nrun_dir=%s\n' "$t1" "$run_three" > "$pm/runs/run-c.env"
+printf 'agent=other-agent\nthread=%s\nrun_dir=%s\n' "$t2" "$run_other" > "$pm/runs/run-d.env"
+
 # Stub fork-sandbox: only the one call the script is allowed to make.
 stub_bin="$work/stub"; mkdir -p -- "$stub_bin"
 cat > "$stub_bin/fork-sandbox" <<'STUB'
@@ -237,11 +266,50 @@ not_contains "unanswered: Question answered by a different sender is not listed"
 not_contains "unanswered: Changes-requested answered by a different sender is not listed" "$OUT" "b004000"
 not_contains "unanswered: no convergence verdict is printed" "$OUT" "converged"
 
+printf '\n== hop and spawns: the router budget ==\n'
+contains "section is present" "$OUT" "== Hop and Spawns =="
+contains "hops: lowest and newest across the thread" "$OUT" "hops: lowest 1, newest 4"
+contains "spawns count labelled as the budget" "$OUT" "spawns (budget): 3"
+contains "seq count labelled as never reset" "$OUT" "seq (never reset): 5"
+contains "spawns/seq difference labelled" "$OUT" "seq - spawns = 2"
+contains "difference explained as the operator reset" "$OUT" "zeroed by an operator mail"
+not_contains "unflagged thread carries no needs-operator line" "$OUT" "NEEDS OPERATOR"
+
+OUT="$(PATH="$STUB_PATH" "$status" "$t2" --mail-root "$root" 2>&1)"; RC=$?
+check "flagged thread screen exits 0" "0" "$RC"
+contains "needs-operator flag is printed loudly" "$OUT" "NEEDS OPERATOR: hops exhausted at c0010000"
+contains "flagged thread's consequence is stated" "$OUT" "will not restart until someone mails into it"
+contains "operator-reset spawns count is 0" "$OUT" "spawns (budget): 0"
+contains "seq survives the operator reset" "$OUT" "seq (never reset): 1"
+contains "difference of 1 labelled too" "$OUT" "seq - spawns = 1"
+
+printf '\n== failed first wake: flag without budget files ==\n'
+rm -- "$pm/spawns/$t2" "$pm/seq/$t2"
+printf 'failed to launch first wake\n' > "$pm/needs-operator/$t2"
+OUT="$(PATH="$STUB_PATH" "$status" "$t2" --mail-root "$root" 2>&1)"; RC=$?
+check "failed-first-wake screen exits 0" "0" "$RC"
+contains "failed-first-wake reports the required warning" "$OUT" "NEEDS OPERATOR: failed to launch first wake"
+contains "failed-first-wake states the restart consequence" "$OUT" "will not restart until someone mails into it"
+contains "failed-first-wake still identifies missing budget state" "$OUT" "router state unknown -- missing or unreadable budget files"
+
 printf '\n== a thread that is not a patch series ==\n'
 OUT="$(PATH="$STUB_PATH" "$status" "$t3" --mail-root "$root2" 2>&1)"; RC=$?
 check "version-less thread screen exits 0" "0" "$RC"
 contains "version-less thread says so" "$OUT" "(no version in any Subject"
 not_contains "version-less thread is not given an invented v1" "$OUT" "v1  first seen"
+contains "no router state is stated plainly" "$OUT" "(no router state for this thread -- not routed yet)"
+not_contains "no budget zero that reads like exhausted" "$OUT" "spawns (budget): 0"
+not_contains "no seq zero that reads like exhausted" "$OUT" "seq (never reset): 0"
+not_contains "no flag on an unrouted thread" "$OUT" "NEEDS OPERATOR"
+contains "hops still reported from the messages" "$OUT" "hops: lowest 8, newest 8"
+
+printf '\n== cost per agent: the router run ledger ==\n'
+OUT="$(PATH="$STUB_PATH" "$status" "$t1" --mail-root "$root" 2>&1)"; RC=$?
+check "cost screen exits 0" "0" "$RC"
+contains "cost prefers a completed run's total cost" "$OUT" "review-one  2 runs  \$4.750000 (1 no summary)"
+contains "cost sums a completed run for the second agent" "$OUT" "review-two  1 run  \$2.500000"
+contains "missing summary is counted in the run total" "$OUT" 'runs: 3 (1 no summary)'
+not_contains "a different thread run is not counted" "$OUT" 'other-agent'
 
 printf '\n== prefix resolution ==\n'
 OUT="$(PATH="$STUB_PATH" "$status" "${t1:0:12}" --mail-root "$root" 2>&1)"; RC=$?
