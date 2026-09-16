@@ -219,6 +219,15 @@ printf '{"total_cost_usd": 1000000000000000000000000000000}\n' > "$run_parser_hu
 # it must classify as invalid rather than silently falling back to
 # "no cost" (see scripts/lkml-fleet-status.sh's OverflowError handling).
 printf '{"total_cost_usd": %s}\n' "$(printf '1%.0s' $(seq 1 400))" > "$run_parser_overflow/summary.json"
+# A real cost below 1e-4. repr() renders this as "1.2e-05", which the
+# plain-digit gate rejects, so a known, tiny, real cost would report as
+# unknown and the agent's total would be understated -- the inverse of
+# the doctrine the rest of the cost column is built on. format(value,
+# "f") is what keeps it fixed-point; this fixture is what stops a
+# future change from quietly going back to repr().
+run_parser_tiny="$work/run-parser-tiny"; mkdir -p -- "$run_parser_tiny"
+printf '{"total_cost_usd": 0.000012}\n' > "$run_parser_tiny/summary.json"
+printf 'agent=parser-tiny\nthread=%s\nrun_dir=%s\n' "$t4" "$run_parser_tiny" > "$pm/runs/run-tiny.env"
 printf 'agent=parser-string\nthread=%s\nrun_dir=%s\n' "$t4" "$run_parser_string" > "$pm/runs/run-h.env"
 printf 'agent=parser-bool\nthread=%s\nrun_dir=%s\n' "$t4" "$run_parser_bool" > "$pm/runs/run-i.env"
 printf 'agent=parser-sum\nthread=%s\nrun_dir=%s\n' "$t4" "$run_parser_sum_a" > "$pm/runs/run-j.env"
@@ -472,7 +481,8 @@ contains "a JSON true cost is not summed (the isinstance(bool, int) trap)" "$OUT
 contains "two real-number runs by one agent sum correctly" "$OUT" "parser-sum  2 runs  \$3.750000"
 contains "a huge magnitude is a real cost and is summed, not filtered by size" "$OUT" "parser-huge  1 run  \$1000000000000000019884624838656.000000"
 contains "a magnitude beyond float range is invalid, not silently no cost" "$OUT" "parser-overflow  1 run  \$0.000000 (1 invalid)"
-contains "totals count the string/bool runs as no cost and the overflow run as invalid" "$OUT" 'runs: 6 (2 no cost, 1 invalid)'
+contains "a real cost below 1e-4 is summed, not lost to exponent notation" "$OUT" "parser-tiny  1 run  \$0.000012"
+contains "totals count the string/bool runs as no cost and the overflow run as invalid" "$OUT" 'runs: 7 (2 no cost, 1 invalid)'
 
 printf '\n== cost parser unavailable: the inventory must survive ==\n'
 not_contains "unreadable never appears when python3 is available" "$OUT" 'unreadable)'
