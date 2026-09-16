@@ -93,11 +93,25 @@ usage() {
 # beside its destination so mv is a same-filesystem rename; a json/md pair
 # still lands as two independent replacements.
 atomic_replace() {
-    local source="$1" destination="$2" dir base tmp
+    local source="$1" destination="$2" dir base tmp mode source_mode current_umask
     dir="$(dirname -- "$destination")"
     base="$(basename -- "$destination")"
+    if [[ -e "$destination" ]]; then
+        mode="$(stat -c %a -- "$destination")" || return 1
+    else
+        source_mode="$(stat -c %a -- "$source")" || return 1
+        current_umask="$(umask)"
+        mode="$(printf '%04o' "$(( 8#$source_mode & ~8#$current_umask ))")" || return 1
+    fi
     tmp="$(mktemp "$dir/.${base}.tmp.XXXXXX")" || return 1
     if ! cp -- "$source" "$tmp"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    # A rename replaces the destination inode. Retain its mode when one
+    # exists; otherwise use the source mode filtered through this process's
+    # umask, as cp would for a new destination.
+    if ! chmod "$mode" -- "$tmp"; then
         rm -f -- "$tmp"
         return 1
     fi

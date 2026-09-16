@@ -241,10 +241,11 @@ cp -- "$repo_dir/skills/lkml-mode/personas/security.md" "$work/security.md"
 # inode only when the archive is replaced by a same-directory rename.
 mkdir -p -- "$LKML_MAILBOX_ROOT/widget-frob/personas"
 printf 'OLD-CONTENT\n' > "$LKML_MAILBOX_ROOT/widget-frob/personas/core.md"
+chmod 0600 -- "$LKML_MAILBOX_ROOT/widget-frob/personas/core.md"
 persona_sentinel_dir="$(mktemp -d)"; tmpdirs+=("$persona_sentinel_dir")
 ln "$LKML_MAILBOX_ROOT/widget-frob/personas/core.md" "$persona_sentinel_dir/core.md"
 
-out="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$capture_dir" STUB_RUN_PREFIX="$run_prefix_dir" \
+out="$(umask 077; PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$capture_dir" STUB_RUN_PREFIX="$run_prefix_dir" \
     STUB_REPLY_TO="$patch_id" STUB_REPLY_TO_BRACKETED="$patch_id_bracketed" \
     "$round" widget-frob --project "$project_dir" --checkout somebranch \
     --personas core,security,pi-local,codex --personas-dir "$work" \
@@ -330,6 +331,10 @@ printf '\n== persona archiving ==\n'
 check "persona archive replaces the destination without changing its sentinel" \
     "$(cat "$work/core.md")|OLD-CONTENT" \
     "$(cat "$LKML_MAILBOX_ROOT/widget-frob/personas/core.md")|$(cat "$persona_sentinel_dir/core.md")"
+check "atomic persona archive preserves an existing private mode" \
+    '600' "$(stat -c %a "$LKML_MAILBOX_ROOT/widget-frob/personas/core.md")"
+check "atomic persona archive applies a restrictive umask to new files" \
+    '600' "$(stat -c %a "$LKML_MAILBOX_ROOT/widget-frob/personas/security.md")"
 for p in core security pi-local codex; do
     if cmp -s "$work/$p.md" "$LKML_MAILBOX_ROOT/widget-frob/personas/$p.md"; then
         ok "persona $p archived into the series mailbox"

@@ -121,6 +121,9 @@ cat > "$stub_bin/fork-sandbox.sh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 args=("$@")
+if [[ -n "${STUB_OUTBOX_UMASK:-}" ]]; then
+    umask "$STUB_OUTBOX_UMASK"
+fi
 n=${#args[@]}
 task_meta=""
 branch=""
@@ -409,6 +412,7 @@ printf '\n== result-file replacement preserves old inodes ==\n'
 # from an in-place overwrite: each destination must exist before linking.
 printf 'OLD-CONTENT\n' > "$series_dir/results-v1.json"
 printf 'OLD-CONTENT\n' > "$series_dir/results-v1.md"
+chmod 0644 -- "$series_dir/results-v1.json" "$series_dir/results-v1.md"
 sentinel_dir="$(mktemp -d)"; tmpdirs+=("$sentinel_dir")
 ln "$series_dir/results-v1.json" "$sentinel_dir/results-v1.json"
 ln "$series_dir/results-v1.md" "$sentinel_dir/results-v1.md"
@@ -419,15 +423,38 @@ NEW-CONTENT
 # Details
 replacement'
 cap_atomic="$(mktemp -d)"; tmpdirs+=("$cap_atomic")
-PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_atomic" STUB_RUN_PREFIX="$run_prefix_dir" \
-    STUB_JSON="$ATOMIC_JSON" STUB_MD="$ATOMIC_MD" \
-    "$summarize" widget-frob --project "$project_dir" --version 1 >/dev/null 2>&1
+(
+    umask 022
+    PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_atomic" STUB_RUN_PREFIX="$run_prefix_dir" \
+        STUB_JSON="$ATOMIC_JSON" STUB_MD="$ATOMIC_MD" \
+        "$summarize" widget-frob --project "$project_dir" --version 1 >/dev/null 2>&1
+)
 check "results-v1.json replaces the destination without changing its sentinel" \
     'NEW-CONTENT|OLD-CONTENT' \
     "$(jq -r .replacement "$series_dir/results-v1.json")|$(cat "$sentinel_dir/results-v1.json")"
 check "results-v1.md replaces the destination without changing its sentinel" \
     'NEW-CONTENT|OLD-CONTENT' \
     "$(sed -n '2p' "$series_dir/results-v1.md")|$(cat "$sentinel_dir/results-v1.md")"
+check "atomic result replacements retain the normal world-readable mode" \
+    '644|644' \
+    "$(stat -c %a "$series_dir/results-v1.json")|$(stat -c %a "$series_dir/results-v1.md")"
+
+# A rename must not make a private prior result public, and a new companion
+# must receive the caller's restrictive umask even when its outbox source is
+# world-readable.
+chmod 0600 -- "$series_dir/results-v1.json"
+rm -f -- "$series_dir/results-v1.md"
+cap_private_atomic="$(mktemp -d)"; tmpdirs+=("$cap_private_atomic")
+(
+    umask 077
+    PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_private_atomic" STUB_RUN_PREFIX="$run_prefix_dir" \
+        STUB_JSON="$ATOMIC_JSON" STUB_MD="$ATOMIC_MD" STUB_OUTBOX_UMASK=022 \
+        "$summarize" widget-frob --project "$project_dir" --version 1 >/dev/null 2>&1
+)
+check "atomic result replacement preserves an existing private mode" \
+    '600' "$(stat -c %a "$series_dir/results-v1.json")"
+check "atomic result replacement applies a restrictive umask to a new file" \
+    '600' "$(stat -c %a "$series_dir/results-v1.md")"
 
 printf '\n== handoff input-size cap ==\n'
 capC="$(mktemp -d)"; tmpdirs+=("$capC")
