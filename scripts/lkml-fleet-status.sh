@@ -51,8 +51,9 @@
 #              stop is printed loudly with its reason; absent router state
 #              is distinguished from an exhausted budget.
 #   cost per agent  completed router runs, grouped by agent. Runs without a
-#              summary stay visible as "no summary" rather than becoming a
-#              misleading zero-cost entry.
+#              summary stay visible as "no summary", while summaries with
+#              no usable cost stay visible as "no cost", rather than
+#              becoming misleading zero-cost entries.
 #   unanswered see the design decision below.
 #
 # Design decision -- tags: Reviewed-by, Acked-by, Tested-by,
@@ -304,15 +305,15 @@ print_hop_and_spawns() {
 # directly rather than sourcing them: router state is data, not shell code.
 print_cost_per_agent() {
     local pm="$MAIL_ROOT/.postmaster" env line key value agent thread run_dir
-    local cost prev total_runs=0 missing_summary=0 agent_missing run_word
-    declare -A RUN_COUNT=() MISSING_COUNT=() COST_BY_AGENT=()
+    local cost prev total_runs=0 missing_summary=0 no_cost=0
+    local agent_missing agent_no_cost run_word
+    declare -A RUN_COUNT=() MISSING_COUNT=() NO_COST_COUNT=() COST_BY_AGENT=()
 
     printf '\n== Cost per agent ==\n'
     if [[ ! -d "$pm/runs" ]]; then
         echo '(no runs recorded)'
         return 0
     fi
-
     for env in "$pm/runs"/*.env; do
         [[ -r "$env" ]] || continue
         agent=""; thread=""; run_dir=""
@@ -335,13 +336,23 @@ print_cost_per_agent() {
             MISSING_COUNT[$agent]=$(( ${MISSING_COUNT[$agent]:-0} + 1 ))
             continue
         fi
+        if ! command -v jq >/dev/null 2>&1; then
+            echo '(cost data unavailable: jq is required to parse summary.json)'
+            return 0
+        fi
         # A routed continuation includes the prior context cost in
         # total_cost_usd.  Older summaries have only cost_usd.
-        cost="$(sed -nE 's/.*"total_cost_usd"[[:space:]]*:[[:space:]]*([0-9]+(\.[0-9]+)?).*/\1/p' "$run_dir/summary.json" | head -n1)"
+        cost="$(jq -er '
+            if (.total_cost_usd | type) == "number" then .total_cost_usd
+            elif (.cost_usd | type) == "number" then .cost_usd
+            else empty
+            end
+        ' "$run_dir/summary.json" 2>/dev/null)"
         if [[ ! "$cost" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-            cost="$(sed -nE 's/.*"cost_usd"[[:space:]]*:[[:space:]]*([0-9]+(\.[0-9]+)?).*/\1/p' "$run_dir/summary.json" | head -n1)"
+            no_cost=$(( no_cost + 1 ))
+            NO_COST_COUNT[$agent]=$(( ${NO_COST_COUNT[$agent]:-0} + 1 ))
+            continue
         fi
-        [[ "$cost" =~ ^[0-9]+([.][0-9]+)?$ ]] || cost=0
         prev="${COST_BY_AGENT[$agent]:-0}"
         COST_BY_AGENT[$agent]="$(awk -v a="$prev" -v b="$cost" 'BEGIN { printf "%.6f", a + b }')"
     done
@@ -351,8 +362,12 @@ print_cost_per_agent() {
         return 0
     fi
     printf 'runs: %s' "$total_runs"
-    if (( missing_summary > 0 )); then
-        printf ' (%s no summary)\n' "$missing_summary"
+    if (( missing_summary > 0 || no_cost > 0 )); then
+        printf ' ('
+        (( missing_summary > 0 )) && printf '%s no summary' "$missing_summary"
+        (( missing_summary > 0 && no_cost > 0 )) && printf ', '
+        (( no_cost > 0 )) && printf '%s no cost' "$no_cost"
+        printf ')\n'
     else
         printf '\n'
     fi
@@ -361,8 +376,13 @@ print_cost_per_agent() {
         (( RUN_COUNT[$agent] == 1 )) && run_word=run
         printf '%s  %s %s  $%s' "$agent" "${RUN_COUNT[$agent]}" "$run_word" "${COST_BY_AGENT[$agent]:-0.000000}"
         agent_missing="${MISSING_COUNT[$agent]:-0}"
-        if (( agent_missing > 0 )); then
-            printf ' (%s no summary)' "$agent_missing"
+        agent_no_cost="${NO_COST_COUNT[$agent]:-0}"
+        if (( agent_missing > 0 || agent_no_cost > 0 )); then
+            printf ' ('
+            (( agent_missing > 0 )) && printf '%s no summary' "$agent_missing"
+            (( agent_missing > 0 && agent_no_cost > 0 )) && printf ', '
+            (( agent_no_cost > 0 )) && printf '%s no cost' "$agent_no_cost"
+            printf ')'
         fi
         printf '\n'
     done

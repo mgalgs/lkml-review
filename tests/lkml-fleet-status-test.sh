@@ -170,14 +170,23 @@ printf 'hops exhausted at c0010000-0000-4000-8000-000000000001\n' > "$pm/needs-o
 run_one="$work/run-one"; mkdir -p -- "$run_one"
 run_two="$work/run-two"; mkdir -p -- "$run_two"
 run_three="$work/run-three"; mkdir -p -- "$run_three"
+run_null="$work/run-null"; mkdir -p -- "$run_null"
+run_garbage="$work/run-garbage"; mkdir -p -- "$run_garbage"
+run_only_null="$work/run-only-null"; mkdir -p -- "$run_only_null"
 run_other="$work/run-other"; mkdir -p -- "$run_other"
 # Continuation summaries include a total that accounts for earlier context.
 printf '{"cost_usd": 1.25, "total_cost_usd": 4.75}\n' > "$run_one/summary.json"
 printf '{"cost_usd": 2.50}\n' > "$run_two/summary.json"
+printf '{"cost_usd": null, "total_cost_usd": null}\n' > "$run_null/summary.json"
+printf 'not json at all\n' > "$run_garbage/summary.json"
+printf '{"cost_usd": null, "total_cost_usd": null}\n' > "$run_only_null/summary.json"
 printf '{"cost_usd": 99.00}\n' > "$run_other/summary.json"
 printf 'agent=review-one\nthread=%s\nrun_dir=%s\n' "$t1" "$run_one" > "$pm/runs/run-a.env"
 printf 'agent=review-two\nthread=%s\nrun_dir=%s\n' "$t1" "$run_two" > "$pm/runs/run-b.env"
 printf 'agent=review-one\nthread=%s\nrun_dir=%s\n' "$t1" "$run_three" > "$pm/runs/run-c.env"
+printf 'agent=review-two\nthread=%s\nrun_dir=%s\n' "$t1" "$run_null" > "$pm/runs/run-e.env"
+printf 'agent=review-one\nthread=%s\nrun_dir=%s\n' "$t1" "$run_garbage" > "$pm/runs/run-f.env"
+printf 'agent=review-null\nthread=%s\nrun_dir=%s\n' "$t1" "$run_only_null" > "$pm/runs/run-g.env"
 printf 'agent=other-agent\nthread=%s\nrun_dir=%s\n' "$t2" "$run_other" > "$pm/runs/run-d.env"
 
 # Stub fork-sandbox: only the one call the script is allowed to make.
@@ -306,10 +315,44 @@ contains "hops still reported from the messages" "$OUT" "hops: lowest 8, newest 
 printf '\n== cost per agent: the router run ledger ==\n'
 OUT="$(PATH="$STUB_PATH" "$status" "$t1" --mail-root "$root" 2>&1)"; RC=$?
 check "cost screen exits 0" "0" "$RC"
-contains "cost prefers a completed run's total cost" "$OUT" "review-one  2 runs  \$4.750000 (1 no summary)"
-contains "cost sums a completed run for the second agent" "$OUT" "review-two  1 run  \$2.500000"
-contains "missing summary is counted in the run total" "$OUT" 'runs: 3 (1 no summary)'
+contains "cost prefers a completed run's total cost" "$OUT" "review-one  3 runs  \$4.750000 (1 no summary, 1 no cost)"
+contains "cost sums a completed run for the second agent" "$OUT" "review-two  2 runs  \$2.500000 (1 no cost)"
+contains "missing summary is counted in the run total" "$OUT" 'runs: 6 (1 no summary, 3 no cost)'
 not_contains "a different thread run is not counted" "$OUT" 'other-agent'
+contains "null cost is counted and annotated" "$OUT" "review-two  2 runs  \$2.500000 (1 no cost)"
+contains "null cost does not add zero to an agent's sum" "$OUT" "review-two  2 runs  \$2.500000 (1 no cost)"
+contains "only-null-cost agent is annotated" "$OUT" "review-null  1 run  \$0.000000 (1 no cost)"
+contains "missing summary and malformed cost co-occur per agent" "$OUT" "review-one  3 runs  \$4.750000 (1 no summary, 1 no cost)"
+contains "all runs including null and malformed costs are counted" "$OUT" 'runs: 6 (1 no summary, 3 no cost)'
+contains "missing summary and no cost co-occur in the total" "$OUT" '(1 no summary, 3 no cost)'
+contains "garbage summary is annotated as no cost" "$OUT" "review-one  3 runs  \$4.750000 (1 no summary, 1 no cost)"
+
+printf '\n== cost parser unavailable ==\n'
+no_jq_bin="$work/no-jq-bin"; mkdir -p -- "$no_jq_bin"
+for command in bash awk date head sed sort; do
+    ln -s "$(command -v "$command")" "$no_jq_bin/$command"
+done
+ln -s "$stub_bin/fork-sandbox" "$no_jq_bin/fork-sandbox"
+OUT="$(PATH="$no_jq_bin" "$status" "$t1" --mail-root "$root" 2>&1)"; RC=$?
+check "missing jq does not fail the screen" "0" "$RC"
+contains "missing jq is reported explicitly" "$OUT" "cost data unavailable: jq is required to parse summary.json"
+not_contains "missing jq is not reported as no-cost runs" "$OUT" 'runs: 6 (1 no summary, 3 no cost)'
+
+# jq is only needed for summaries belonging to the requested thread.  An
+# otherwise populated ledger must still report observable no-run and
+# no-summary states when that parser is absent.
+rm -- "$pm/runs/run-d.env"
+OUT="$(PATH="$no_jq_bin" "$status" "$t2" --mail-root "$root" 2>&1)"; RC=$?
+check "missing jq with only other-thread runs does not fail" "0" "$RC"
+contains "other-thread runs still report no runs" "$OUT" '(no runs recorded)'
+not_contains "other-thread runs do not require jq" "$OUT" 'cost data unavailable: jq is required to parse summary.json'
+
+mkdir -p -- "$root2/.postmaster/runs"
+printf 'agent=review-pending\nthread=%s\nrun_dir=%s\n' "$t3" "$work/no-summary" > "$root2/.postmaster/runs/run-pending.env"
+OUT="$(PATH="$no_jq_bin" "$status" "$t3" --mail-root "$root2" 2>&1)"; RC=$?
+check "missing jq with missing summary does not fail" "0" "$RC"
+contains "missing summaries remain countable without jq" "$OUT" 'runs: 1 (1 no summary)'
+not_contains "missing summary does not require jq" "$OUT" 'cost data unavailable: jq is required to parse summary.json'
 
 printf '\n== prefix resolution ==\n'
 OUT="$(PATH="$STUB_PATH" "$status" "${t1:0:12}" --mail-root "$root" 2>&1)"; RC=$?
