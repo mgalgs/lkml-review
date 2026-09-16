@@ -49,6 +49,7 @@ home_dir="$work/home"; mkdir -p -- "$home_dir"
 PORCELAIN=(
     lkml-cover.sh
     lkml-fleet-kickoff.sh
+    lkml-fleet-status.sh
     lkml-forklift.sh
     lkml-mailbox.sh
     lkml-render.py
