@@ -131,10 +131,19 @@ ci_first_refusal() {
 panel="$to"
 handoff=""
 if [[ -n "$ci_first" ]]; then
+    # Resolved as a sibling, the same way default_template is, so the
+    # gate consults lkml's own persona registry rather than whatever
+    # fleet the machine's ~/.config/fork-sandbox happens to describe.
+    # Without this the panel resolves against the wrong registry, or
+    # against none, and every gate below refuses for the wrong reason.
+    fleet_cmd="$script_dir/lkml-fleet.sh"
+    if [[ ! -x "$fleet_cmd" ]]; then
+        ci_first_refusal "--ci-first requires '$fleet_cmd', which is missing or not executable; the gate cannot be skipped."
+    fi
     if ! command -v fork-sandbox >/dev/null 2>&1; then
         ci_first_refusal "--ci-first requires the missing fork-sandbox command; the gate cannot be skipped."
     fi
-    if ! ci_expansion="$(fork-sandbox fleet expand "$ci_first")" || [[ -z "${ci_expansion//[$'\t\r\n ']/}" ]]; then
+    if ! ci_expansion="$("$fleet_cmd" fleet expand "$ci_first")" || [[ -z "${ci_expansion//[$'\t\r\n ']/}" ]]; then
         ci_first_refusal "CI address '$ci_first' would have addressed nobody and the panel would have silently never started."
     fi
     ci_recipients=0
@@ -145,7 +154,7 @@ if [[ -n "$ci_first" ]]; then
     if (( ci_recipients != 1 )); then
         ci_first_refusal "CI address '$ci_first' expands to $ci_recipients recipients; --ci-first must address exactly one CI seat."
     fi
-    if ! panel_expansion="$(fork-sandbox fleet expand "$panel")" || [[ -z "${panel_expansion//[$'\t\r\n ']/}" ]]; then
+    if ! panel_expansion="$("$fleet_cmd" fleet expand "$panel")" || [[ -z "${panel_expansion//[$'\t\r\n ']/}" ]]; then
         ci_first_refusal "Panel address '$panel' has no recipients: wave two would wake nobody."
     fi
     panel_has_other=0

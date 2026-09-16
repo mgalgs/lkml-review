@@ -78,6 +78,7 @@ cat > "$stub_bin/fork-sandbox" <<'STUB'
 set -euo pipefail
 if [[ "${1-}" == "fleet" && "${2-}" == "expand" ]]; then
     printf '%s\n' "${3-}" >> "$STUB_EXPAND_LOG"
+    printf '%s\n' "${FORK_SANDBOX_PERSONAS_DIR-unset}" >> "${STUB_PERSONAS_LOG:-/dev/null}"
     case "${3-}" in
         @ci) printf '%s\n' '@ci' ;;
         @ci-and-core) printf '%s\n' '@ci' '@core' ;;
@@ -201,8 +202,9 @@ contains "--send mode reports it sent" "$out_send" "stub fork-sandbox: sent"
 
 printf '\n== --ci-first addresses CI, hands off to the panel, and gates the shape ==\n'
 expand_log="$work/expand.log"
+personas_log="$work/personas.log"; : > "$personas_log"
 : > "$expand_log"
-out_ci_first="$(PATH="$stub_bin:$PATH" STUB_EXPAND_LOG="$expand_log" \
+out_ci_first="$(PATH="$stub_bin:$PATH" STUB_EXPAND_LOG="$expand_log" STUB_PERSONAS_LOG="$personas_log" \
     "$kickoff" "$project_dir" "master...topic" \
     --from '@author' --to '@lkml-panel' --subject 'subj' --ci-first '@ci' 2>&1)"
 rc_ci_first=$?
@@ -480,6 +482,27 @@ case "$(cat "$focus_noph_body_file" 2>/dev/null)" in
     *'ONLY the mail error paths'*) no "an unfocused template drops the focus text out of the body" "focus text found in body" ;;
     *) ok "an unfocused template drops the focus text out of the body" ;;
 esac
+
+printf '\n== --ci-first resolves against the lkml persona registry ==\n'
+# The gate must consult the personas in THIS checkout, not whatever fleet
+# the machine ~/.config/fork-sandbox happens to describe -- against the
+# machine registry the panel resolves to nothing and every gate below
+# refuses for the wrong reason. It reaches them by calling
+# scripts/lkml-fleet.sh, which exports FORK_SANDBOX_PERSONAS_DIR, so the
+# stub seeing that variable IS the proof the gate went through the
+# wrapper. A bare `fork-sandbox fleet expand` leaves it unset.
+repo_personas="$repo_dir/fleet/personas"
+if grep -Fqx -- "$repo_personas" "$personas_log"; then
+    ok "--ci-first gate resolves against this checkout's personas"
+else
+    no "--ci-first gate resolves against this checkout's personas" \
+        "expected '$repo_personas', log holds: $(cat "$personas_log")"
+fi
+if grep -Fqx -- unset "$personas_log"; then
+    no "--ci-first gate never expands with no personas dir set" "$(cat "$personas_log")"
+else
+    ok "--ci-first gate never expands with no personas dir set"
+fi
 
 printf '\n== kickoff templates keep the no-attachment guard on the author reply ==\n'
 # A wake's harvested reply carries no attachment path (the postmaster
