@@ -235,9 +235,61 @@ fi
 
 # fill <content-varname> <PLACEHOLDER-NAME> <value> — literal substring
 # replace, since ${var} values here never contain glob metacharacters.
+#
+# An own-line placeholder (the whole line is nothing but the
+# placeholder) that fills to the empty string removes its own line and
+# one immediately-following blank line, so a template built with a
+# blank line on each side of a placeholder doesn't leave that blank
+# line stranded when the placeholder has nothing to say. An inline
+# placeholder -- anything else on its line -- is untouched by this and
+# just substitutes to empty, same as always.
+#
+# That "one blank per placeholder" accounting is exact for an isolated
+# occurrence but not for two own-line placeholders of the same name
+# with no blank between them (e.g. "${NAME}\n${NAME}\n\n\nx"): the
+# fixed-point re-scan below (needed so back-to-back occurrences separated
+# by a blank still both resolve, see its own comment) can let an earlier
+# occurrence consume a blank line that, by strict left-to-right reading,
+# belonged to a later one. The net blank-line count can end up one
+# fewer than the per-occurrence rule promises. No template shipped in
+# this repo has adjacent same-name own-line placeholders, so this is
+# latent; a --template author relying on the letter of the rule for
+# that shape should verify the rendered output.
+#
+# A sentinel newline is prefixed before matching so a placeholder that
+# opens the body (no real newline ahead of it) still matches the same
+# "\n${NAME}\n" pattern as one in the middle; it's stripped back off
+# before returning. local is named "padded", not "body", because this
+# is always invoked as `fill body NAME value` and a local actually
+# named "body" would shadow the nameref target instead of extending it.
 fill() {
     local -n content_ref="$1"
-    content_ref="${content_ref//\$\{$2\}/$3}"
+    local name="$2" value="$3"
+    if [[ -z "$value" ]]; then
+        local padded=$'\n'"$content_ref" prev
+        # ${var//pat/repl} scans left to right for non-overlapping
+        # matches, so two own-line-with-blank occurrences of the same
+        # name back to back compete for the same newlines: consuming
+        # one occurrence's trailing blank leaves the next occurrence's
+        # leading newline already spent, and it falls through to the
+        # no-blank pattern with a stray blank line left behind. Looping
+        # each pattern to a fixed point re-scans the newlines the prior
+        # pass freed up, so repeats resolve one at a time regardless of
+        # whether a blank line separates them.
+        while :; do
+            prev="$padded"
+            padded="${padded//$'\n'\$\{$name\}$'\n'$'\n'/$'\n'}"
+            [[ "$padded" == "$prev" ]] && break
+        done
+        while :; do
+            prev="$padded"
+            padded="${padded//$'\n'\$\{$name\}$'\n'/$'\n'}"
+            [[ "$padded" == "$prev" ]] && break
+        done
+        padded="${padded%$'\n'\$\{"$name"\}}"
+        content_ref="${padded:1}"
+    fi
+    content_ref="${content_ref//\$\{$name\}/$value}"
 }
 
 # Comments are stripped by finding "-->" as a substring anywhere in the
@@ -319,11 +371,16 @@ fill body PATCH_COUNT "$patch_count"
 fill body PANEL "$panel"
 fill body HANDOFF "$handoff"
 
-# ${HANDOFF} sits near the top of the template with a blank line on each
-# side, so an ordinary kickoff -- where it fills to the empty string --
-# would otherwise open on two blank lines before its first real word.
-# Strip only leading newlines: indentation on the first real line, should
-# a template ever want it, is the template's business.
+# fill() above already removes an empty own-line placeholder's line and
+# one following blank, so this is now a backstop rather than the
+# primary mechanism: it catches template shapes that rule doesn't cover,
+# such as a placeholder followed by two blank lines at the very top. (A
+# template that simply opens on a blank line of its own can't reach
+# here: the awk comment-stripper above drops every leading blank line
+# before $body is ever set, and the command substitution that captures
+# it strips trailing newlines too.) Strip only leading newlines:
+# indentation on the first real line, should a template ever want it,
+# is the template's business.
 while [[ "$body" == $'\n'* ]]; do
     body="${body#$'\n'}"
 done

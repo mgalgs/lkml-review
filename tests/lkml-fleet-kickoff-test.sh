@@ -35,21 +35,102 @@ check() {
     local label="$1" expected="$2" actual="$3"
     if [[ "$expected" == "$actual" ]]; then ok "$label"; else no "$label" "expected '$expected', got '$actual'"; fi
 }
+# Counts blank lines immediately preceding the first line in $1 that
+# matches $2 verbatim -- used to pin the exact blank-line shape around
+# ${HANDOFF}/${SUMMARY} rather than just checking substrings are present.
+# An empty/missing $1 or an anchor absent from the file prints a label
+# instead of a number, so a caller comparing against an expected count
+# fails loudly instead of an unset awk `target` silently running its
+# "for (i = -1; i >= 1; ...)" loop zero times and printing "0" -- which
+# reads identically to a genuine zero-blank-lines match.
+blank_run_before() {
+    local file="$1" anchor="$2"
+    if [[ -z "$file" || ! -f "$file" ]]; then
+        printf 'NO-SUCH-FILE\n'
+        return
+    fi
+    awk -v anchor="$anchor" '
+        { lines[NR] = $0 }
+        $0 == anchor && !found { target = NR; found = 1 }
+        END {
+            if (!found) { print "ANCHOR-NOT-FOUND"; exit }
+            n = 0
+            for (i = target - 1; i >= 1 && lines[i] == ""; i--) n++
+            print n
+        }
+    ' "$file"
+}
 
 printf '\n== fill(): literal ${PLACEHOLDER} substitution, in isolation ==\n'
-# lkml-fleet-kickoff.sh's own fill() function, copied verbatim, sanity
-# checked before trusting the rest of the suite against it -- a
-# mis-escaped pattern here would make every downstream assertion below
+# Pull lkml-fleet-kickoff.sh's own fill() definition out of the script
+# rather than keeping a hand-copied duplicate here: a copy drifts the
+# moment the real function changes shape and every assertion below
+# would keep passing against the stale copy instead of the shipped
+# code. eval'ing the extracted text still runs it in-process, so a
+# mis-escaped pattern makes every downstream assertion below
 # meaningless rather than failing loudly.
-fill() {
-    local -n content_ref="$1"
-    content_ref="${content_ref//\$\{$2\}/$3}"
-}
+eval "$(sed -n '/^fill() {/,/^}/p' "$kickoff")"
 sample='a${X}b and ${X} again, plus ${Y}'
 fill sample X hello
 fill sample Y world
 check "fill() replaces every occurrence of a placeholder" \
     "ahellob and hello again, plus world" "$sample"
+
+sample_inline='Base: ${A}'
+fill sample_inline A ""
+check "an inline placeholder that fills to empty stays on its line" \
+    "Base: " "$sample_inline"
+
+sample_nonempty_ownline=$'prev\n${A}\n\nnext'
+fill sample_nonempty_ownline A "filled"
+check "an own-line placeholder that fills to a non-empty value is not removed" \
+    $'prev\nfilled\n\nnext' "$sample_nonempty_ownline"
+
+sample_first=$'${A}\n\nnext'
+fill sample_first A ""
+check "own-line empty placeholder as the first line of the body removes its line and the following blank" \
+    "next" "$sample_first"
+
+sample_last=$'prev\n${A}'
+fill sample_last A ""
+check "own-line empty placeholder as the last line, with no trailing newline, removes just its own line" \
+    "prev" "$sample_last"
+
+sample_adjacent=$'prev\n${A}\n${B}\nnext'
+fill sample_adjacent A ""
+fill sample_adjacent B ""
+check "two adjacent own-line empty placeholders with DIFFERENT names, no blank line between them, each remove only their own line" \
+    $'prev\nnext' "$sample_adjacent"
+
+sample_two_blanks=$'prev\n${A}\n\n\nnext'
+fill sample_two_blanks A ""
+check "own-line empty placeholder followed by two blank lines claims exactly one" \
+    $'prev\n\nnext' "$sample_two_blanks"
+
+sample_content_after=$'prev\n${A}\ncontent\nnext'
+fill sample_content_after A ""
+check "own-line empty placeholder followed immediately by a content line leaves that line untouched" \
+    $'prev\ncontent\nnext' "$sample_content_after"
+
+sample_repeat=$'${A}\n\nmiddle\n${A}\n\nend'
+fill sample_repeat A ""
+check "repeated own-line empty placeholder, separated by a content line, removes both" \
+    $'middle\nend' "$sample_repeat"
+
+# The shape line 118's "adjacent" test doesn't cover: the SAME name
+# repeated back to back, with nothing between the two occurrences but
+# newlines. ${var//pat/repl}'s non-overlapping left-to-right scan can
+# only claim each occurrence's own newlines once, so consecutive same-
+# name occurrences compete for the newline between them.
+sample_repeat_adjacent_blank=$'prev\n${A}\n\n${A}\n\nnext'
+fill sample_repeat_adjacent_blank A ""
+check "two adjacent own-line empty placeholders with the SAME name, separated by a blank line, both fully removed" \
+    $'prev\nnext' "$sample_repeat_adjacent_blank"
+
+sample_repeat_adjacent_noblank=$'prev\n${A}\n${A}\nnext'
+fill sample_repeat_adjacent_noblank A ""
+check "two adjacent own-line empty placeholders with the SAME name, no blank line between them, both fully removed" \
+    $'prev\nnext' "$sample_repeat_adjacent_noblank"
 
 work="$(mktemp -d)"; tmpdirs+=("$work")
 project_dir="$work/project"; mkdir -p -- "$project_dir"
@@ -292,6 +373,42 @@ case "$body_text" in
     *"## Wave one: test results first"*) no "ordinary kickoff has no wave-one block" "$body_text" ;;
     *) ok "ordinary kickoff has no wave-one block" ;;
 esac
+
+printf '\n== case matrix: blank-line shape around ${HANDOFF}/${SUMMARY} ==\n'
+# series-review.md holds "${HANDOFF}\n\n${SUMMARY}\n\nBase: ...". Each of
+# ${HANDOFF} and ${SUMMARY} is independently empty or filled depending on
+# --ci-first/--summary, and every combination must leave exactly one
+# blank line between the last real content above and "Base:" -- never
+# more than one (a stray blank left behind by a placeholder that filled
+# to nothing) -- UNLESS both fill empty, in which case there is no
+# content above "Base:" at all and the body opens directly on it (row
+# 1, "0"): the "never zero" rule describes gluing real content to
+# "Base:", not the body's own opening line.
+row1_out="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' 2>&1)"
+row1_body_file="$(printf '%s' "$row1_out" | grep -o -- '--body [^ ]*' | awk '{print $2}')"
+check "row 1 (no --ci-first, no --summary): no blank line before Base: (body opens directly on it)" \
+    "0" "$(blank_run_before "$row1_body_file" "Base: master")"
+
+row2_out="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --summary 'row two summary' 2>&1)"
+row2_body_file="$(printf '%s' "$row2_out" | grep -o -- '--body [^ ]*' | awk '{print $2}')"
+check "row 2 (no --ci-first, --summary): exactly one blank line before Base:" \
+    "1" "$(blank_run_before "$row2_body_file" "Base: master")"
+
+row3_out="$(PATH="$stub_bin:$PATH" STUB_EXPAND_LOG="$expand_log" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --ci-first '@ci' 2>&1)"
+row3_body_file="$(printf '%s' "$row3_out" | grep -o -- '--body [^ ]*' | awk '{print $2}')"
+check "row 3 (--ci-first, no --summary): exactly one blank line before Base: -- the regression this round fixes" \
+    "1" "$(blank_run_before "$row3_body_file" "Base: master")"
+
+row4_out="$(PATH="$stub_bin:$PATH" STUB_EXPAND_LOG="$expand_log" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --ci-first '@ci' --summary 'row four summary' 2>&1)"
+row4_body_file="$(printf '%s' "$row4_out" | grep -o -- '--body [^ ]*' | awk '{print $2}')"
+check "row 4 (--ci-first, --summary): exactly one blank line before Base:" \
+    "1" "$(blank_run_before "$row4_body_file" "Base: master")"
 
 printf '\n== missing required flags ==\n'
 out_missing="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
