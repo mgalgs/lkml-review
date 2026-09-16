@@ -63,12 +63,18 @@
 #
 # Design decision -- tags: Reviewed-by, Acked-by, Tested-by,
 # Changes-requested, Question, NAK are the lore convention already used
-# across this repo, detected as line-initial occurrences in the message
-# body the way lkml-mailbox.sh infers them: the three -by trailers count
-# anywhere in the body, while the verdicts (Changes-requested, Question,
-# NAK) count only on the first or last non-empty, non-quoted line, since
-# a verdict opens a reply or closes it, and a quoted verdict (" > NAK")
-# is not this reply's. The LATEST tag per seat is reported, not every tag
+# across this repo. The three -by trailers require the colon --
+# ^Reviewed-by:, ^Acked-by:, ^Tested-by: -- and count anywhere in the
+# body; a bare tag name at line start, with no colon, is NOT a trailer.
+# Reviewers routinely write prose that discusses a verdict by name
+# ("Reviewed-by from security and from me, Tested-by from ci..."), and
+# an unlucky line wrap can put that prose at the start of a line -- the
+# colon is what tells a cast trailer apart from prose about one. The
+# verdicts (Changes-requested, Question, NAK) keep matching bare, since
+# they are legitimately written that way, but count only on the first or
+# last non-empty, non-quoted line, since a verdict opens a reply or
+# closes it, and a quoted verdict (" > NAK") is not this reply's. The
+# LATEST tag per seat is reported, not every tag
 # ever applied, for the reason lkml-mailbox.sh's tally documents: a
 # Changes-requested is routinely superseded by a later Reviewed-by from
 # the same seat once the request is met, and reporting both would make a
@@ -181,10 +187,11 @@ fs_subject_versions() {
 
 # The tags a message body carries, space-separated in canonical order
 # (Reviewed-by Acked-by Tested-by Changes-requested Question NAK), or
-# nothing. Trailers count anywhere in the body; the verdicts count only
-# on the first or last non-empty, non-quoted line (see the header
-# comment). Quoted lines never count: a quoted verdict belongs to the
-# message being quoted.
+# nothing. The three -by trailers require the colon (^Reviewed-by:), so
+# that prose naming a tag is not mistaken for the tag being cast; the
+# verdicts keep matching bare and count only on the first or last
+# non-empty, non-quoted line (see the header comment). Quoted lines
+# never count: a quoted verdict belongs to the message being quoted.
 fs_body_tags() {
     awk '
         BEGIN {
@@ -200,7 +207,7 @@ fs_body_tags() {
             if (first == "") first = line
             last = line
             for (i = 1; i <= nt; i++)
-                if (line ~ ("^" T[i] "([[:space:]:.!,]|$)")) t_seen[i] = 1
+                if (line ~ ("^" T[i] ":")) t_seen[i] = 1
         }
         END {
             for (i = 1; i <= nv; i++)

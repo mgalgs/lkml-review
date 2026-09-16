@@ -219,6 +219,52 @@ printf 'agent=parser-sum\nthread=%s\nrun_dir=%s\n' "$t4" "$run_parser_sum_a" > "
 printf 'agent=parser-sum\nthread=%s\nrun_dir=%s\n' "$t4" "$run_parser_sum_b" > "$pm/runs/run-k.env"
 printf 'agent=parser-huge\nthread=%s\nrun_dir=%s\n' "$t4" "$run_parser_huge" > "$pm/runs/run-l.env"
 
+# thread t5: dedicated fixture for the tag-colon defect (a reviewer
+# discussing a verdict in prose must not be parsed as casting it). Kept
+# in its own thread, isolated from t1's hand-counted seat/tag counts.
+t5="55555555-eeee-4eee-8eee-eeeeeeeeeeee"
+mkdir -p -- "$root/threads/$t5"
+write_msg "$root" "$t5" 001 g0010000-0000-4000-8000-000000000001 "$(D 15)" \
+    '@author' '@reviewer-prose,@reviewer-colon,@reviewer-bare,@reviewer-mixed,@reviewer-quoted,@reviewer-nak,@reviewer-chreq,@reviewer-question,@reviewer-progress' '' \
+    'Tag colon parsing fixture' 8 '' \
+    'Cover message for the tag-colon fixture.'
+# A real reviewer's wrapped prose *about* verdicts, verbatim -- no tag
+# trailers anywhere in this body.
+write_msg "$root" "$t5" 002 g0020000-0000-4000-8000-000000000002 "$(D 16)" \
+    '@reviewer-prose' '@author' '' 'Re: Tag colon parsing fixture' 8 '' \
+    'Tested-by from ci, security and me, Acked-by from docs, Acked-by from'
+write_msg "$root" "$t5" 003 g0030000-0000-4000-8000-000000000003 "$(D 17)" \
+    '@reviewer-colon' '@author' '' 'Re: Tag colon parsing fixture' 8 '' \
+    'Reviewed-by: The Core Reviewer'
+write_msg "$root" "$t5" 004 g0040000-0000-4000-8000-000000000004 "$(D 18)" \
+    '@reviewer-bare' '@author' '' 'Re: Tag colon parsing fixture' 8 '' \
+    'Reviewed-by'
+write_msg "$root" "$t5" 005 g0050000-0000-4000-8000-000000000005 "$(D 19)" \
+    '@reviewer-mixed' '@author' '' 'Re: Tag colon parsing fixture' 8 '' \
+    'Reviewed-by: Mixed Signal
+Tested-by looks solid too'
+write_msg "$root" "$t5" 006 g0060000-0000-4000-8000-000000000006 "$(D 20)" \
+    '@reviewer-quoted' '@author' '' 'Re: Tag colon parsing fixture' 8 '' \
+    '> Reviewed-by: Quoted Person'
+write_msg "$root" "$t5" 007 g0070000-0000-4000-8000-000000000007 "$(D 21)" \
+    '@reviewer-nak' '@author' '' 'Re: Tag colon parsing fixture' 8 '' \
+    'NAK
+Explanation of the NAK follows.'
+write_msg "$root" "$t5" 008 g0080000-0000-4000-8000-000000000008 "$(D 22)" \
+    '@reviewer-chreq' '@author' '' 'Re: Tag colon parsing fixture' 8 '' \
+    'Changes-requested
+because of X.'
+write_msg "$root" "$t5" 009 g0090000-0000-4000-8000-000000000009 "$(D 23)" \
+    '@reviewer-question' '@author' '' 'Re: Tag colon parsing fixture' 8 '' \
+    'Is the lock order documented here as well?
+Question'
+write_msg "$root" "$t5" 010 g0100000-0000-4000-8000-000000000010 "$(D 24)" \
+    '@reviewer-progress' '@author' '' 'Re: Tag colon parsing fixture' 8 '' \
+    'Reviewed-by: Progress Reviewer'
+write_msg "$root" "$t5" 011 g0110000-0000-4000-8000-000000000011 "$(D 25)" \
+    '@reviewer-progress' '@author' '' 'Re: Tag colon parsing fixture' 8 '' \
+    'Changes-requested'
+
 # Stub fork-sandbox: only the one call the script is allowed to make.
 stub_bin="$work/stub"; mkdir -p -- "$stub_bin"
 cat > "$stub_bin/fork-sandbox" <<'STUB'
@@ -270,7 +316,7 @@ contains "missing mail root names the path it wanted" "$OUT" "$work/no-such-root
 printf '\n== --list: one line per thread ==\n'
 OUT="$(PATH="$STUB_PATH" "$status" --list --mail-root "$root" 2>&1)"; RC=$?
 check "--list exits 0" "0" "$RC"
-check "--list prints one line per thread" "3" "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')"
+check "--list prints one line per thread" "4" "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')"
 contains "--list shows t1's short id" "$OUT" "1111111"
 contains "--list shows t2's root Subject" "$OUT" "Unrelated thread"
 contains "--list shows t1's root Subject" "$OUT" "[PATCH v1 0/2] Improve the thing"
@@ -426,6 +472,39 @@ check "missing python3 with missing summary does not fail" "0" "$RC"
 contains "missing summaries remain countable without python3" "$OUT" 'runs: 1 (1 no summary)'
 not_contains "a run classified purely as no summary does not mention python3" "$OUT" 'python3'
 not_contains "an absent summary.json is never counted as unreadable" "$OUT" 'unreadable)'
+
+printf '\n== tag colon requirement: prose is not a cast verdict ==\n'
+OUT="$(PATH="$STUB_PATH" "$status" "$t5" --mail-root "$root" 2>&1)"; RC=$?
+check "tag colon fixture screen exits 0" "0" "$RC"
+
+LINE="$(grep -F '@reviewer-prose ' <<<"$OUT" | head -n1)"
+contains "real reviewer prose about verdicts yields no tags" "$LINE" "tags: -"
+
+LINE="$(grep -F '@reviewer-colon ' <<<"$OUT" | head -n1)"
+contains "a genuine colon trailer still counts" "$LINE" "tags: Reviewed-by"
+
+LINE="$(grep -F '@reviewer-bare ' <<<"$OUT" | head -n1)"
+contains "a bare trailer with no colon no longer counts" "$LINE" "tags: -"
+
+LINE="$(grep -F '@reviewer-mixed ' <<<"$OUT" | head -n1)"
+contains "a genuine trailer plus bare prose reports only the trailer" "$LINE" "tags: Reviewed-by"
+not_contains "the bare prose word is not also reported" "$LINE" "Tested-by"
+
+LINE="$(grep -F '@reviewer-quoted ' <<<"$OUT" | head -n1)"
+contains "a quoted trailer still yields nothing" "$LINE" "tags: -"
+
+LINE="$(grep -F '@reviewer-nak ' <<<"$OUT" | head -n1)"
+contains "a bare NAK on the first line still counts" "$LINE" "tags: NAK"
+
+LINE="$(grep -F '@reviewer-chreq ' <<<"$OUT" | head -n1)"
+contains "a bare Changes-requested on the first line still counts" "$LINE" "tags: Changes-requested"
+
+LINE="$(grep -F '@reviewer-question ' <<<"$OUT" | head -n1)"
+contains "a bare Question on the last line still counts" "$LINE" "tags: Question"
+
+LINE="$(grep -F '@reviewer-progress ' <<<"$OUT" | head -n1)"
+contains "latest-message-wins: a later bare verdict supersedes an earlier colon trailer" "$LINE" "tags: Changes-requested"
+not_contains "the superseded trailer is not also reported" "$LINE" "Reviewed-by"
 
 printf '\n== prefix resolution ==\n'
 OUT="$(PATH="$STUB_PATH" "$status" "${t1:0:12}" --mail-root "$root" 2>&1)"; RC=$?
