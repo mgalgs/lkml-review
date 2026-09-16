@@ -209,6 +209,24 @@ contains "--ci-first without --hops defaults to 9" "$out_ci_first" "--hops 9"
 contains "--ci-first without --hops explains its hop bump" "$out_ci_first" "extra hop"
 check "--ci-first gate expands CI then panel in print-only mode" $'@ci\n@lkml-panel' "$(cat "$expand_log")"
 
+out_ci_cc="$(PATH="$stub_bin:$PATH" STUB_EXPAND_LOG="$expand_log" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --cc '@core' --subject 'subj' --ci-first '@ci' 2>&1)"
+rc_ci_cc=$?
+if (( rc_ci_cc != 0 )); then ok "--ci-first rejects a Cc that would wake a fleet seat"; else no "--ci-first rejects a Cc that would wake a fleet seat" "exit 0: $out_ci_cc"; fi
+contains "--ci-first Cc refusal explains the ordering violation" "$out_ci_cc" "Cc recipients are not woken before its results"
+
+ci_template_dir="$(mktemp -d)"; tmpdirs+=("$ci_template_dir")
+no_handoff_template="$ci_template_dir/no-handoff.md"
+printf 'Custom review kickoff: ${SUMMARY}\n' > "$no_handoff_template"
+out_ci_no_handoff="$(PATH="$stub_bin:$PATH" STUB_EXPAND_LOG="$expand_log" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --ci-first '@ci' \
+    --template "$no_handoff_template" 2>&1)"
+rc_ci_no_handoff=$?
+if (( rc_ci_no_handoff != 0 )); then ok "--ci-first rejects a template without the routing handoff"; else no "--ci-first rejects a template without the routing handoff" "exit 0: $out_ci_no_handoff"; fi
+contains "missing CI-first handoff refusal names the placeholder" "$out_ci_no_handoff" '${HANDOFF}'
+
 out_ci_hops_20="$(PATH="$stub_bin:$PATH" STUB_EXPAND_LOG="$expand_log" \
     "$kickoff" "$project_dir" "master...topic" \
     --from '@author' --to '@lkml-panel' --subject 'subj' --ci-first '@ci' --hops 20 2>&1)"

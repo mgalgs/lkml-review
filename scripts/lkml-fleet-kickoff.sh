@@ -13,7 +13,8 @@
 #              too, degenerately, for the single-patch case.
 # --from       sending address (required).
 # --to         recipient address(es), comma-separated (required).
-# --cc         optional Cc address(es), comma-separated.
+# --cc         optional Cc address(es), comma-separated. Incompatible with
+#              --ci-first, whose kickoff must address CI alone.
 # --subject    the mail subject (required).
 # --summary    one paragraph/sentence filled into ${SUMMARY}; default empty.
 # --template   kickoff template to fill; defaults to this repo's own
@@ -94,6 +95,10 @@ done
 [[ -f "$template" ]] || { echo "Error: template '$template' does not exist." >&2; exit 1; }
 if [[ -n "$hops" && ! "$hops" =~ ^[0-9]+$ ]]; then
     echo "Error: --hops must be a non-negative integer. See --help." >&2
+    exit 1
+fi
+if [[ -n "$ci_first" && -n "$cc" ]]; then
+    echo "Error: --cc is incompatible with --ci-first: the kickoff must address the CI seat alone so Cc recipients are not woken before its results." >&2
     exit 1
 fi
 
@@ -227,6 +232,10 @@ body="$(awk '
         print line
     }
 ' "$template")"
+if [[ -n "$ci_first" && "$body" != *'${HANDOFF}'* ]]; then
+    echo "Error: --ci-first requires template '$template' to contain \${HANDOFF} in its body so CI receives the wave-one routing instructions." >&2
+    exit 1
+fi
 fill body FROM "$from"
 fill body TO "$to"
 fill body CC "$cc"
