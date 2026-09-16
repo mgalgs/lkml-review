@@ -237,6 +237,13 @@ PERSONA
 cp -- "$repo_dir/skills/lkml-mode/personas/core.md" "$work/core.md"
 cp -- "$repo_dir/skills/lkml-mode/personas/security.md" "$work/security.md"
 
+# The destination must already exist: the hard link then retains the old
+# inode only when the archive is replaced by a same-directory rename.
+mkdir -p -- "$LKML_MAILBOX_ROOT/widget-frob/personas"
+printf 'OLD-CONTENT\n' > "$LKML_MAILBOX_ROOT/widget-frob/personas/core.md"
+persona_sentinel_dir="$(mktemp -d)"; tmpdirs+=("$persona_sentinel_dir")
+ln "$LKML_MAILBOX_ROOT/widget-frob/personas/core.md" "$persona_sentinel_dir/core.md"
+
 out="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$capture_dir" STUB_RUN_PREFIX="$run_prefix_dir" \
     STUB_REPLY_TO="$patch_id" STUB_REPLY_TO_BRACKETED="$patch_id_bracketed" \
     "$round" widget-frob --project "$project_dir" --checkout somebranch \
@@ -320,6 +327,9 @@ contains "the no-replies warning names the outbox it checked" "$out" "/outbox, a
 contains "the no-replies warning names the fallback it checked" "$out" ".git/lkml-out as a fallback"
 
 printf '\n== persona archiving ==\n'
+check "persona archive replaces the destination without changing its sentinel" \
+    "$(cat "$work/core.md")|OLD-CONTENT" \
+    "$(cat "$LKML_MAILBOX_ROOT/widget-frob/personas/core.md")|$(cat "$persona_sentinel_dir/core.md")"
 for p in core security pi-local codex; do
     if cmp -s "$work/$p.md" "$LKML_MAILBOX_ROOT/widget-frob/personas/$p.md"; then
         ok "persona $p archived into the series mailbox"

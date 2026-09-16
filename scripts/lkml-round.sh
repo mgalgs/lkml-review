@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # lkml-round.sh — Launch one fork-sandbox run per persona, in parallel, to
 # review (or reply within) an lkml-mode series, then harvest their replies
-# back into the mailbox.
+# back into the mailbox. Persona briefs are archived by same-directory
+# temp-then-rename, so concurrent renderers never observe a partial brief.
 #
 # Usage: lkml-round.sh <series> --project <path> --checkout <ref> --base <ref>
 #            --personas <p1,p2,...> [--reply-to <id>]... [--personas-dir <dir>]
@@ -164,6 +165,23 @@ default_personas_dir="$(cd "$script_dir/.." && pwd)/skills/lkml-mode/personas"
 
 usage() {
     sed -n '2,/^set -uo/{ /^#/s/^# \?//p }' "$0"
+}
+
+# Archive one persona brief atomically for concurrent renderers. The temp
+# lives beside its destination so mv is a same-filesystem rename.
+atomic_replace() {
+    local source="$1" destination="$2" dir base tmp
+    dir="$(dirname -- "$destination")"
+    base="$(basename -- "$destination")"
+    tmp="$(mktemp "$dir/.${base}.tmp.XXXXXX")" || return 1
+    if ! cp -- "$source" "$tmp"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    if ! mv -- "$tmp" "$destination"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
 }
 
 # --help must be scanned over "$@" before the positional <series> is
@@ -633,7 +651,11 @@ for persona in "${personas[@]}"; do
     # personas rarely change mid-series, and the latest wins.
     archive_root="${LKML_MAILBOX_ROOT:-/var/tmp/claude-scratch/lkml}/$series"
     mkdir -p -- "$archive_root/personas"
-    cp -f -- "$persona_file" "$archive_root/personas/$persona.md"
+    if ! atomic_replace "$persona_file" "$archive_root/personas/$persona.md"; then
+        echo "Error: could not atomically archive persona '$persona'." >&2
+        launch_failed=1
+        continue
+    fi
 
     # Seat facts resolved for the whole roster before any launch (the
     # pre-pass above); this loop is launch-as-you-go, so nothing here may
