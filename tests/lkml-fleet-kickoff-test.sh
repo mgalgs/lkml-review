@@ -80,6 +80,7 @@ if [[ "${1-}" == "fleet" && "${2-}" == "expand" ]]; then
     printf '%s\n' "${3-}" >> "$STUB_EXPAND_LOG"
     case "${3-}" in
         @ci) printf '%s\n' '@ci' ;;
+        @ci-and-core) printf '%s\n' '@ci' '@core' ;;
         @lkml-panel) printf '%s\n' '@core' '@ci' ;;
         @ci-only) printf '%s\n' '@ci' ;;
         @missing|@empty) echo "Error: expand: unknown address '${3}'." >&2; exit 1 ;;
@@ -208,6 +209,13 @@ contains "--ci-first body says CI alone was addressed" "$ci_body_text" "addresse
 contains "--ci-first without --hops defaults to 9" "$out_ci_first" "--hops 9"
 contains "--ci-first without --hops explains its hop bump" "$out_ci_first" "extra hop"
 check "--ci-first gate expands CI then panel in print-only mode" $'@ci\n@lkml-panel' "$(cat "$expand_log")"
+
+out_ci_multiple="$(PATH="$stub_bin:$PATH" STUB_EXPAND_LOG="$expand_log" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --ci-first '@ci-and-core' 2>&1)"
+rc_ci_multiple=$?
+if (( rc_ci_multiple != 0 )); then ok "a multi-seat CI address refuses"; else no "a multi-seat CI address refuses" "exit 0: $out_ci_multiple"; fi
+contains "a multi-seat CI refusal requires exactly one seat" "$out_ci_multiple" "exactly one CI seat"
 
 out_ci_cc="$(PATH="$stub_bin:$PATH" STUB_EXPAND_LOG="$expand_log" \
     "$kickoff" "$project_dir" "master...topic" \

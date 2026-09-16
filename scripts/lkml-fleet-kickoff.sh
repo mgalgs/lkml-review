@@ -118,6 +118,14 @@ if [[ -n "$ci_first" ]]; then
     if ! ci_expansion="$(fork-sandbox fleet expand "$ci_first")" || [[ -z "${ci_expansion//[$'\t\r\n ']/}" ]]; then
         ci_first_refusal "CI address '$ci_first' would have addressed nobody and the panel would have silently never started."
     fi
+    ci_recipients=0
+    while IFS= read -r ci_address; do
+        [[ -z "${ci_address//[$'\t\r ']/}" ]] && continue
+        (( ci_recipients += 1 ))
+    done <<<"$ci_expansion"
+    if (( ci_recipients != 1 )); then
+        ci_first_refusal "CI address '$ci_first' expands to $ci_recipients recipients; --ci-first must address exactly one CI seat."
+    fi
     if ! panel_expansion="$(fork-sandbox fleet expand "$panel")" || [[ -z "${panel_expansion//[$'\t\r\n ']/}" ]]; then
         ci_first_refusal "Panel address '$panel' has no recipients: wave two would wake nobody."
     fi
