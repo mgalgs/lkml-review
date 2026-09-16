@@ -4,7 +4,7 @@
 #
 # Usage: lkml-fleet-kickoff.sh <repo> <range> --from <addr> --to <addr>
 #            [--cc <addr>] --subject <subject> [--summary <text>]
-#            [--template <file>] [--attach] [--send]
+#            [--template <file>] [--hops <n>] [--attach] [--send]
 #
 # <repo>       path to a local git repository.
 # <range>      a revision range passed straight to `git format-patch`
@@ -17,6 +17,8 @@
 # --summary    one paragraph/sentence filled into ${SUMMARY}; default empty.
 # --template   kickoff template to fill; defaults to this repo's own
 #              fleet/kickoffs/series-review.md.
+# --hops       non-negative mail reply-hop budget. Omit it to retain the
+#              transport's own default.
 # --attach     format the range with `git format-patch` and attach each
 #              produced patch file to the mail. Without this flag, the
 #              mail carries only the branch name for reviewers to check
@@ -54,10 +56,11 @@ summary=""
 template="$default_template"
 attach=0
 send=0
+hops=""
 
 while (( $# > 0 )); do
     case "$1" in
-        --from|--to|--cc|--subject|--summary|--template)
+        --from|--to|--cc|--subject|--summary|--template|--hops)
             (( $# >= 2 )) || { echo "Error: $1 requires a value. See --help." >&2; exit 1; }
             ;;
     esac
@@ -68,6 +71,7 @@ while (( $# > 0 )); do
         --subject) subject="$2"; shift 2 ;;
         --summary) summary="$2"; shift 2 ;;
         --template) template="$2"; shift 2 ;;
+        --hops) hops="$2"; shift 2 ;;
         --attach) attach=1; shift ;;
         --send) send=1; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -79,6 +83,10 @@ done
 [[ -n "$to" ]] || { echo "Error: --to is required. See --help." >&2; exit 1; }
 [[ -n "$subject" ]] || { echo "Error: --subject is required. See --help." >&2; exit 1; }
 [[ -f "$template" ]] || { echo "Error: template '$template' does not exist." >&2; exit 1; }
+if [[ -n "$hops" && ! "$hops" =~ ^[0-9]+$ ]]; then
+    echo "Error: --hops must be a non-negative integer. See --help." >&2
+    exit 1
+fi
 
 tmpdir="$(mktemp -d)"
 # Only clean up once actually sent: in print-only mode the printed command
@@ -176,6 +184,7 @@ printf '%s\n' "$body" > "$body_file"
 
 cmd=(fork-sandbox mail send --from "$from" --to "$to")
 [[ -n "$cc" ]] && cmd+=(--cc "$cc")
+[[ -n "$hops" ]] && cmd+=(--hops "$hops")
 cmd+=(--subject "$subject" --body "$body_file")
 if (( attach )); then
     for f in "${patches[@]}"; do

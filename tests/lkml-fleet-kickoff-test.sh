@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016 # Literal placeholder examples deliberately contain ${...}.
 # lkml-fleet-kickoff-test.sh — Exercise lkml-fleet-kickoff.sh's format,
 # compose, and send paths against a fixture git repo and a stub
 # `fork-sandbox` on PATH, the same "stub the external command on PATH"
@@ -90,6 +91,10 @@ check "print-only mode exits 0" "0" "$rc"
 contains "printed command names fork-sandbox mail send" "$out" "fork-sandbox mail send"
 contains "printed command carries --from" "$out" "--from @author"
 contains "printed command carries --to" "$out" "--to @lkml-panel"
+case "$out" in
+    *"--hops"*) no "print-only mode without --hops carries no --hops flag" "$out" ;;
+    *) ok "print-only mode without --hops carries no --hops flag" ;;
+esac
 contains "printed command carries the subject" "$out" "PATCH\\ v1\\ 0/2"
 tmp_prefix="${TMPDIR:-/tmp}"; tmp_prefix="${tmp_prefix%/}"
 contains "printed command points --body at a tempfile" "$out" "--body $tmp_prefix/"
@@ -126,6 +131,21 @@ if [[ -f "$body_file" ]]; then
 else
     no "print-only mode's body file is left in place for the printed command to use" "no such file: $body_file"
 fi
+
+printf '\n== --hops validation and passthrough ==\n'
+out_hops="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --hops 9 2>&1)"
+contains "--hops 9 appears in the printed command" "$out_hops" "--hops 9"
+out_hops_bad="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --hops nine 2>&1)"
+rc_hops_bad=$?
+if (( rc_hops_bad != 0 )); then ok "a non-integer --hops exits non-zero"; else no "a non-integer --hops exits non-zero" "exit 0: $out_hops_bad"; fi
+contains "a non-integer --hops names the validation problem" "$out_hops_bad" "non-negative integer"
+out_hops_negative="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --hops -1 2>&1)"
+rc_hops_negative=$?
+if (( rc_hops_negative != 0 )); then ok "a negative --hops exits non-zero"; else no "a negative --hops exits non-zero" "exit 0: $out_hops_negative"; fi
+contains "a negative --hops names the validation problem" "$out_hops_negative" "non-negative integer"
 
 printf '\n== --attach mode ==\n'
 out_attach="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" \
