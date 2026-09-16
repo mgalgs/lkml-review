@@ -76,6 +76,17 @@ capture_dir="$(mktemp -d)"; tmpdirs+=("$capture_dir")
 cat > "$stub_bin/fork-sandbox" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1-}" == "fleet" && "${2-}" == "expand" ]]; then
+    printf '%s\n' "${3-}" >> "$STUB_EXPAND_LOG"
+    case "${3-}" in
+        @ci) printf '%s\n' '@ci' ;;
+        @lkml-panel) printf '%s\n' '@core' '@ci' ;;
+        @ci-only) printf '%s\n' '@ci' ;;
+        @missing|@empty) echo "Error: expand: unknown address '${3}'." >&2; exit 1 ;;
+        *) echo "Error: unexpected fixture address '${3}'." >&2; exit 1 ;;
+    esac
+    exit 0
+fi
 printf '%s\n' "$*" > "$STUB_CAPTURE_DIR/argv"
 echo "stub fork-sandbox: sent"
 STUB
@@ -179,6 +190,71 @@ else
     no "--send mode ran the stub fork-sandbox"
 fi
 contains "--send mode reports it sent" "$out_send" "stub fork-sandbox: sent"
+
+printf '\n== --ci-first addresses CI, hands off to the panel, and gates the shape ==\n'
+expand_log="$work/expand.log"
+: > "$expand_log"
+out_ci_first="$(PATH="$stub_bin:$PATH" STUB_EXPAND_LOG="$expand_log" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --ci-first '@ci' 2>&1)"
+rc_ci_first=$?
+check "--ci-first print-only mode exits 0" "0" "$rc_ci_first"
+contains "--ci-first makes the command address CI alone" "$out_ci_first" "--to @ci"
+ci_body_file="$(printf '%s' "$out_ci_first" | grep -o -- '--body [^ ]*' | awk '{print $2}')"
+ci_body_text="$([[ -f "$ci_body_file" ]] && cat "$ci_body_file")"
+contains "--ci-first body carries the panel address" "$ci_body_text" '`To:` to @lkml-panel'
+contains "--ci-first body carries the fixed wave-one heading" "$ci_body_text" "## Wave one: test results first"
+contains "--ci-first body says CI alone was addressed" "$ci_body_text" "addressed to you alone"
+contains "--ci-first without --hops defaults to 9" "$out_ci_first" "--hops 9"
+contains "--ci-first without --hops explains its hop bump" "$out_ci_first" "extra hop"
+check "--ci-first gate expands CI then panel in print-only mode" $'@ci\n@lkml-panel' "$(cat "$expand_log")"
+
+out_ci_hops_20="$(PATH="$stub_bin:$PATH" STUB_EXPAND_LOG="$expand_log" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --ci-first '@ci' --hops 20 2>&1)"
+contains "--ci-first carries an explicit --hops 20" "$out_ci_hops_20" "--hops 20"
+out_ci_hops_8="$(PATH="$stub_bin:$PATH" STUB_EXPAND_LOG="$expand_log" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --ci-first '@ci' --hops 8 2>&1)"
+contains "--ci-first permits explicit --hops 8" "$out_ci_hops_8" "--hops 8"
+contains "--ci-first warns when explicit hops costs the extra hop" "$out_ci_hops_8" "extra hop"
+
+out_ci_missing="$(PATH="$stub_bin:$PATH" STUB_EXPAND_LOG="$expand_log" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --ci-first '@missing' 2>&1)"
+rc_ci_missing=$?
+if (( rc_ci_missing != 0 )); then ok "an unresolvable CI address refuses in print-only mode"; else no "an unresolvable CI address refuses in print-only mode" "exit 0: $out_ci_missing"; fi
+contains "an unresolvable CI address names both documented answers" "$out_ci_missing" "services-backed \`ci\` seat"
+contains "an unresolvable CI address names test-results injection" "$out_ci_missing" "tests were run elsewhere"
+contains "an unresolvable CI address rejects directly addressing the panel" "$out_ci_missing" "wrong"
+
+out_panel_empty="$(PATH="$stub_bin:$PATH" STUB_EXPAND_LOG="$expand_log" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@empty' --subject 'subj' --ci-first '@ci' 2>&1)"
+rc_panel_empty=$?
+if (( rc_panel_empty != 0 )); then ok "a panel that expands to nothing refuses"; else no "a panel that expands to nothing refuses" "exit 0: $out_panel_empty"; fi
+contains "an empty panel refusal says wave two wakes nobody" "$out_panel_empty" "wave two would wake nobody"
+out_panel_ci_only="$(PATH="$stub_bin:$PATH" STUB_EXPAND_LOG="$expand_log" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@ci-only' --subject 'subj' --ci-first '@ci' 2>&1)"
+rc_panel_ci_only=$?
+if (( rc_panel_ci_only != 0 )); then ok "a panel of CI alone refuses"; else no "a panel of CI alone refuses" "exit 0: $out_panel_ci_only"; fi
+contains "a CI-only panel refusal says wave two wakes nobody" "$out_panel_ci_only" "wave two would wake nobody"
+
+out_ci_no_command="$(PATH="/usr/bin:/bin" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --ci-first '@ci' 2>&1)"
+rc_ci_no_command=$?
+if (( rc_ci_no_command != 0 )); then ok "--ci-first refuses when fork-sandbox is unavailable"; else no "--ci-first refuses when fork-sandbox is unavailable" "exit 0: $out_ci_no_command"; fi
+contains "a missing fork-sandbox refusal names the command" "$out_ci_no_command" "missing fork-sandbox command"
+
+case "$body_text" in
+    *'${HANDOFF}'*) no "ordinary kickoff has no leftover HANDOFF placeholder" "$body_text" ;;
+    *) ok "ordinary kickoff has no leftover HANDOFF placeholder" ;;
+esac
+case "$body_text" in
+    *"## Wave one: test results first"*) no "ordinary kickoff has no wave-one block" "$body_text" ;;
+    *) ok "ordinary kickoff has no wave-one block" ;;
+esac
 
 printf '\n== missing required flags ==\n'
 out_missing="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \

@@ -17,7 +17,8 @@ template engine):
                default to read it (wake-on-cc gates this per agent),
                but no response is requested of it
   ${SUBJECT}   e.g. "[PATCH v1 0/N] <series summary>"
-  ${SUMMARY}   one paragraph: what the series does and why
+${SUMMARY}   one paragraph: what the series does and why
+${HANDOFF}   CI-first wave-one instructions; empty for ordinary kickoffs
   ${BASE}      the base ref/commit this series applies on top of
   ${BRANCH}    the series' own branch name (branch-name variant only)
   ${PATCH_COUNT} number of patches in the series
@@ -54,6 +55,8 @@ Payload: pick ONE of the two variants below and delete the other.
   reviewer's sandbox is a clone of the same repo and can check the
   branch out itself; nothing to attach, nothing to stage.
 -->
+
+${HANDOFF}
 
 ${SUMMARY}
 

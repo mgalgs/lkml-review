@@ -4,7 +4,8 @@
 #
 # Usage: lkml-fleet-kickoff.sh <repo> <range> --from <addr> --to <addr>
 #            [--cc <addr>] --subject <subject> [--summary <text>]
-#            [--template <file>] [--hops <n>] [--attach] [--send]
+#            [--template <file>] [--hops <n>] [--ci-first <ci-addr>]
+#            [--attach] [--send]
 #
 # <repo>       path to a local git repository.
 # <range>      a revision range passed straight to `git format-patch`
@@ -19,6 +20,12 @@
 #              fleet/kickoffs/series-review.md.
 # --hops       non-negative mail reply-hop budget. Omit it to retain the
 #              transport's own default.
+# --ci-first   address the kickoff to this CI seat alone, then have its
+#              reply wake the --to panel with test results. This adds a hop,
+#              so it defaults to 9 and warns below that. Before composing,
+#              the script requires fork-sandbox and verifies CI plus a
+#              non-CI panel recipient; its gate cannot verify that CI's
+#              suite can actually run in this repository.
 # --attach     format the range with `git format-patch` and attach each
 #              produced patch file to the mail. Without this flag, the
 #              mail carries only the branch name for reviewers to check
@@ -57,10 +64,11 @@ template="$default_template"
 attach=0
 send=0
 hops=""
+ci_first=""
 
 while (( $# > 0 )); do
     case "$1" in
-        --from|--to|--cc|--subject|--summary|--template|--hops)
+        --from|--to|--cc|--subject|--summary|--template|--hops|--ci-first)
             (( $# >= 2 )) || { echo "Error: $1 requires a value. See --help." >&2; exit 1; }
             ;;
     esac
@@ -72,6 +80,7 @@ while (( $# > 0 )); do
         --summary) summary="$2"; shift 2 ;;
         --template) template="$2"; shift 2 ;;
         --hops) hops="$2"; shift 2 ;;
+        --ci-first) ci_first="$2"; shift 2 ;;
         --attach) attach=1; shift ;;
         --send) send=1; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -86,6 +95,61 @@ done
 if [[ -n "$hops" && ! "$hops" =~ ^[0-9]+$ ]]; then
     echo "Error: --hops must be a non-negative integer. See --help." >&2
     exit 1
+fi
+
+ci_first_refusal() {
+    printf '%s\n' "Error: $1" >&2
+    printf '%s\n' "Use a services-backed \`ci\` seat so its suite executes, or an explicit \"tests were run elsewhere\" injection with provenance." >&2
+    printf '%s\n' "Addressing the kickoff to the panel directly \"just for this repo\" is wrong: it silently restores the ordering gap." >&2
+    exit 1
+}
+
+panel="$to"
+handoff=""
+if [[ -n "$ci_first" ]]; then
+    if ! command -v fork-sandbox >/dev/null 2>&1; then
+        ci_first_refusal "--ci-first requires the missing fork-sandbox command; the gate cannot be skipped."
+    fi
+    if ! ci_expansion="$(fork-sandbox fleet expand "$ci_first")" || [[ -z "${ci_expansion//[$'\t\r\n ']/}" ]]; then
+        ci_first_refusal "CI address '$ci_first' would have addressed nobody and the panel would have silently never started."
+    fi
+    if ! panel_expansion="$(fork-sandbox fleet expand "$panel")" || [[ -z "${panel_expansion//[$'\t\r\n ']/}" ]]; then
+        ci_first_refusal "Panel address '$panel' has no recipients: wave two would wake nobody."
+    fi
+    panel_has_other=0
+    while IFS= read -r panel_address; do
+        [[ -z "$panel_address" ]] && continue
+        if ! grep -Fqx -- "$panel_address" <<<"$ci_expansion"; then
+            panel_has_other=1
+            break
+        fi
+    done <<<"$panel_expansion"
+    if (( ! panel_has_other )); then
+        ci_first_refusal "Panel address '$panel' expands to the CI seat alone: wave two would wake nobody."
+    fi
+    if [[ -z "$hops" ]]; then
+        hops=9
+        echo "Note: --ci-first defaults --hops to 9 because the two-wave shape costs an extra hop." >&2
+    elif (( 10#$hops < 9 )); then
+        echo "Warning: --ci-first's two-wave shape costs an extra hop; --hops $hops may exhaust the thread sooner." >&2
+    fi
+    handoff="$(cat <<EOF
+## Wave one: test results first
+
+This kickoff is addressed to you alone. The rest of the panel has not been
+woken, and will not see this series until you reply.
+
+Run the suites and reply as your standing instructions describe. Address
+that reply's \`To:\` to $panel — delivery is what wakes the panel, so your
+reply is the thing that starts this review. They will wake with this
+message, the diff, and your numbers all in the same prompt.
+
+If you cannot run the suites at all, say so plainly and address the reply
+to $panel anyway. A panel told "the suite could not run here, and why"
+is informed. A panel that is never woken is not.
+EOF
+)"
+    to="$ci_first"
 fi
 
 tmpdir="$(mktemp -d)"
@@ -171,6 +235,8 @@ fill body SUMMARY "$summary"
 fill body BASE "$base"
 fill body BRANCH "$branch"
 fill body PATCH_COUNT "$patch_count"
+fill body PANEL "$panel"
+fill body HANDOFF "$handoff"
 
 # An unterminated (or entirely swallowed) template comment would
 # otherwise post an empty kickoff to the whole panel and report success.
