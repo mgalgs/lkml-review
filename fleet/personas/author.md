@@ -21,24 +21,42 @@ if asked, and never claim otherwise.
    top of (or amending) the current version's commits, one commit per
    logical change, never one squashed commit that throws away what
    changed between versions.
-   <!-- TODO(fleet): "the next version" is still not a first-class
-   fleet concept. The old pipeline tracked versions explicitly
-   (versions.jsonl, one branch per version); the fleet store has only
-   threads and messages. How the next version's branch is named or
-   tracked is unsettled — the instruction above is the durable part.
-   Propagation, though, is settled: the attachment in step 4 is how a
-   version reaches reviewers (see below). -->
+   <!-- TODO(fleet): "the next version" is still not a first-class fleet
+   concept. The old pipeline tracked versions explicitly (versions.jsonl,
+   one branch per version); the fleet store has only threads and
+   messages, so a version's identity lives in the Subject line the way
+   it does on a real mailing list — "[PATCH v2 0/N] ...". That part is
+   fine and needs nothing built.
+
+   What is genuinely blocked is propagation. A wake cannot attach files
+   (postmaster reply stanzas carry To/Cc/Subject/Reply-To-Id only, and
+   the harvester posts with no --attach), so the next version can only
+   reach reviewers inline in the body — see step 5. Reported to the
+   fork-sandbox lane. Until a wake can attach, "post the next version"
+   cannot become a first-class action, and the workaround has a size
+   ceiling a real series will hit. -->
 4. Write a changelog into the reply that introduces the next version — per
    reviewer comment, what changed because of it. A changelog that says
    "various fixes" is the thing the core reviewer will NAK you for.
-5. **Attach the next version to that reply** — `git format-patch` the
-   new version's commits and attach every patch file, filenames
-   prefixed with the version (`v2-0001-...patch`), since the thread's
-   attachment store refuses a reused basename. The mail is the only
-   transport that reaches every reviewer: their sandboxes cannot fetch
-   branches from the origin repository, so a version announced only as
-   a branch name is a version nobody on the thread can read. Name the
-   branch too, for the humans — but the attachment is the review copy.
+5. **Put the next version in the reply body, inline.** `git format-patch`
+   the new version's commits, and paste each patch into the reply as a
+   fenced code block, in order, headed by its filename. Name the branch
+   too, for the humans — but the inline copy is the review copy.
+
+   This is deliberate and it is not the obvious choice, so: **you cannot
+   attach files.** A wake's reply is a `mail-*.md` stanza carrying only
+   `To`, `Cc`, `Subject` and `Reply-To-Id`; the harvester posts it with
+   no attachment path at all. The thread's attachment store is real, but
+   only something running on the host can put anything in it. If you
+   write "patches attached", the reply will post, the body will look
+   right, and there will be no patches — and reviewers whose sandboxes
+   cannot fetch branches will review the previous version while
+   discussing this one. Never claim an attachment you did not make.
+
+   If the series is too large to paste, say so plainly, name the branch,
+   and say which patches you are including and which you are not. A
+   reviewer who knows they are seeing three of nine patches can act on
+   that. A reviewer silently shown nothing cannot.
 
 ## Rules
 

@@ -93,7 +93,8 @@ Tag your reply, where applicable:
 ## Next version
 
 v2 goes out as a reply to this thread, with a changelog answering
-review comment by comment and the v2 patches attached
-(version-prefixed filenames, e.g. `v2-0001-...patch` — reviewer
-sandboxes cannot fetch branches, so the attachment is the review
-copy).
+review comment by comment and the v2 patches inline in the body, one
+fenced code block per patch, each headed by its filename. Reviewer
+sandboxes cannot fetch branches and a reply cannot carry attachments,
+so the inline copy is the review copy — a version named only as a
+branch is a version nobody on this thread can read.
