@@ -53,12 +53,22 @@
 #   cost per agent  completed router runs, grouped by agent. Runs without a
 #              summary stay visible as "no summary", summaries with no
 #              usable cost field (absent, null, or the wrong JSON type)
-#              stay visible as "no cost", and summaries that could not be
-#              parsed at all -- because python3 itself is unavailable, or
-#              because the file is truncated, corrupt, or unreadable --
-#              stay visible as "unreadable". None of the three is folded
-#              into another: each is a different kind of not knowing, and
-#              collapsing them would misreport which.
+#              stay visible as "no cost", summaries whose cost field IS a
+#              number but not a usable cost -- negative, NaN, or infinite
+#              -- stay visible as "invalid", and summaries that could not
+#              be parsed at all -- because python3 itself is unavailable,
+#              or because the file is truncated, corrupt, or unreadable --
+#              stay visible as "unreadable". None of the four is folded
+#              into another: "no cost" covers not having a usable value
+#              at all -- a field that is missing, null, or the wrong
+#              type reports the same as a run that genuinely had no cost
+#              to report, since none of those give a number to work
+#              with; "invalid" is a definite wrong (the field IS a
+#              number, and that number -- negative, NaN, or infinite --
+#              is not a cost); and "unreadable" is a different kind of
+#              not knowing (the summary could not be read at all) --
+#              collapsing any of them into another would misreport
+#              which.
 #   unanswered see the design decision below.
 #
 # Design decision -- tags: Reviewed-by, Acked-by, Tested-by,
@@ -313,15 +323,16 @@ print_hop_and_spawns() {
 
 }
 
-# Prints " (X no summary, Y no cost, Z unreadable)" for whichever counts
-# are non-zero, or nothing at all if all three are zero.  Shared between
-# the totals line and each per-agent row so the three states are joined
-# identically in both places.
+# Prints " (X no summary, Y no cost, Z invalid, W unreadable)" for
+# whichever counts are non-zero, or nothing at all if all four are zero.
+# Shared between the totals line and each per-agent row so the four
+# states are joined identically, in the same order, in both places.
 fs_cost_annotation() {
-    local missing="$1" no_cost="$2" unreadable="$3" joined
+    local missing="$1" no_cost="$2" invalid="$3" unreadable="$4" joined
     local parts=()
     (( missing > 0 )) && parts+=("$missing no summary")
     (( no_cost > 0 )) && parts+=("$no_cost no cost")
+    (( invalid > 0 )) && parts+=("$invalid invalid")
     (( unreadable > 0 )) && parts+=("$unreadable unreadable")
     (( ${#parts[@]} == 0 )) && return 0
     printf -v joined '%s, ' "${parts[@]}"
@@ -332,9 +343,9 @@ fs_cost_annotation() {
 # directly rather than sourcing them: router state is data, not shell code.
 print_cost_per_agent() {
     local pm="$MAIL_ROOT/.postmaster" env line key value agent thread run_dir
-    local prev total_runs=0 missing_summary=0 no_cost=0 unreadable=0
+    local prev total_runs=0 missing_summary=0 no_cost=0 invalid=0 unreadable=0
     local have_python=1 run_word
-    declare -A RUN_COUNT=() MISSING_COUNT=() NO_COST_COUNT=() UNREADABLE_COUNT=() COST_BY_AGENT=()
+    declare -A RUN_COUNT=() MISSING_COUNT=() NO_COST_COUNT=() INVALID_COUNT=() UNREADABLE_COUNT=() COST_BY_AGENT=()
     local parse_agents=() parse_paths=()
 
     printf '\n== Cost per agent ==\n'
@@ -392,14 +403,17 @@ print_cost_per_agent() {
         local results py_rc res
         local -a result_lines=()
         results="$(python3 -c '
-import json, sys
+import json, math, sys
 
 # A routed continuation includes the prior context cost in total_cost_usd.
 # Older summaries have only cost_usd. A JSON bool is excluded explicitly:
 # isinstance(True, int) is true in Python, and a JSON true would
 # otherwise be summed as 1. A file that cannot be opened or parsed as
 # JSON is reported separately from one that parses but has no usable
-# cost field: the two are different kinds of not knowing.
+# cost field: the two are different kinds of not knowing. json.loads
+# accepts the non-standard NaN/Infinity/-Infinity tokens, so a number
+# that parses fine but is negative, NaN, or infinite is a third,
+# distinct case: not absent, but not a usable cost either.
 for path in sys.argv[1:]:
     try:
         data = json.load(open(path))
@@ -412,14 +426,33 @@ for path in sys.argv[1:]:
             value = data.get(key)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 continue
-            # Fixed-point, never exponent notation: repr() switches to
-            # exponent form below 1e-4, which would fail the plain-digit
-            # gate below and misreport a known, tiny, real cost as
-            # unknown. This does not gate out extreme magnitudes either
-            # (a huge value is still a real number, just an ugly one) --
-            # it only tells a real number apart from the two sentinels
-            # above.
-            result = format(value, "f")
+            try:
+                finite = math.isfinite(value)
+            except OverflowError:
+                # An int too large to convert to float at all --
+                # math.isfinite() and format(value, "f") both raise
+                # OverflowError for it. It cannot be represented, so it
+                # is invalid rather than a real-but-ugly number.
+                finite = False
+            if not finite or value < 0:
+                result = "INVALID"
+            else:
+                # Fixed-point, never exponent notation: repr() switches
+                # to exponent form below 1e-4, which would fail the
+                # plain-digit gate below and misreport a known, tiny,
+                # real cost as unknown. This does not gate out magnitudes
+                # that still fit in a float (a huge-but-representable
+                # value is still a real number, just an ugly one) -- it
+                # only tells a real number apart from the sentinels
+                # above and from a magnitude no float can hold at all.
+                # Negative zero is not less than zero, so it reaches
+                # here, but format(-0.0, f) prints a leading minus sign
+                # that the plain-digit gate below rejects, relabeling a
+                # real zero as no cost. Canonicalize the sign away
+                # first: -0.0 equals 0.0 in Python.
+                if value == 0:
+                    value = 0.0
+                result = format(value, "f")
             break
     except Exception:
         pass
@@ -448,6 +481,9 @@ for path in sys.argv[1:]:
                 if [[ "$res" == "UNREADABLE" ]]; then
                     unreadable=$(( unreadable + 1 ))
                     UNREADABLE_COUNT[$agent]=$(( ${UNREADABLE_COUNT[$agent]:-0} + 1 ))
+                elif [[ "$res" == "INVALID" ]]; then
+                    invalid=$(( invalid + 1 ))
+                    INVALID_COUNT[$agent]=$(( ${INVALID_COUNT[$agent]:-0} + 1 ))
                 elif [[ "$res" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
                     prev="${COST_BY_AGENT[$agent]:-0}"
                     COST_BY_AGENT[$agent]="$(awk -v a="$prev" -v b="$res" 'BEGIN { printf "%.6f", a + b }')"
@@ -466,12 +502,12 @@ for path in sys.argv[1:]:
             echo '(some summary.json files could not be parsed and are counted as unreadable)'
         fi
     fi
-    printf 'runs: %s%s\n' "$total_runs" "$(fs_cost_annotation "$missing_summary" "$no_cost" "$unreadable")"
+    printf 'runs: %s%s\n' "$total_runs" "$(fs_cost_annotation "$missing_summary" "$no_cost" "$invalid" "$unreadable")"
     for agent in $(printf '%s\n' "${!RUN_COUNT[@]}" | sort); do
         run_word=runs
         (( RUN_COUNT[$agent] == 1 )) && run_word=run
         printf '%s  %s %s  $%s%s\n' "$agent" "${RUN_COUNT[$agent]}" "$run_word" "${COST_BY_AGENT[$agent]:-0.000000}" \
-            "$(fs_cost_annotation "${MISSING_COUNT[$agent]:-0}" "${NO_COST_COUNT[$agent]:-0}" "${UNREADABLE_COUNT[$agent]:-0}")"
+            "$(fs_cost_annotation "${MISSING_COUNT[$agent]:-0}" "${NO_COST_COUNT[$agent]:-0}" "${INVALID_COUNT[$agent]:-0}" "${UNREADABLE_COUNT[$agent]:-0}")"
     done
 }
 

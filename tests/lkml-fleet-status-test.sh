@@ -208,16 +208,23 @@ run_parser_bool="$work/run-parser-bool"; mkdir -p -- "$run_parser_bool"
 run_parser_sum_a="$work/run-parser-sum-a"; mkdir -p -- "$run_parser_sum_a"
 run_parser_sum_b="$work/run-parser-sum-b"; mkdir -p -- "$run_parser_sum_b"
 run_parser_huge="$work/run-parser-huge"; mkdir -p -- "$run_parser_huge"
+run_parser_overflow="$work/run-parser-overflow"; mkdir -p -- "$run_parser_overflow"
 printf '{"total_cost_usd": "1.23"}\n' > "$run_parser_string/summary.json"
 printf '{"total_cost_usd": true}\n' > "$run_parser_bool/summary.json"
 printf '{"total_cost_usd": 1.5}\n' > "$run_parser_sum_a/summary.json"
 printf '{"cost_usd": 2.25}\n' > "$run_parser_sum_b/summary.json"
 printf '{"total_cost_usd": 1000000000000000000000000000000}\n' > "$run_parser_huge/summary.json"
+# A magnitude beyond a double's range (~1.8e308): math.isfinite() and
+# format(value, "f") both raise OverflowError converting it to float, so
+# it must classify as invalid rather than silently falling back to
+# "no cost" (see scripts/lkml-fleet-status.sh's OverflowError handling).
+printf '{"total_cost_usd": %s}\n' "$(printf '1%.0s' $(seq 1 400))" > "$run_parser_overflow/summary.json"
 printf 'agent=parser-string\nthread=%s\nrun_dir=%s\n' "$t4" "$run_parser_string" > "$pm/runs/run-h.env"
 printf 'agent=parser-bool\nthread=%s\nrun_dir=%s\n' "$t4" "$run_parser_bool" > "$pm/runs/run-i.env"
 printf 'agent=parser-sum\nthread=%s\nrun_dir=%s\n' "$t4" "$run_parser_sum_a" > "$pm/runs/run-j.env"
 printf 'agent=parser-sum\nthread=%s\nrun_dir=%s\n' "$t4" "$run_parser_sum_b" > "$pm/runs/run-k.env"
 printf 'agent=parser-huge\nthread=%s\nrun_dir=%s\n' "$t4" "$run_parser_huge" > "$pm/runs/run-l.env"
+printf 'agent=parser-overflow\nthread=%s\nrun_dir=%s\n' "$t4" "$run_parser_overflow" > "$pm/runs/run-y.env"
 
 # thread t5: dedicated fixture for the tag-colon defect (a reviewer
 # discussing a verdict in prose must not be parsed as casting it). Kept
@@ -264,6 +271,60 @@ write_msg "$root" "$t5" 010 g0100000-0000-4000-8000-000000000010 "$(D 24)" \
 write_msg "$root" "$t5" 011 g0110000-0000-4000-8000-000000000011 "$(D 25)" \
     '@reviewer-progress' '@author' '' 'Re: Tag colon parsing fixture' 8 '' \
     'Changes-requested'
+
+# thread t6: dedicated fixture for the invalid-cost defect. A JSON number
+# that is negative, NaN, or infinite parses fine but is not a usable
+# cost, and must report as "invalid" -- distinct from "no cost" (a
+# positive finding: genuinely no cost) and "unreadable" (could not be
+# parsed at all). Isolated from every other thread's hand-counted totals.
+t6="66666666-ffff-4fff-8fff-ffffffffffff"
+mkdir -p -- "$root/threads/$t6"
+write_msg "$root" "$t6" 001 h0010000-0000-4000-8000-000000000001 "$(D 26)" \
+    '@author' '@panel' '' 'Invalid-cost parsing fixture' 8 '' \
+    'No patches here either.'
+
+run_invalid_neg="$work/run-invalid-neg"; mkdir -p -- "$run_invalid_neg"
+run_invalid_nan="$work/run-invalid-nan"; mkdir -p -- "$run_invalid_nan"
+run_invalid_inf="$work/run-invalid-inf"; mkdir -p -- "$run_invalid_inf"
+run_invalid_neginf="$work/run-invalid-neginf"; mkdir -p -- "$run_invalid_neginf"
+run_mixed_nocost="$work/run-mixed-nocost"; mkdir -p -- "$run_mixed_nocost"
+run_mixed_invalid="$work/run-mixed-invalid"; mkdir -p -- "$run_mixed_invalid"
+run_mixed_garbage="$work/run-mixed-garbage"; mkdir -p -- "$run_mixed_garbage"
+run_mixed_missing="$work/run-mixed-missing"; mkdir -p -- "$run_mixed_missing"
+run_zero="$work/run-zero"; mkdir -p -- "$run_zero"
+run_negzero="$work/run-negzero"; mkdir -p -- "$run_negzero"
+run_positive="$work/run-positive"; mkdir -p -- "$run_positive"
+run_poisoned_real="$work/run-poisoned-real"; mkdir -p -- "$run_poisoned_real"
+run_poisoned_invalid="$work/run-poisoned-invalid"; mkdir -p -- "$run_poisoned_invalid"
+printf '{"total_cost_usd": -1.5}\n' > "$run_invalid_neg/summary.json"
+printf '{"total_cost_usd": NaN}\n' > "$run_invalid_nan/summary.json"
+printf '{"total_cost_usd": Infinity}\n' > "$run_invalid_inf/summary.json"
+printf '{"total_cost_usd": -Infinity}\n' > "$run_invalid_neginf/summary.json"
+printf '{"total_cost_usd": null}\n' > "$run_mixed_nocost/summary.json"
+printf '{"total_cost_usd": -2.0}\n' > "$run_mixed_invalid/summary.json"
+printf 'not json at all\n' > "$run_mixed_garbage/summary.json"
+printf '{"total_cost_usd": 0.0}\n' > "$run_zero/summary.json"
+printf '{"total_cost_usd": -0.0}\n' > "$run_negzero/summary.json"
+printf '{"total_cost_usd": 2.5}\n' > "$run_positive/summary.json"
+printf '{"total_cost_usd": 2.5}\n' > "$run_poisoned_real/summary.json"
+printf '{"total_cost_usd": NaN}\n' > "$run_poisoned_invalid/summary.json"
+printf 'agent=invalid-neg\nthread=%s\nrun_dir=%s\n' "$t6" "$run_invalid_neg" > "$pm/runs/run-m.env"
+printf 'agent=invalid-nan\nthread=%s\nrun_dir=%s\n' "$t6" "$run_invalid_nan" > "$pm/runs/run-n.env"
+printf 'agent=invalid-inf\nthread=%s\nrun_dir=%s\n' "$t6" "$run_invalid_inf" > "$pm/runs/run-o.env"
+printf 'agent=invalid-neginf\nthread=%s\nrun_dir=%s\n' "$t6" "$run_invalid_neginf" > "$pm/runs/run-p.env"
+printf 'agent=mixed-four\nthread=%s\nrun_dir=%s\n' "$t6" "$run_mixed_missing" > "$pm/runs/run-q.env"
+printf 'agent=mixed-four\nthread=%s\nrun_dir=%s\n' "$t6" "$run_mixed_nocost" > "$pm/runs/run-r.env"
+printf 'agent=mixed-four\nthread=%s\nrun_dir=%s\n' "$t6" "$run_mixed_invalid" > "$pm/runs/run-s.env"
+printf 'agent=mixed-four\nthread=%s\nrun_dir=%s\n' "$t6" "$run_mixed_garbage" > "$pm/runs/run-t.env"
+printf 'agent=zero-real\nthread=%s\nrun_dir=%s\n' "$t6" "$run_zero" > "$pm/runs/run-u.env"
+printf 'agent=negzero\nthread=%s\nrun_dir=%s\n' "$t6" "$run_negzero" > "$pm/runs/run-z.env"
+printf 'agent=positive-sum\nthread=%s\nrun_dir=%s\n' "$t6" "$run_positive" > "$pm/runs/run-v.env"
+printf 'agent=poisoned-mix\nthread=%s\nrun_dir=%s\n' "$t6" "$run_poisoned_real" > "$pm/runs/run-w.env"
+printf 'agent=poisoned-mix\nthread=%s\nrun_dir=%s\n' "$t6" "$run_poisoned_invalid" > "$pm/runs/run-x.env"
+# run-q's run_dir deliberately has no summary.json: the "no summary" state.
+# poisoned-mix pairs a real cost with an invalid one on the SAME agent: if
+# an INVALID result ever reached the awk accumulator, 2.5 + nan would
+# poison this agent's total instead of just incrementing its invalid count.
 
 # Stub fork-sandbox: only the one call the script is allowed to make.
 stub_bin="$work/stub"; mkdir -p -- "$stub_bin"
@@ -316,7 +377,7 @@ contains "missing mail root names the path it wanted" "$OUT" "$work/no-such-root
 printf '\n== --list: one line per thread ==\n'
 OUT="$(PATH="$STUB_PATH" "$status" --list --mail-root "$root" 2>&1)"; RC=$?
 check "--list exits 0" "0" "$RC"
-check "--list prints one line per thread" "4" "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')"
+check "--list prints one line per thread" "5" "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')"
 contains "--list shows t1's short id" "$OUT" "1111111"
 contains "--list shows t2's root Subject" "$OUT" "Unrelated thread"
 contains "--list shows t1's root Subject" "$OUT" "[PATCH v1 0/2] Improve the thing"
@@ -410,7 +471,8 @@ contains "a JSON string cost is not summed" "$OUT" "parser-string  1 run  \$0.00
 contains "a JSON true cost is not summed (the isinstance(bool, int) trap)" "$OUT" "parser-bool  1 run  \$0.000000 (1 no cost)"
 contains "two real-number runs by one agent sum correctly" "$OUT" "parser-sum  2 runs  \$3.750000"
 contains "a huge magnitude is a real cost and is summed, not filtered by size" "$OUT" "parser-huge  1 run  \$1000000000000000019884624838656.000000"
-contains "totals count only the string and bool runs as no cost" "$OUT" 'runs: 5 (2 no cost)'
+contains "a magnitude beyond float range is invalid, not silently no cost" "$OUT" "parser-overflow  1 run  \$0.000000 (1 invalid)"
+contains "totals count the string/bool runs as no cost and the overflow run as invalid" "$OUT" 'runs: 6 (2 no cost, 1 invalid)'
 
 printf '\n== cost parser unavailable: the inventory must survive ==\n'
 not_contains "unreadable never appears when python3 is available" "$OUT" 'unreadable)'
@@ -505,6 +567,28 @@ contains "a bare Question on the last line still counts" "$LINE" "tags: Question
 LINE="$(grep -F '@reviewer-progress ' <<<"$OUT" | head -n1)"
 contains "latest-message-wins: a later bare verdict supersedes an earlier colon trailer" "$LINE" "tags: Changes-requested"
 not_contains "the superseded trailer is not also reported" "$LINE" "Reviewed-by"
+
+printf '\n== cost per agent: invalid cost is its own state ==\n'
+OUT="$(PATH="$STUB_PATH" "$status" "$t6" --mail-root "$root" 2>&1)"; RC=$?
+check "invalid-cost fixture screen exits 0" "0" "$RC"
+contains "a negative cost is invalid, not summed" "$OUT" "invalid-neg  1 run  \$0.000000 (1 invalid)"
+contains "a NaN cost is invalid" "$OUT" "invalid-nan  1 run  \$0.000000 (1 invalid)"
+contains "an Infinity cost is invalid" "$OUT" "invalid-inf  1 run  \$0.000000 (1 invalid)"
+contains "a -Infinity cost is invalid" "$OUT" "invalid-neginf  1 run  \$0.000000 (1 invalid)"
+not_contains "a negative cost is not reported as no cost" "$OUT" "invalid-neg  1 run  \$0.000000 (1 no cost)"
+not_contains "a NaN cost is not reported as unreadable" "$OUT" "invalid-nan  1 run  \$0.000000 (1 unreadable)"
+contains "no summary, no cost, invalid and unreadable all appear for one agent, distinctly" "$OUT" \
+    "mixed-four  4 runs  \$0.000000 (1 no summary, 1 no cost, 1 invalid, 1 unreadable)"
+contains "invalid is counted in the totals line too" "$OUT" \
+    "runs: 13 (1 no summary, 1 no cost, 6 invalid, 1 unreadable)"
+LINE="$(grep -F 'zero-real ' <<<"$OUT" | head -n1)"
+check "a real zero cost still sums as zero, with no annotation at all" "zero-real  1 run  \$0.000000" "$LINE"
+LINE="$(grep -F 'negzero ' <<<"$OUT" | head -n1)"
+check "a real negative-zero cost sums as zero, not as no cost" "negzero  1 run  \$0.000000" "$LINE"
+LINE="$(grep -F 'positive-sum ' <<<"$OUT" | head -n1)"
+check "a normal positive cost still sums, with no annotation" "positive-sum  1 run  \$2.500000" "$LINE"
+LINE="$(grep -F 'poisoned-mix ' <<<"$OUT" | head -n1)"
+check "a same-agent invalid cost does not poison the real cost's sum" "poisoned-mix  2 runs  \$2.500000 (1 invalid)" "$LINE"
 
 printf '\n== prefix resolution ==\n'
 OUT="$(PATH="$STUB_PATH" "$status" "${t1:0:12}" --mail-root "$root" 2>&1)"; RC=$?
