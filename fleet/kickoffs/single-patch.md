@@ -19,8 +19,8 @@ template engine):
                default to read it (wake-on-cc gates this per agent),
                but no response is requested of it
   ${SUBJECT}   e.g. "[PATCH] <one-line summary of the change>"
-${SUMMARY}   one or two sentences: what the patch does and why
-${HANDOFF}   CI-first wave-one instructions; empty for ordinary kickoffs
+  ${SUMMARY}   one or two sentences: what the patch does and why
+  ${HANDOFF}   CI-first wave-one instructions; empty for ordinary kickoffs
   ${BASE}      the base ref/commit this patch applies on top of
   ${BRANCH}    the branch carrying the single commit (branch-name
                variant only)

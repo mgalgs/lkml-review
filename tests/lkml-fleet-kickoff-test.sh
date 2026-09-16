@@ -130,6 +130,13 @@ if [[ -f "$body_file" ]]; then
     esac
     contains "body has the filled summary" "$body_text" "does a thing"
     contains "body has the base" "$body_text" "Base: master"
+    # ${HANDOFF} fills to the empty string for an ordinary kickoff, and it
+    # sits between blank lines in the template, so the body would open on
+    # two blank lines if they were not trimmed.
+    check "ordinary body opens on its first real line, not a blank" \
+        "does a thing" "$(head -n1 "$body_file")"
+    check "ordinary body leaves no unsubstituted HANDOFF placeholder" "0" \
+        "$(grep -c 'HANDOFF' "$body_file")"
     contains "body has the branch" "$body_text" "Branch: topic"
     contains "body has the patch count" "$body_text" "Patches: 2"
     case "$body_text" in
@@ -205,6 +212,8 @@ ci_body_file="$(printf '%s' "$out_ci_first" | grep -o -- '--body [^ ]*' | awk '{
 ci_body_text="$([[ -f "$ci_body_file" ]] && cat "$ci_body_file")"
 contains "--ci-first body carries the panel address" "$ci_body_text" '`To:` to @lkml-panel'
 contains "--ci-first body carries the fixed wave-one heading" "$ci_body_text" "## Wave one: test results first"
+check "--ci-first body opens on the wave-one heading, not a blank" \
+    "## Wave one: test results first" "$(head -n1 "$ci_body_file")"
 contains "--ci-first body says CI alone was addressed" "$ci_body_text" "addressed to you alone"
 contains "--ci-first without --hops defaults to 9" "$out_ci_first" "--hops 9"
 contains "--ci-first without --hops explains its hop bump" "$out_ci_first" "extra hop"

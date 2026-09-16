@@ -17,8 +17,8 @@ template engine):
                default to read it (wake-on-cc gates this per agent),
                but no response is requested of it
   ${SUBJECT}   e.g. "[PATCH v1 0/N] <series summary>"
-${SUMMARY}   one paragraph: what the series does and why
-${HANDOFF}   CI-first wave-one instructions; empty for ordinary kickoffs
+  ${SUMMARY}   one paragraph: what the series does and why
+  ${HANDOFF}   CI-first wave-one instructions; empty for ordinary kickoffs
   ${BASE}      the base ref/commit this series applies on top of
   ${BRANCH}    the series' own branch name (branch-name variant only)
   ${PATCH_COUNT} number of patches in the series

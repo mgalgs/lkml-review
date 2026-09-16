@@ -240,6 +240,8 @@ body="$(awk '
         print line
     }
 ' "$template")"
+# shellcheck disable=SC2016  # ${HANDOFF} is the literal placeholder text
+# being searched for in the template, not a variable to expand.
 if [[ -n "$ci_first" && "$body" != *'${HANDOFF}'* ]]; then
     echo "Error: --ci-first requires template '$template' to contain \${HANDOFF} in its body so CI receives the wave-one routing instructions." >&2
     exit 1
@@ -254,6 +256,15 @@ fill body BRANCH "$branch"
 fill body PATCH_COUNT "$patch_count"
 fill body PANEL "$panel"
 fill body HANDOFF "$handoff"
+
+# ${HANDOFF} sits near the top of the template with a blank line on each
+# side, so an ordinary kickoff -- where it fills to the empty string --
+# would otherwise open on two blank lines before its first real word.
+# Strip only leading newlines: indentation on the first real line, should
+# a template ever want it, is the template's business.
+while [[ "$body" == $'\n'* ]]; do
+    body="${body#$'\n'}"
+done
 
 # An unterminated (or entirely swallowed) template comment would
 # otherwise post an empty kickoff to the whole panel and report success.
