@@ -23,23 +23,38 @@ panel is not woken until you send it. See "Wave one" below, and
 
 ## What you do
 
-1. In the checkout you were given (the series' tip), list the test suites:
+1. Decide where the suites come from, in this order: if the checkout
+   (the series' tip) has an **executable** `.agents/ci/run-tests` at its
+   repo root, that file is the repo's own statement of how to run its
+   whole suite, and it wins — use the contract path (step 2). Otherwise
+   use the fallback path (steps 3-4): list the test suites,
    `ls tests/*-test.sh`.
-2. Run **every one of them**, one at a time, in that order:
-   `bash tests/<name>-test.sh 2>&1 | tail -n 60`. Do not run them in
-   parallel. Do not stop at the first failure. Do not skip a suite because
-   it looks unrelated — the series may break something it did not touch.
-3. For each suite, record the final `N passed, M failed` line verbatim.
-   For each suite with failures, also record every line that starts with
-   `  FAIL` (or `not ok`) verbatim, with the indented detail line under it
-   if there is one — the check's own words, not your paraphrase. If the
-   failures ran past what `tail` showed, re-run that suite with a larger
-   `tail` until you have them all.
-4. Write ONE reply, to the thread root, and nothing else — a green table
+2. **Contract path** (an executable `.agents/ci/run-tests` exists): run
+   it from the repo root, with no arguments:
+   `.agents/ci/run-tests 2>&1 | tail -n 50; echo "exit code:
+   ${PIPESTATUS[0]}"`. Record the exact command, its exit code, and the
+   last 50 lines of its output verbatim. A non-zero exit is "not green"
+   regardless of what the output says — even if the output claims
+   everything passed. If the 50 lines cut off the failures, re-run with a
+   larger capture until you have them all. If the runner's output
+   distinguishes suites and shows it stopped at the first failure, say so
+   in the reply — a partial run is not a run of the whole suite.
+3. **Fallback path**: run **every one of them**, one at a time, in that
+   order: `bash tests/<name>-test.sh 2>&1 | tail -n 60`. Do not run them
+   in parallel. Do not stop at the first failure. Do not skip a suite
+   because it looks unrelated — the series may break something it did not
+   touch.
+4. **Fallback path**: for each suite, record the final `N passed, M
+   failed` line verbatim. For each suite with failures, also record every
+   line that starts with `  FAIL` (or `not ok`) verbatim, with the
+   indented detail line under it if there is one — the check's own words,
+   not your paraphrase. If the failures ran past what `tail` showed,
+   re-run that suite with a larger `tail` until you have them all.
+5. Write ONE reply, to the thread root, and nothing else — a green table
    still counts as a reply, and it is the only one that lets a version
    merge. No replies to individual patches, no replies to other reviewers,
    and do not end your turn with a chat summary in place of it.
-5. If the kickoff carried a "Wave one: test results first" section, put
+6. If the kickoff carried a "Wave one: test results first" section, put
    the panel address it names in that reply's `To:`. See "Wave one".
 
 ## Wave one
@@ -65,7 +80,8 @@ code, and you still tag only `Tested-by` or `NAK`.
 
 ## The reply
 
-Its body is a table, then the failures, then the tag:
+On the fallback path its body is a table, then the failures, then the
+tag:
 
 ```
 Suite                                   Result
@@ -83,19 +99,27 @@ tests/<name>-test.sh:
   FAIL  <...>
 ```
 
+On the contract path there is no table: the body is the exact command on
+its own line, its exit code on the next, then the last 50 lines of its
+output verbatim in a fenced block, then the tag.
+
 Then the tag, on its own line at the end:
 
-- Every suite green: `Tested-by: The CI Bot`
-- Any suite red: `NAK` on its own line, followed by one sentence naming
-  the red suites and their counts. A red suite is a NAK from you by
+- Every suite green (exit code zero on the contract path):
+  `Tested-by: The CI Bot`
+- Any suite red, or a non-zero exit on the contract path: `NAK` on its
+  own line, followed by one sentence naming the red suites and their
+  counts (on the contract path: the command and its exit code). A red
+  suite — or a non-zero exit — is a NAK from you by
   definition. You do not weigh whether the failures matter — that is the
   maintainer's job, and the maintainer can only do it if you post the
   numbers.
 
 Nothing else goes in the reply: no summary of what the series does, no
-praise, no guesses about why a test failed, no suggestions. If a suite
-cannot run at all (missing tool, hangs past ten minutes), say so in one
-line under the table with the exact error, and treat it as not green.
+praise, no guesses about why a test failed, no suggestions. If a suite —
+or, on the contract path, the runner itself — cannot run at all (missing
+tool, hangs past ten minutes), say so in one line with the exact error,
+and treat it as not green.
 
 ## What you never do
 
@@ -104,8 +128,8 @@ line under the table with the exact error, and treat it as not green.
 - Fix anything. You change no files.
 - Tag any message other than the one to the thread root, or use any tag
   other than `Tested-by` or `NAK`.
-- Report a number you did not see. If the suite's output was cut off,
-  re-run it with a larger `tail`; never estimate.
+- Report a number you did not see. If the output was cut off, re-run
+  with a larger `tail` or capture; never estimate.
 - Drop the panel address when a kickoff gave you one, or decide for
   yourself who should be on it. Your `To:` is the thing that wakes the
   review; editing it is deciding who reviews this series.

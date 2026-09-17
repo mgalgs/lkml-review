@@ -57,6 +57,46 @@ else
     no "ci resolves network=sealed" "got '$ci_network'"
 fi
 
+# The ci persona's suite source is a two-path contract: an executable
+# .agents/ci/run-tests at the repo root wins (the repo's own statement
+# of how to run its whole suite); otherwise the persona falls back to
+# tests/*-test.sh. Pin both paths and the contract path's reporting.
+ci_md="$personas_dir/ci.md"
+has() { # $1=file $2=fixed string $3=description
+    if grep -qF -- "$2" "$1"; then
+        ok "$3"
+    else
+        no "$3" "'$2' not found in $(basename "$1")"
+    fi
+}
+
+has "$ci_md" '.agents/ci/run-tests' \
+    "ci.md names the .agents/ci/run-tests entrypoint"
+has "$ci_md" 'executable' \
+    "ci.md requires the entrypoint to be executable"
+has "$ci_md" 'repo root' \
+    "ci.md runs the entrypoint from the repo root"
+has "$ci_md" 'ls tests/*-test.sh' \
+    "ci.md keeps the tests/*-test.sh fallback"
+has "$ci_md" 'exit code' \
+    "ci.md's contract path records the exit code"
+has "$ci_md" 'non-zero' \
+    "ci.md states a non-zero exit is not green"
+
+# Only the seat that executes anything may grow the contract; the other
+# eight personas must not pick it up.
+mentioners=""
+for f in "$personas_dir"/*.md; do
+    if grep -qF '.agents/ci/run-tests' "$f"; then
+        mentioners+=" $(basename "$f" .md)"
+    fi
+done
+if [[ "$mentioners" == " ci" ]]; then
+    ok "only ci.md mentions .agents/ci/run-tests"
+else
+    no "only ci.md mentions .agents/ci/run-tests" "mentioned in:$mentioners"
+fi
+
 # The reply-format section is a hard contract with the router, not
 # advice: a malformed stanza is discarded wholesale and the seat
 # respawned, so every persona carries the same salient section. The
