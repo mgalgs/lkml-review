@@ -499,6 +499,8 @@ fi
 
 # fill <content-varname> <PLACEHOLDER-NAME> <value> — literal substring
 # replace, since ${var} values here never contain glob metacharacters.
+# An own-line placeholder that fills to empty also removes its own line
+# and one following blank (see below).
 #
 # An own-line placeholder (the whole line is nothing but the
 # placeholder) that fills to the empty string removes its own line and
