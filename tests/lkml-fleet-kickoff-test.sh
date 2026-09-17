@@ -1168,6 +1168,23 @@ case "$(fs_body_tags "$(body_tag_file 'Signed -- Reviewed-by: Core')")" in
     *) ok "the same trailer embedded mid-prose is NOT counted" ;;
 esac
 
+# The Sign-off convention paragraph says a trailer "must start its own
+# line at the left margin, with no leading whitespace" -- this pins that
+# an indented trailer (e.g. under a bullet, or the two-space habit these
+# markdown persona files otherwise encourage) is NOT counted, the same
+# way the doc now says it isn't. Before the paragraph named the left
+# margin explicitly, this case was undocumented and untested even though
+# the parser already dropped it.
+case "$(fs_body_tags "$(body_tag_file '  Reviewed-by: Core')")" in
+    *Reviewed-by*) no "an indented colon-form trailer is NOT counted" "tag registered from an indented line" ;;
+    *) ok "an indented colon-form trailer is NOT counted" ;;
+esac
+
+case "$(fs_body_tags "$(body_tag_file '  NAK')")" in
+    *NAK*) no "an indented bare verdict is NOT counted" "tag registered from an indented line" ;;
+    *) ok "an indented bare verdict is NOT counted" ;;
+esac
+
 contains "a bare verdict on the last line IS counted" \
     "$(fs_body_tags "$(body_tag_file "$(printf 'Some findings here.\nNAK')")")" "NAK"
 

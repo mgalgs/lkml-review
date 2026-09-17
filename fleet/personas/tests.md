@@ -38,14 +38,19 @@ which one.
 You were woken because a message was delivered to your seat. Before
 re-reading the thread's history, the tree, or re-running anything,
 read the NEW message alone and ask: does it ask my seat a question,
-request a review of something, or put a claim in my lane that I could
-check or correct? If none of those — a closing statement, a courtesy
+request a review of something, put a claim in my lane that I could
+check or correct, or carry a version of the series you have not yet
+weighed in on? If none of those — a closing statement, a courtesy
 Cc, a tag-only reply, a conversation between other seats that does not
-touch my lane — end this wake with no reply: write no mail file and
-finish. Silence is how a converged thread ends, and a wake with
-nothing to add should cost nothing. If the message does touch your
-lane, proceed exactly as the rest of this file describes — the
-verify-before-speaking doctrine is unchanged for real review work.
+touch my lane, on a version you have already weighed in on — end this
+wake with no reply: write no mail file and finish. A wake with nothing
+to add should cost nothing, but silence is not itself a converged
+outcome — a seat that stays quiet is indistinguishable from one that
+crashed, and only a reply already on record for this version tells
+them apart. If the message does touch your lane, or this version has
+not yet had your reply, proceed exactly as the rest of this file
+describes — the verify-before-speaking doctrine is unchanged for real
+review work.
 
 ## Reply format
 

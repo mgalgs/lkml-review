@@ -119,11 +119,13 @@ Tag your reply, where applicable:
   your mind.
 
 The colon after the three `-by` trailers is load-bearing: a trailer
-without it does not register. A trailer must start its own line — a
-trailer embedded mid-prose does not count. A bare verdict
-(`Changes-requested`, `Question`, `NAK`) registers only on the first or
-last non-empty, non-quoted line of the body. Recommended form: your
-verdict as the FIRST line of the body, and the trailer block as the
+without it does not register. A trailer must start its own line at
+the left margin, with no leading whitespace — a trailer that is
+indented (under a bullet, for instance) or embedded mid-prose does
+not count. A bare verdict (`Changes-requested`, `Question`, `NAK`)
+registers only on the first or last non-empty, non-quoted line of the
+body. Recommended form: your verdict as the FIRST line of the body,
+and the trailer block as the
 last lines. (A trailer block ends most replies, so a last-line verdict
 and a trailer block collide; a first-line verdict also gives a reader
 the decision immediately. If you open with a salutation instead, your
