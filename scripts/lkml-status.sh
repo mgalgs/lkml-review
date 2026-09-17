@@ -98,6 +98,7 @@ missing_summary=0
 no_cost=0
 invalid=0
 unreadable=0
+unreadable_ledger=0
 total_cost="0"
 declare -A RUN_COUNT=() MISSING_COUNT=() NO_COST_COUNT=() INVALID_COUNT=() UNREADABLE_COUNT=() COST_BY_PERSONA=()
 parse_personas=()
@@ -106,17 +107,30 @@ parse_paths=()
 while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -n "$line" ]] || continue
     total_runs=$(( total_runs + 1 ))
-    run_dir="$(printf '%s' "$line" | jq -r '.run_dir' 2>/dev/null)"
-    persona="$(printf '%s' "$line" | jq -r '.persona' 2>/dev/null)"
-    if [[ -z "$run_dir" || "$run_dir" == null || -z "$persona" || "$persona" == null ]]; then
+    run_dir="$(printf '%s' "$line" | jq -r '.run_dir // empty' 2>/dev/null)"
+    persona="$(printf '%s' "$line" | jq -r '.persona // empty' 2>/dev/null)"
+    # A persona-less line is the one shape this ledger cannot attribute
+    # at all (unparseable JSON, or a line simply missing the field) --
+    # that, and only that, is "unreadable". A cluster seat's line
+    # (scripts/lkml-round.sh) has a persona but deliberately no
+    # run_dir -- its cost is unknown, not unreadable, so it falls
+    # through to the same "no summary" bucket a not-yet-finished local
+    # run would, under its real persona, matching how
+    # scripts/lkml-fleet-status.sh's print_cost_per_agent() treats an
+    # empty run_dir. Collapsing that into "unreadable" would both
+    # discard real attribution and desync the two screens' answers for
+    # the same run -- see the classifier comment below for why that
+    # parity matters.
+    if [[ -z "$persona" ]]; then
         persona='unknown persona'
         RUN_COUNT[$persona]=$(( ${RUN_COUNT[$persona]:-0} + 1 ))
         unreadable=$(( unreadable + 1 ))
+        unreadable_ledger=$(( unreadable_ledger + 1 ))
         UNREADABLE_COUNT[$persona]=$(( ${UNREADABLE_COUNT[$persona]:-0} + 1 ))
         continue
     fi
     RUN_COUNT[$persona]=$(( ${RUN_COUNT[$persona]:-0} + 1 ))
-    if [[ ! -f "$run_dir/summary.json" ]]; then
+    if [[ -z "$run_dir" || ! -f "$run_dir/summary.json" ]]; then
         missing_summary=$(( missing_summary + 1 ))
         MISSING_COUNT[$persona]=$(( ${MISSING_COUNT[$persona]:-0} + 1 ))
         continue
@@ -205,7 +219,15 @@ for path in sys.argv[1:]:
     fi
 fi
 
-if (( unreadable > 0 )); then
+# The header at line 18 names two distinct sources of "unreadable": the
+# ledger line itself (couldn't be attributed to a persona) and a
+# summary.json a persona's line pointed at (couldn't be parsed as cost).
+# Blaming summary.json for both would send an operator to look for a
+# file that, in the ledger-line case, was never named in the first place.
+if (( unreadable_ledger > 0 )); then
+    echo '(some runs.jsonl lines could not be parsed and are counted as unreadable)'
+fi
+if (( unreadable - unreadable_ledger > 0 )); then
     if (( ! have_python )); then
         echo '(python3 not found: those summaries could not be parsed and are counted as unreadable)'
     else

@@ -212,6 +212,35 @@ contains "cost-malformed: aggregate only includes the readable run" "$OUT" "Tota
 # itself contains a space.
 contains "cost-malformed: both malformed lines collapse into one row" "$OUT" \
     "unknown persona \$0.000000 (2 unreadable)"
+# The unreadable source here is the ledger line itself, not any
+# summary.json (there is none to blame -- neither malformed line names a
+# run_dir), so the banner must say so instead of pointing at summary.json.
+contains "cost-malformed: banner blames the ledger line, not summary.json" "$OUT" \
+    "(some runs.jsonl lines could not be parsed and are counted as unreadable)"
+not_contains "cost-malformed: banner does not blame summary.json" "$OUT" \
+    "some summary.json files could not be parsed"
+
+printf '\n== cost-cluster: a cluster seat line has a persona but no run_dir ==\n'
+init_series cost-cluster
+mkdir -p "$work/ccl-local"
+printf '{"total_cost_usd": 1.0}\n' > "$work/ccl-local/summary.json"
+write_run cost-cluster "$work/ccl-local" local
+# scripts/lkml-round.sh writes exactly this shape for every --k8s seat:
+# {persona, branch, kind, cluster:true} -- deliberately no run_dir, since
+# a cluster run's cost is currently unknown, not free. It must be
+# attributed to its real persona as "no summary" (pending/unknown, like
+# a local in-flight run), never thrown away as an unreadable ledger line.
+printf '{"persona":"cluster-seat","branch":"b","kind":"review","cluster":true}\n' \
+    >> "$LKML_MAILBOX_ROOT/cost-cluster/runs.jsonl"
+
+OUT="$("$status" cost-cluster 2>/dev/null)"
+contains "cost-cluster: runs launched is 2" "$OUT" "Runs launched: 2"
+contains "cost-cluster: the cluster line counts as no summary, not unreadable" "$OUT" \
+    "Runs launched: 2 (1 no summary)"
+not_contains "cost-cluster: the cluster seat is never folded into unknown persona" "$OUT" "unknown persona"
+contains "cost-cluster: the cluster seat keeps its real persona name" "$OUT" \
+    "cluster-seat   \$0.000000 (1 no summary)"
+contains "cost-cluster: the local run's cost is unaffected" "$OUT" "local          \$1.000000"
 
 printf '\n== cost-pyabsent: a missing python3 degrades to a named state ==\n'
 init_series cost-pyabsent

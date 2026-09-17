@@ -509,12 +509,19 @@ for path in sys.argv[1:]:
         fi
     fi
     printf 'runs: %s%s\n' "$total_runs" "$(fs_cost_annotation "$missing_summary" "$no_cost" "$invalid" "$unreadable")"
-    for agent in $(printf '%s\n' "${!RUN_COUNT[@]}" | sort); do
+    # A `for agent in $(...)` here would word-split "unknown agent" (the
+    # sentinel for a run record with no agent= key, itself containing a
+    # space) into two bogus rows, and worse, leave $agent set to
+    # "unknown" -- a key RUN_COUNT never has, fatal under set -u. Read
+    # whole lines instead. Mirrors scripts/lkml-status.sh's identical
+    # fix for its "unknown persona" sentinel.
+    while IFS= read -r agent; do
+        [[ -n "$agent" ]] || continue
         run_word=runs
         (( RUN_COUNT[$agent] == 1 )) && run_word=run
         printf '%s  %s %s  $%s%s\n' "$agent" "${RUN_COUNT[$agent]}" "$run_word" "${COST_BY_AGENT[$agent]:-0.000000}" \
             "$(fs_cost_annotation "${MISSING_COUNT[$agent]:-0}" "${NO_COST_COUNT[$agent]:-0}" "${INVALID_COUNT[$agent]:-0}" "${UNREADABLE_COUNT[$agent]:-0}")"
-    done
+    done < <(printf '%s\n' "${!RUN_COUNT[@]}" | sort)
 }
 
 # --- --list: one line per thread ------------------------------------------

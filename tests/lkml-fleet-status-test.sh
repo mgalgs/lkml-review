@@ -345,6 +345,18 @@ printf 'agent=poisoned-mix\nthread=%s\nrun_dir=%s\n' "$t6" "$run_poisoned_invali
 # an INVALID result ever reached the awk accumulator, 2.5 + nan would
 # poison this agent's total instead of just incrementing its invalid count.
 
+# thread t7: dedicated fixture for a run record with no agent= key at
+# all -- the router writing a line it could not attribute. Isolated so a
+# crash here can never be masked by t1..t6 having already printed.
+t7="77777777-0000-4000-8000-000000000000"
+mkdir -p -- "$root/threads/$t7"
+write_msg "$root" "$t7" 001 i0010000-0000-4000-8000-000000000001 "$(D 27)" \
+    '@author' '@panel' '' 'Missing agent key fixture' 8 '' \
+    'No patches here either.'
+run_no_agent="$work/run-no-agent"; mkdir -p -- "$run_no_agent"
+printf '{"total_cost_usd": 6.0}\n' > "$run_no_agent/summary.json"
+printf 'thread=%s\nrun_dir=%s\n' "$t7" "$run_no_agent" > "$pm/runs/run-noagent.env"
+
 # Stub fork-sandbox: only the one call the script is allowed to make.
 stub_bin="$work/stub"; mkdir -p -- "$stub_bin"
 cat > "$stub_bin/fork-sandbox" <<'STUB'
@@ -396,7 +408,7 @@ contains "missing mail root names the path it wanted" "$OUT" "$work/no-such-root
 printf '\n== --list: one line per thread ==\n'
 OUT="$(PATH="$STUB_PATH" "$status" --list --mail-root "$root" 2>&1)"; RC=$?
 check "--list exits 0" "0" "$RC"
-check "--list prints one line per thread" "5" "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')"
+check "--list prints one line per thread" "6" "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')"
 contains "--list shows t1's short id" "$OUT" "1111111"
 contains "--list shows t2's root Subject" "$OUT" "Unrelated thread"
 contains "--list shows t1's root Subject" "$OUT" "[PATCH v1 0/2] Improve the thing"
@@ -644,6 +656,21 @@ LINE="$(grep -F 'positive-sum ' <<<"$OUT" | head -n1)"
 check "a normal positive cost still sums, with no annotation" "positive-sum  1 run  \$2.500000" "$LINE"
 LINE="$(grep -F 'poisoned-mix ' <<<"$OUT" | head -n1)"
 check "a same-agent invalid cost does not poison the real cost's sum" "poisoned-mix  2 runs  \$2.500000 (1 invalid)" "$LINE"
+
+printf '\n== cost per agent: a run record with no agent= key does not abort the screen ==\n'
+OUT="$(PATH="$STUB_PATH" "$status" "$t7" --mail-root "$root" 2>&1)"; RC=$?
+# The per-agent listing is `for agent in $(...)`, so "unknown agent" (the
+# sentinel, itself containing a space) word-splits into "unknown" and
+# "agent" unless the loop reads whole lines -- and under set -u,
+# ${RUN_COUNT[unknown]} is a reference to a key that was never set,
+# which is fatal, not merely wrong. Confirmed this reproduces before the
+# fix: the screen printed "runs: 1" and then aborted with "RUN_COUNT[$agent]:
+# unbound variable", never reaching the per-agent rows or exiting 0.
+check "missing agent key screen exits 0, does not abort" "0" "$RC"
+contains "missing agent key is still counted in the run total" "$OUT" "runs: 1"
+contains "missing agent key falls back to the sentinel, on one whole row" "$OUT" \
+    "unknown agent  1 run  \$6.000000"
+not_contains "the sentinel is never split into two bogus rows" "$OUT" $'unknown  1 run'
 
 printf '\n== prefix resolution ==\n'
 OUT="$(PATH="$STUB_PATH" "$status" "${t1:0:12}" --mail-root "$root" 2>&1)"; RC=$?
