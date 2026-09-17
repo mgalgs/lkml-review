@@ -323,6 +323,12 @@ print_hop_and_spawns() {
 
 }
 
+# scripts/lkml-status.sh classifies a run's cost with the same four
+# states (no summary, no cost, invalid, unreadable) and its own
+# cost_annotation() prints them the same way, deliberately duplicated
+# rather than shared -- see that script's cost section for why. Keep
+# any change to the taxonomy or its wording in both places.
+#
 # Prints " (X no summary, Y no cost, Z invalid, W unreadable)" for
 # whichever counts are non-zero, or nothing at all if all four are zero.
 # Shared between the totals line and each per-agent row so the four

@@ -125,25 +125,32 @@ write_run cost-basic "$work/cb-fallback" fallback
 
 OUT="$("$status" cost-basic 2>/dev/null)"
 contains "cost-basic: runs launched is 8" "$OUT" "Runs launched: 8"
-# Today (commit 1), an absent field is silently treated as a real $0 cost
-# via jq's `// 0`, not annotated as "no cost". Commit 2 changes this.
-contains "cost-basic: absent field sums as 0, today, unannotated" "$OUT" "absent         \$0.000000"
-contains "cost-basic: null field sums as 0, today, unannotated" "$OUT" "isnull         \$0.000000"
-# jq's `//` treats `false` as absent too, so this also falls through to 0.
-contains "cost-basic: false field sums as 0, today, unannotated" "$OUT" "isfalse        \$0.000000"
-# `//` passes `true` through; `jq -r` prints the literal "true"; awk adds
-# "true" as 0. Silently free, today.
-contains "cost-basic: true field sums as 0, today, unannotated" "$OUT" "istrue         \$0.000000"
-# A corrupt summary.json makes jq fail; `cost` is empty; awk adds "" as 0.
-# No -e in this script, so nothing aborts.
-contains "cost-basic: corrupt file sums as 0, today, unannotated" "$OUT" "corrupt        \$0.000000"
-# A JSON string cost is accepted and summed as a real number, today.
-contains "cost-basic: string cost is accepted and summed, today" "$OUT" "isstring       \$1.230000"
-# A negative cost is summed as negative, unannotated, today.
-contains "cost-basic: negative cost is summed as negative, today" "$OUT" "negative       \$-5.500000"
+contains "cost-basic: runs launched names the four states" "$OUT" \
+    "Runs launched: 8 (5 no cost, 1 invalid, 1 unreadable)"
+# An absent field is classified "no cost", not summed as a real $0.
+contains "cost-basic: absent field is no cost" "$OUT" "absent         \$0.000000 (1 no cost)"
+not_contains "cost-basic: absent field is never claimed free" "$OUT" $'absent         $0.000000\n'
+contains "cost-basic: null field is no cost" "$OUT" "isnull         \$0.000000 (1 no cost)"
+# jq's `//` treated `false` as absent too; the classifier does the same,
+# but now says so instead of leaving it silently free.
+contains "cost-basic: false field is no cost" "$OUT" "isfalse        \$0.000000 (1 no cost)"
+# `true` is a bool, explicitly excluded from the numeric check -- no cost.
+contains "cost-basic: true field is no cost" "$OUT" "istrue         \$0.000000 (1 no cost)"
+# A corrupt summary.json fails json.load() in the python3 classifier and
+# is unreadable, not silently summed as 0.
+contains "cost-basic: corrupt file is unreadable" "$OUT" "corrupt        \$0.000000 (1 unreadable)"
+not_contains "cost-basic: corrupt file is never claimed free" "$OUT" $'corrupt        $0.000000\n'
+# A JSON string cost is excluded by the numeric-type check -- no cost,
+# no longer silently accepted and summed as a real number.
+contains "cost-basic: string cost is no cost, not summed" "$OUT" "isstring       \$0.000000 (1 no cost)"
+not_contains "cost-basic: string cost is never claimed to be \$1.23" "$OUT" "isstring       \$1.230000"
+# A negative cost is invalid, no longer summed as negative unannotated.
+contains "cost-basic: negative cost is invalid, not summed" "$OUT" "negative       \$0.000000 (1 invalid)"
+not_contains "cost-basic: negative cost is never claimed free" "$OUT" $'negative       $0.000000\n'
 contains "cost-basic: fallback cost_usd is used and summed" "$OUT" "fallback       \$2.500000"
-# Aggregate: -5.5 (negative) + 1.23 (isstring) + 2.5 (fallback) = -1.77.
-contains "cost-basic: aggregate sums the unusable shapes in, today" "$OUT" "Total cost so far: \$-1.770000"
+not_contains "cost-basic: fallback is not annotated" "$OUT" "fallback       \$2.500000 ("
+# Aggregate: only fallback's 2.5 is a usable cost now.
+contains "cost-basic: aggregate sums only the usable cost" "$OUT" "Total cost so far: \$2.500000"
 
 printf '\n== cost-sum: valid costs summed, including a below-1e-4 cost and -0.0 ==\n'
 init_series cost-sum
@@ -174,12 +181,12 @@ printf '{"total_cost_usd": %s}' "$huge_digits" > "$work/ch-huge/summary.json"
 write_run cost-huge "$work/ch-huge" huge
 
 OUT="$("$status" cost-huge 2>/dev/null)"
-contains "cost-huge: runs launched is 1" "$OUT" "Runs launched: 1"
-# Today, jq/awk overflow to +inf with no annotation and no abort -- this
-# is the "silently free" case the brief calls out most sharply. Commit 2
-# reclassifies this as invalid.
-contains "cost-huge: an unrepresentable magnitude becomes +inf, today" "$OUT" "huge           \$+inf"
-contains "cost-huge: the +inf poisons the aggregate, today" "$OUT" "Total cost so far: \$+inf"
+contains "cost-huge: runs launched is 1" "$OUT" "Runs launched: 1 (1 invalid)"
+# A magnitude no float can hold overflows math.isfinite() (OverflowError)
+# in the python3 classifier and is invalid, not summed into +inf.
+contains "cost-huge: an unrepresentable magnitude is invalid" "$OUT" "huge           \$0.000000 (1 invalid)"
+not_contains "cost-huge: the aggregate is never +inf" "$OUT" "+inf"
+contains "cost-huge: the aggregate stays a real zero" "$OUT" "Total cost so far: \$0"
 
 printf '\n== cost-malformed: a ledger line that cannot be read ==\n'
 init_series cost-malformed
@@ -191,16 +198,22 @@ printf '{"kind":"implement"}\n' >> "$LKML_MAILBOX_ROOT/cost-malformed/runs.jsonl
 
 OUT="$("$status" cost-malformed 2>/dev/null)"
 contains "cost-malformed: runs launched is 3" "$OUT" "Runs launched: 3"
-# Today, both malformed lines fall through jq's parse/lookup failure into
-# empty run_dir/persona, which the missing-summary.json check silently
-# treats the same as a run whose file was cleaned up -- not annotated as
-# unreadable. Commit 2 gives a malformed ledger line its own state.
-contains "cost-malformed: both malformed lines count as missing summary, today" "$OUT" \
-    "Runs launched: 3 (2 with no summary.json yet -- in flight, or cleaned up)"
+# A ledger line that is not valid JSON, or is valid JSON missing run_dir
+# or persona, is its own state -- unreadable -- rather than being folded
+# into missing-summary via an empty/null run_dir passing the -f check.
+contains "cost-malformed: both malformed lines are unreadable" "$OUT" \
+    "Runs launched: 3 (2 unreadable)"
+not_contains "cost-malformed: no longer described as missing summaries" "$OUT" \
+    "with no summary.json yet"
 contains "cost-malformed: the readable run's cost is unaffected" "$OUT" "clean          \$4.000000"
 contains "cost-malformed: aggregate only includes the readable run" "$OUT" "Total cost so far: \$4.000000"
+# The two malformed lines share the "unknown persona" sentinel and must
+# collapse into ONE row, not word-split into two by a persona name that
+# itself contains a space.
+contains "cost-malformed: both malformed lines collapse into one row" "$OUT" \
+    "unknown persona \$0.000000 (2 unreadable)"
 
-printf '\n== cost-pyabsent: python3 is not required until commit 2 ==\n'
+printf '\n== cost-pyabsent: a missing python3 degrades to a named state ==\n'
 init_series cost-pyabsent
 mkdir -p "$work/cp-withcost"
 printf '{"total_cost_usd": 3.0}' > "$work/cp-withcost/summary.json"
@@ -211,13 +224,20 @@ no_python="$work/no-python-bin"
 build_stub_path "$no_python"
 OUT="$(PATH="$no_python" "$status" cost-pyabsent 2>/dev/null)"; RC=$?
 check "cost-pyabsent: exits 0 without python3 on PATH" "0" "$RC"
-# Today, the script never invokes python3 at all, so its absence changes
-# nothing -- byte-identical to a run with a normal PATH. Commit 2 makes
-# python3 load-bearing for classification (but not a hard requirement).
-contains "cost-pyabsent: withcost is unaffected by a missing python3, today" "$OUT" "withcost       \$3.000000"
-contains "cost-pyabsent: runs launched is 2 with one missing summary" "$OUT" \
-    "Runs launched: 2 (1 with no summary.json yet -- in flight, or cleaned up)"
-not_contains "cost-pyabsent: python3 is not named on screen, today" "$OUT" "python3"
+# Without python3, a run that HAS a summary.json can no longer be
+# classified at all -- it is unreadable, not a real cost. python3 is
+# degraded into a named state here, never a hard requirement (the
+# script does not abort, unlike its jq check).
+contains "cost-pyabsent: withcost is unreadable without python3" "$OUT" \
+    "withcost       \$0.000000 (1 unreadable)"
+not_contains "cost-pyabsent: withcost is never claimed to be \$3" "$OUT" "\$3.000000"
+# A missing summary.json is decided before python3 is ever consulted, so
+# this state is unaffected by python3's absence, in both commits.
+contains "cost-pyabsent: runs launched names both states" "$OUT" \
+    "Runs launched: 2 (1 no summary, 1 unreadable)"
+contains "cost-pyabsent: the missing summary is unaffected by python3, still" "$OUT" \
+    "nosummary      \$0.000000 (1 no summary)"
+contains "cost-pyabsent: python3 is named on screen" "$OUT" "python3 not found"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))
