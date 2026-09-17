@@ -2025,6 +2025,246 @@ else
     no "multi-version fleet thread: all 4 messages render exactly once (no v3-under-v2 duplication)"
 fi
 
+printf '\n== fleet-store thread: a Re:-prefixed version bump still opens its own section ==\n'
+# The same shape as the previous fixture, except the v3 posting's own
+# Subject carries a 'Re: ' prefix -- exactly what a wake stanza produces
+# on this transport (the postmaster passes a wake's Subject verbatim to
+# `mail reply --subject`, and fleet/personas/author.md models a reply as
+# 'Subject: Re: [PATCH vN ...] ...'). Before is_cover_subject and the
+# version-boundary check both accounted for 'Re: ', this folded v3 into
+# v2's own section and let v3's Reviewed-by supersede v2's
+# Changes-requested in the tally -- a false green on the exact shape the
+# repo's own author persona is documented to produce.
+refix="$work/fleet-mail/threads/refix-thread"
+mkdir -p "$refix"
+refix_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+refix_v2_reply="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+refix_v3_cover="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+refix_v3_reply="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+printf '%s\n' \
+    "Message-ID: ${refix_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+    'Subject: [PATCH v2 0/1] re-prefix repro' \
+    '' \
+    'kickoff v2' \
+    > "$refix/001-${refix_root}.msg"
+printf '%s\n' \
+    "Message-ID: ${refix_v2_reply}" \
+    "In-Reply-To: ${refix_root}" \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: [PATCH v2 0/1] re-prefix repro' \
+    '' \
+    'Changes-requested: the retry loop needs a cap.' \
+    > "$refix/002-${refix_v2_reply}.msg"
+printf '%s\n' \
+    "Message-ID: ${refix_v3_cover}" \
+    "In-Reply-To: ${refix_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Date: Wed, 17 Sep 2025 02:00:00 +0000' \
+    'Subject: Re: [PATCH v3 0/1] re-prefix repro' \
+    '' \
+    'v3 posting' \
+    > "$refix/003-${refix_v3_cover}.msg"
+printf '%s\n' \
+    "Message-ID: ${refix_v3_reply}" \
+    "In-Reply-To: ${refix_v3_cover}" \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 03:00:00 +0000' \
+    'Subject: Re: [PATCH v3 0/1] re-prefix repro' \
+    '' \
+    'Reviewed-by: core' \
+    > "$refix/004-${refix_v3_reply}.msg"
+refix_html="$work/refix.html"
+python3 "$renderer" "$refix" -o "$refix_html"
+rfxhtml="$(<"$refix_html")"
+contains "Re:-prefixed v3: masthead reports 2 versions, not 1 (v3 not folded into v2)" \
+    "$rfxhtml" '2 versions'
+contains "Re:-prefixed v3: current version is v3, not v2" "$rfxhtml" '<b>v3</b>'
+if [[ "$(grep -o '<section class="section"' "$refix_html" | wc -l)" -eq 2 ]]; then
+    ok "Re:-prefixed v3: two version sections render, not one"
+else
+    no "Re:-prefixed v3: two version sections render, not one"
+fi
+refix_text_file="$work/refix.text"
+python3 "$renderer" --text "$refix" > "$refix_text_file"
+if python3 - "$refix_text_file" "$(basename "$refix")" <<'PY'
+import re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+name = sys.argv[2]
+
+def section(v):
+    m = re.search(rf'(?m)^{re.escape(name)} v{v}$', text)
+    if not m:
+        return None
+    start = m.end()
+    m2 = re.search(rf'(?m)^{re.escape(name)} v\d+$', text[start:])
+    return text[start:start + m2.start()] if m2 else text[start:]
+
+v2 = section(2)
+v3 = section(3)
+errors = []
+if v2 is None or not re.search(r'(?m)^cover\s+C\s*$', v2):
+    errors.append("v2's cover row is not Changes-requested -- overwritten by v3's Reviewed-by?")
+if v3 is None or not re.search(r'(?m)^cover\s+R\s*$', v3):
+    errors.append("v3's cover row is not Reviewed-by")
+for e in errors:
+    print(e)
+sys.exit(1 if errors else 0)
+PY
+then
+    ok "Re:-prefixed v3: v2's Changes-requested tally survives, not superseded by v3's Reviewed-by"
+else
+    no "Re:-prefixed v3: v2's Changes-requested tally survives, not superseded by v3's Reviewed-by"
+fi
+
+printf '\n== fleet-store thread: two covers at the same version render once, not twice ==\n'
+# A structural root's version is never gated on the version-comparison
+# check above (it has no parent to compare against), so two independent
+# roots at the same version -- an author resend sent rather than
+# replied, or a harvested reply whose In-Reply-To no longer resolves --
+# still reach the covers list twice. render_series (HTML) already
+# dedupes to one cover per version; render_text_series iterated the
+# un-deduped list and rendered the whole section twice with tallies that
+# disagreed, worse than a wrong render since --text is what
+# lkml-round.sh/lkml-summarize.sh consume.
+dup="$work/fleet-mail/threads/dupcover-thread"
+mkdir -p "$dup"
+dup_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+dup_reviewed="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+dup_resend="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+dup_nak="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+printf '%s\n' \
+    "Message-ID: ${dup_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+    'Subject: [PATCH v2 0/1] resend repro' \
+    '' \
+    'kickoff v2' \
+    > "$dup/001-${dup_root}.msg"
+printf '%s\n' \
+    "Message-ID: ${dup_reviewed}" \
+    "In-Reply-To: ${dup_root}" \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: [PATCH v2 0/1] resend repro' \
+    '' \
+    'Reviewed-by: core' \
+    > "$dup/002-${dup_reviewed}.msg"
+# No In-Reply-To at all: a resend, not a reply -- lands as its own
+# structural root, same as a reply whose parent no longer resolves.
+printf '%s\n' \
+    "Message-ID: ${dup_resend}" \
+    'From: @author' \
+    'To: @core' \
+    'Date: Wed, 17 Sep 2025 02:00:00 +0000' \
+    'Subject: [PATCH v2 0/1] resend repro' \
+    '' \
+    'resend of v2' \
+    > "$dup/003-${dup_resend}.msg"
+printf '%s\n' \
+    "Message-ID: ${dup_nak}" \
+    "In-Reply-To: ${dup_resend}" \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 03:00:00 +0000' \
+    'Subject: Re: [PATCH v2 0/1] resend repro' \
+    '' \
+    'NAK' \
+    > "$dup/004-${dup_nak}.msg"
+dup_text="$(python3 "$renderer" --text "$dup")"
+dup_sections="$(printf '%s' "$dup_text" | grep -cx "$(basename "$dup") v2")"
+check "duplicate same-version cover: --text renders exactly one v2 section, not two" "1" "$dup_sections"
+dup_html="$work/dupcover.html"
+python3 "$renderer" "$dup" -o "$dup_html"
+if [[ "$(grep -o '<section class="section"' "$dup_html" | wc -l)" -eq 1 ]]; then
+    ok "duplicate same-version cover: HTML renders exactly one section too"
+else
+    no "duplicate same-version cover: HTML renders exactly one section too"
+fi
+dup_html_msgs="$(grep -o '<details class="msg"' "$dup_html" | wc -l)"
+dup_text_msgs="$(printf '%s\n' "$dup_text" | grep -c '^== #')"
+check "duplicate same-version cover: HTML renders all 4 messages, none dropped" "4" "$dup_html_msgs"
+check "duplicate same-version cover: --text renders all 4 messages exactly once, not doubled" "4" "$dup_text_msgs"
+
+printf '\n== fleet-store thread: convergence requires every addressed seat to have spoken ==\n'
+# The cover's To:/Cc: is the seated panel on this transport, unlike the
+# old layout where the roster lives in seats.yaml outside anything
+# render.py reads. CLAUDE.md and README's "Converging" section both
+# insist silence must never read as assent: a check that only counts
+# blocking verdicts cannot tell "three seats went quiet" from "three
+# seats agreed".
+quiet="$work/fleet-mail/threads/quiet-thread"
+mkdir -p "$quiet"
+quiet_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+quiet_docs="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+printf '%s\n' \
+    "Message-ID: ${quiet_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Cc: @tests, @security, @docs' \
+    'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+    'Subject: [PATCH v1 0/1] quiet panel repro' \
+    '' \
+    'kickoff' \
+    > "$quiet/001-${quiet_root}.msg"
+printf '%s\n' \
+    "Message-ID: ${quiet_docs}" \
+    "In-Reply-To: ${quiet_root}" \
+    'From: @docs' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: [PATCH v1 0/1] quiet panel repro' \
+    '' \
+    'Reviewed-by: docs' \
+    > "$quiet/002-${quiet_docs}.msg"
+quiet_html="$work/quiet.html"
+python3 "$renderer" "$quiet" -o "$quiet_html"
+qhtml="$(<"$quiet_html")"
+case "$qhtml" in
+    *'<span class="chip reviewed">converged</span>'*)
+        no "quiet panel: state chip is not converged while core/tests/security never replied" ;;
+    *) ok "quiet panel: state chip is not converged while core/tests/security never replied" ;;
+esac
+contains "quiet panel: state chip reads pending instead" "$qhtml" \
+    '<div class="fact"><span class="eyebrow">state</span><b><span class="chip pending">pending</span></b></div>'
+
+printf '\n== fleet-store thread: convergence still fires once every addressed seat has spoken ==\n'
+full="$work/fleet-mail/threads/full-thread"
+mkdir -p "$full"
+full_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+full_core="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+printf '%s\n' \
+    "Message-ID: ${full_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+    'Subject: [PATCH v1 0/1] full panel repro' \
+    '' \
+    'kickoff' \
+    > "$full/001-${full_root}.msg"
+printf '%s\n' \
+    "Message-ID: ${full_core}" \
+    "In-Reply-To: ${full_root}" \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: [PATCH v1 0/1] full panel repro' \
+    '' \
+    'Reviewed-by: core' \
+    > "$full/002-${full_core}.msg"
+full_html="$work/full.html"
+python3 "$renderer" "$full" -o "$full_html"
+contains "full panel: state chip is converged once the only addressed seat has replied" \
+    "$(<"$full_html")" '<div class="fact"><span class="eyebrow">state</span><b><span class="chip reviewed">converged</span></b></div>'
+
 printf '\n== fleet-store thread: an orphaned reply whose version matches no cover fails loudly ==\n'
 # An In-Reply-To naming an id absent from the thread dir (a truncated
 # harvest, a hand-edited store) makes build_fleet_layout treat the

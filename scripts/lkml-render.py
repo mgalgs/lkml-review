@@ -222,8 +222,17 @@ def is_cover_subject(subject):
     header comment) uses verbatim: '[RFC PATCH v3 0/2]', '[PATCH
     net-next v2 0/2]'. Anchored on the word, not a literal '[PATCH '
     prefix, so a qualifier before or after PATCH does not drop a real
-    series cover out of the render."""
-    mm = COVER_BRACKET_RE.match(subject)
+    series cover out of the render. Strips 'Re: ' layers first, the same
+    normalization fleet_version does -- nothing on this transport
+    enforces an un-prefixed Subject on a version-opening post (a wake
+    stanza's Subject is passed to `mail reply --subject` verbatim, and
+    every persona file models a reply as 'Subject: Re: ...'), so a cover
+    that arrives as 'Re: [PATCH v3 0/1] ...' must still be recognized as
+    one."""
+    subj = subject
+    while subj.startswith("Re: "):
+        subj = subj[4:]
+    mm = COVER_BRACKET_RE.match(subj)
     return bool(mm and re.search(r"\bPATCH\b", mm.group(1)))
 
 
@@ -447,6 +456,15 @@ def build_old_layout(series_dir):
     return name, msgs, roots, roots
 
 
+def fleet_addr_list(raw):
+    """A To:/Cc: header value split into bare seat names ('@core, @docs'
+    -> ['core', 'docs']), the same '@' stripping read_fleet_msg gives
+    From:. Used to compute the addressed panel for a fleet cover -- the
+    one place on this transport where the seated panel is in-band and
+    therefore computable without seats.yaml."""
+    return [a.strip().removeprefix("@") for a in raw.split(",") if a.strip()]
+
+
 FLEET_MSG_RE = re.compile(r"^\d{3}-.*\.msg$")
 
 
@@ -509,6 +527,8 @@ def read_fleet_msg(path, seq, attachment_root):
         "version": fleet_version(subject),
         "depth": 0, "tags": fleet_body_tags(body), "body": body,
         "attachments": attachments, "children": [], "fleet": True,
+        "to": fleet_addr_list(hdr.get("To", "")),
+        "cc": fleet_addr_list(hdr.get("Cc", "")),
     }
 
 
@@ -554,8 +574,20 @@ def build_fleet_layout(series_dir):
         if is_version_root:
             version_roots.append(m)
         for c in m["children"]:
-            is_cover = is_cover_subject(c["subject"])
-            set_depth(c, 0 if is_cover else d + 1, is_cover)
+            # Boundary is version-based, not subject-shape-based: a
+            # reply whose OWN version exceeds its parent's opens a new
+            # version regardless of a 'Re: ' prefix -- is_cover_subject
+            # alone would miss a real v3 posted as 'Re: [PATCH v3 0/1]
+            # ...' (see is_cover_subject's docstring) and silently fold
+            # it into the previous version's thread and tally. Both
+            # sides' "version" fields already come from fleet_version,
+            # which strips 'Re: ' layers itself, so this comparison is
+            # immune to the prefix on its own. This is also how
+            # lkml-fleet-status.sh attributes messages to versions --
+            # by the version marker in the message's own Subject, not
+            # by whether that Subject looks like a fresh cover.
+            opens_version = c["version"] > m["version"]
+            set_depth(c, 0 if opens_version else d + 1, opens_version)
     for r in roots:
         set_depth(r, 0, True)
     roots.sort(key=lambda x: (x["version"], x["seq"]))
@@ -1235,13 +1267,27 @@ def render_series(series_dir):
     if cur:
         s = strongest_tag([t for _t, latest in cur["rows"]
                            for _p, _m, tags in latest.values() for t in tags])
+        # A fleet cover's To:/Cc: is the seated panel, in-band on this
+        # transport (unlike the old layout, where the roster lives in
+        # seats.yaml outside anything render.py reads) -- so here, and
+        # only here, "converged" can be checked against who was actually
+        # addressed. A seat addressed but never heard from is silence,
+        # not agreement (CLAUDE.md and README's "Converging" section):
+        # the strongest tag across those who spoke must not be allowed
+        # to read as the whole panel's verdict when part of the panel
+        # never replied at all.
+        silent = set()
+        if cur["cover"].get("fleet"):
+            addressed = set(cur["cover"].get("to", [])) | set(cur["cover"].get("cc", []))
+            replied = {m["persona"] for m in cur["version_msgs"] if m["persona"]}
+            silent = addressed - replied - {cur["cover"]["persona"]}
         if s == "NAK":
             state = '<span class="chip nak">nak</span>'
         elif s == "Changes-requested":
             state = '<span class="chip changes">changes requested</span>'
         elif s == "Question":
             state = '<span class="chip question">question</span>'
-        elif s is not None:
+        elif s is not None and not silent:
             state = '<span class="chip reviewed">converged</span>'
         else:
             state = '<span class="chip pending">pending</span>'
@@ -1886,8 +1932,18 @@ def render_text_series(series_dir):
     covers = [m for m in all_version_roots if is_cover_subject(m["subject"])]
     require_fleet_covers(series_dir, msgs, covers)
     fleet_cover_ids = {c["id"] for c in covers if c.get("fleet")}
-    for cover in covers:
-        v = cover["version"]
+    # One section per DISTINCT version, the same dedup render_series
+    # does for the HTML backend: the old layout guarantees one cover per
+    # version (lkml-mailbox.sh's init refuses a second), but the fleet
+    # store enforces nothing of the kind -- `mail reply --subject` takes
+    # any string, so a resend or a reviewer echoing the cover subject
+    # verbatim can produce a second cover at a version already open.
+    # Iterating `covers` directly would render that version's whole
+    # section twice, once per cover, with tallies that disagree because
+    # each cover's own children differ -- worse than picking one.
+    versions = sorted({c["version"] for c in covers})
+    for v in versions:
+        cover = next(c for c in covers if c["version"] == v)
         version_roots = [r for r in all_version_roots if r["version"] == v]
         version_msgs = [m for root in version_roots
                         for m in subtree_before(root, fleet_cover_ids)]
