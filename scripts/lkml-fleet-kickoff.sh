@@ -5,7 +5,7 @@
 # Usage: lkml-fleet-kickoff.sh <repo> <range> --from <addr> --to <addr>
 #            [--cc <addr>] --subject <subject> [--summary <text>]
 #            [--focus <text>] [--template <file>] [--hops <n>]
-#            [--ci-first <ci-addr>] [--attach] [--send]
+#            [--ci-first <ci-addr>] [--version <n>] [--attach] [--send]
 #
 # <repo>       path to a local git repository.
 # <range>      a revision range passed straight to `git format-patch`
@@ -44,6 +44,53 @@
 #              the script requires fork-sandbox and verifies CI plus a
 #              non-CI panel recipient; its gate cannot verify that CI's
 #              suite can actually run in this repository.
+# --version    stamp the subject as a series version: "[PATCH v<n>
+#              0/<patch-count>] <subject>", and pass the same <n> to
+#              `git format-patch -v -n` so the attached patches' own
+#              Subject lines agree with the cover subject instead of
+#              contradicting it -- -n so a single-patch range, numbered
+#              "0/1" on the cover, is numbered "1/1" on the one
+#              attachment too, since format-patch does not number a
+#              single-commit range on its own. A subject with no LEADING bracket
+#              containing the word "PATCH" -- "[PATCH ...]", but also
+#              "[RFC PATCH ...]", "[RESEND PATCH ...]" and other prefixed
+#              forms real list traffic uses -- is stamped v1 by default
+#              even without this flag -- an unmarked kickoff is the
+#              defect this flag exists to fix, so stamping is not
+#              opt-in. A bare "v<digits>" in prose, or an unversioned
+#              leading PATCH bracket, is not a marker: the former is
+#              stamped over (the leading bracket added in front, prose
+#              left alone), the latter has the version and patch count
+#              inserted into its existing bracket rather than nested
+#              inside a second one -- a bare "[PATCH]" becomes
+#              "[PATCH v1 0/N]", and a qualified one keeps its
+#              qualifier: "[RFC PATCH 0/5]" becomes "[RFC PATCH v1
+#              0/N]", not a bare "[PATCH v1 0/N]" with the RFC tag
+#              silently dropped. A subject that already
+#              carries a leading versioned marker (a "v<digits>" inside
+#              that leading bracket) is passed through unchanged and
+#              unwarned when --version is omitted (an operator composing
+#              a reply-shaped subject by hand has already said what the
+#              version is), and refused when --version is given (two
+#              contradictory statements about the field that identifies
+#              the series); it is also refused when the leading marker's
+#              own "i/N" names a patch count that disagrees with the
+#              range's real count, the same kind of contradiction. Must
+#              be a positive integer; v0 is not a thing on a mailing
+#              list. A template containing ${FOCUS} is a reply, by
+#              construction round two or later, so its
+#              subject is refused rather than silently defaulted to v1
+#              unless --version is given or the subject is already
+#              marked. This detection is intentionally narrower than
+#              the Versions section on lkml-fleet-status.sh: that parser
+#              matches "v<digits>" anywhere in a Subject, by design, to
+#              stay robust across however panel replies and other tools
+#              format theirs. A subject with a stray "v<digits>" outside
+#              this leading bracket (e.g. "fix the v2 parser") still
+#              gets stamped correctly here, but will still read as an
+#              extra, phantom version round on that report -- a
+#              pre-existing limitation of that parser, not something
+#              this flag can fix from here.
 # --attach     format the range with `git format-patch` and attach each
 #              produced patch file to the mail. Without this flag, the
 #              mail carries only the branch name for reviewers to check
@@ -84,10 +131,12 @@ attach=0
 send=0
 hops=""
 ci_first=""
+version=""
+version_given=0
 
 while (( $# > 0 )); do
     case "$1" in
-        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first)
+        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version)
             (( $# >= 2 )) || { echo "Error: $1 requires a value. See --help." >&2; exit 1; }
             ;;
     esac
@@ -101,6 +150,7 @@ while (( $# > 0 )); do
         --template) template="$2"; shift 2 ;;
         --hops) hops="$2"; shift 2 ;;
         --ci-first) ci_first="$2"; shift 2 ;;
+        --version) version="$2"; version_given=1; shift 2 ;;
         --attach) attach=1; shift ;;
         --send) send=1; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -114,6 +164,10 @@ done
 [[ -f "$template" ]] || { echo "Error: template '$template' does not exist." >&2; exit 1; }
 if [[ -n "$hops" && ! "$hops" =~ ^[0-9]+$ ]]; then
     echo "Error: --hops must be a non-negative integer. See --help." >&2
+    exit 1
+fi
+if (( version_given )) && [[ ! "$version" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Error: --version must be a positive integer, got '$version'. v0 is not a thing on a mailing list. See --help." >&2
     exit 1
 fi
 if [[ -n "$ci_first" && -n "$cc" ]]; then
@@ -193,6 +247,89 @@ EOF
     to="$ci_first"
 fi
 
+# Comments are stripped by finding "-->" as a substring anywhere in the
+# line, not by anchoring to end-of-line -- a closing "-->" followed by
+# trailing whitespace or by more text on the same line still closes the
+# comment, instead of leaving in_comment set and swallowing the rest of
+# the file. Computed up front, before any git work, so the FOCUS-shaped
+# checks just below can refuse before format-patch or a version stamp
+# ever runs.
+body="$(awk '
+    BEGIN { in_comment = 0; started = 0 }
+    {
+        line = $0
+        if (!started) {
+            if (in_comment) {
+                idx = index(line, "-->")
+                if (idx == 0) { next }
+                in_comment = 0
+                line = substr(line, idx + 3)
+                sub(/^[ \t]+/, "", line)
+            } else if (line ~ /^<!--/) {
+                idx = index(line, "-->")
+                if (idx == 0) { in_comment = 1; next }
+                line = substr(line, idx + 3)
+                sub(/^[ \t]+/, "", line)
+            }
+            if (line == "") { next }
+            started = 1
+        }
+        print line
+    }
+' "$template")"
+# shellcheck disable=SC2016  # ${FOCUS} is the literal placeholder text
+# being searched for in the stripped body, not a variable to expand.
+# Keyed on the placeholder, not a filename, so a site's own focused
+# template gets the same refusal.
+if [[ -z "$focus" && "$body" == *'${FOCUS}'* ]]; then
+    echo "Error: template '$template' contains \${FOCUS} but --focus was not given; a focused round with nothing to concentrate on wakes the whole panel for nothing. Pass --focus <text>." >&2
+    exit 1
+fi
+
+# Detect an existing version marker, restricted to a LEADING bracket
+# that carries the word "PATCH" -- not just a bracket that starts with
+# it: "[RFC PATCH v2 0/5]" and "[RESEND PATCH v3 0/5]" are the common
+# versioned-series forms on a real list, and anchoring on "^\[PATCH"
+# alone missed both, letting them fall through as unmarked and get a
+# second, contradictory version stamped in front. A bare "v<n>" outside
+# this leading bracket is prose, not a marker, and treating it as one
+# (an earlier behaviour) both silently suppressed the default v1 stamp
+# for a subject like "fix the v2 scheduler entry" and made --version
+# unable to override it -- there was no way to get a correct stamp onto
+# such a subject at all. leading_patch_prefix is the whole bracket,
+# versioned or not, so an already-bracketed but unversioned subject
+# (e.g. "[PATCH] fix the thing", the form single-patch.md documents for
+# ${SUBJECT}) gets that bracket replaced below instead of a second one
+# nested inside it.
+leading_patch_prefix=""
+existing_display=""
+if [[ "$subject" =~ ^(\[([^]]*)\]) ]]; then
+    leading_bracket="${BASH_REMATCH[1]}"
+    bracket_content="${BASH_REMATCH[2]}"
+    if [[ "$bracket_content" =~ (^|[^[:alnum:]])PATCH($|[^[:alnum:]]) ]]; then
+        leading_patch_prefix="$leading_bracket"
+        if [[ "$leading_patch_prefix" =~ (^|[^[:alnum:]])v([0-9]+) ]]; then
+            existing_display="v${BASH_REMATCH[2]}"
+        fi
+    fi
+fi
+if (( version_given )) && [[ -n "$existing_display" ]]; then
+    echo "Error: --version $version was given but subject '$subject' already carries a version marker ('$existing_display'); refusing to stamp a second, possibly contradictory, version onto the field that identifies the series." >&2
+    exit 1
+fi
+# shellcheck disable=SC2016  # ${FOCUS} is the literal placeholder text
+# being searched for in the stripped body, not a variable to expand.
+# A ${FOCUS} template is a reply, by construction round two or later
+# (see the --focus header comment): its subject cannot default to v1
+# the way a new thread's can, so an unmarked subject here must be told
+# its version explicitly rather than silently guessing "1".
+if [[ -z "$existing_display" && "$body" == *'${FOCUS}'* ]] && (( ! version_given )); then
+    echo "Error: template '$template' contains \${FOCUS}: a focused round is a reply, by construction round two or later, so its subject cannot silently default to v1. Pass --version <n> naming the round this reply belongs to, or a subject that already carries the right marker." >&2
+    exit 1
+fi
+effective_version="${existing_display#v}"
+effective_version="${effective_version:-${version:-1}}"
+
 tmpdir="$(mktemp -d)"
 # Only clean up once actually sent: in print-only mode the printed command
 # names files under $tmpdir, and a caller pasting it later needs them to
@@ -200,7 +337,11 @@ tmpdir="$(mktemp -d)"
 cleanup() { if (( send )); then rm -rf -- "$tmpdir"; fi; }
 trap cleanup EXIT
 
-git -C "$repo" format-patch -o "$tmpdir" "$range" >/dev/null
+# -n forces numbering even for a single-patch range: git format-patch
+# only numbers on its own once a range has more than one commit, so
+# without it a single-patch series' cover claims "0/1" while the sole
+# attached patch's own Subject carries no "1/1" to match.
+git -C "$repo" format-patch -o "$tmpdir" -n -v "$effective_version" "$range" >/dev/null
 
 patches=()
 while IFS= read -r -d '' f; do
@@ -211,6 +352,48 @@ patch_count="${#patches[@]}"
 if (( patch_count == 0 )); then
     echo "Error: range '$range' produced no patches; refusing to send a kickoff with nothing to review." >&2
     exit 1
+fi
+
+# A subject passed through unchanged (existing_display set) still names
+# a patch count in its "i/N" marker, and that N is never checked against
+# the range's real patch_count -- so a stale or hand-typed count sails
+# through untouched while the cover body's ${PATCH_COUNT} fill and (since
+# --version now reaches `git format-patch -v`) every attached patch's own
+# "i/N" both carry the real number, leaving the Subject as a third,
+# contradicting statement of the series size with no warning at all.
+if [[ -n "$existing_display" && "$leading_patch_prefix" =~ [0-9]+/([0-9]+) ]]; then
+    declared_count="${BASH_REMATCH[1]}"
+    if [[ "$declared_count" != "$patch_count" ]]; then
+        echo "Error: subject '$subject' already claims $declared_count patches ('$leading_patch_prefix') but range '$range' produced $patch_count; refusing to send a cover letter whose subject count contradicts the series it will actually attach/reference." >&2
+        exit 1
+    fi
+fi
+
+if [[ -z "$existing_display" ]]; then
+    if [[ -n "$leading_patch_prefix" ]]; then
+        subject="${subject#"$leading_patch_prefix"}"
+        subject="${subject# }"
+        # An unversioned leading bracket can carry qualifier words of
+        # its own -- "RFC PATCH", "PATCH net-next", "RESEND PATCH" --
+        # and even a stale declared count; only the version and the
+        # real count are this script's to add. Insert v<n> at the
+        # PATCH keyword, drop any existing count, and append the real
+        # one, rather than discarding the whole bracket (qualifier
+        # included) the way a bare "[PATCH]" is replaced below -- doing
+        # that here silently turned "[RFC PATCH 0/5] x" into
+        # "[PATCH v1 0/2] x", dropping the RFC tag that tells the panel
+        # this is not a merge-ready series.
+        before_patch="${bracket_content%%PATCH*}"
+        after_patch="${bracket_content#*PATCH}"
+        rebuilt_bracket="${before_patch}PATCH v${effective_version}${after_patch}"
+        if [[ "$rebuilt_bracket" =~ ^(.*)[0-9]+/[0-9]+(.*)$ ]]; then
+            rebuilt_bracket="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+        fi
+        read -r -a rebuilt_words <<<"$rebuilt_bracket"
+        subject="[${rebuilt_words[*]} 0/${patch_count}] ${subject}"
+    else
+        subject="[PATCH v${effective_version} 0/${patch_count}] ${subject}"
+    fi
 fi
 
 # "a..b" or "a...b" both split on the first/last ".." respectively; a bare
@@ -292,46 +475,10 @@ fill() {
     content_ref="${content_ref//\$\{$name\}/$value}"
 }
 
-# Comments are stripped by finding "-->" as a substring anywhere in the
-# line, not by anchoring to end-of-line -- a closing "-->" followed by
-# trailing whitespace or by more text on the same line still closes the
-# comment, instead of leaving in_comment set and swallowing the rest of
-# the file.
-body="$(awk '
-    BEGIN { in_comment = 0; started = 0 }
-    {
-        line = $0
-        if (!started) {
-            if (in_comment) {
-                idx = index(line, "-->")
-                if (idx == 0) { next }
-                in_comment = 0
-                line = substr(line, idx + 3)
-                sub(/^[ \t]+/, "", line)
-            } else if (line ~ /^<!--/) {
-                idx = index(line, "-->")
-                if (idx == 0) { in_comment = 1; next }
-                line = substr(line, idx + 3)
-                sub(/^[ \t]+/, "", line)
-            }
-            if (line == "") { next }
-            started = 1
-        }
-        print line
-    }
-' "$template")"
 # shellcheck disable=SC2016  # ${HANDOFF} is the literal placeholder text
 # being searched for in the template, not a variable to expand.
 if [[ -n "$ci_first" && "$body" != *'${HANDOFF}'* ]]; then
     echo "Error: --ci-first requires template '$template' to contain \${HANDOFF} in its body so CI receives the wave-one routing instructions." >&2
-    exit 1
-fi
-# shellcheck disable=SC2016  # ${FOCUS} is the literal placeholder text
-# being searched for in the stripped body, not a variable to expand.
-# Keyed on the placeholder, not a filename, so a site's own focused
-# template gets the same refusal.
-if [[ -z "$focus" && "$body" == *'${FOCUS}'* ]]; then
-    echo "Error: template '$template' contains \${FOCUS} but --focus was not given; a focused round with nothing to concentrate on wakes the whole panel for nothing. Pass --focus <text>." >&2
     exit 1
 fi
 # shellcheck disable=SC2016  # ${FOCUS} is the literal placeholder text

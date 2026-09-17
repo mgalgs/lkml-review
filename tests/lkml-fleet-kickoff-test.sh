@@ -533,7 +533,7 @@ out_focus_flag="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...top
     --from '@author' --to '@lkml-panel' --subject 'subj' \
     --summary 'answers round one' \
     --focus 'concentrate on the error handling in the mail path' \
-    --template "$focused_template" 2>&1)"
+    --version 2 --template "$focused_template" 2>&1)"
 rc_focus_flag=$?
 check "--focus composes the focused-review template" "0" "$rc_focus_flag"
 focus_flag_body_file="$(printf '%s' "$out_focus_flag" | grep -o -- '--body [^ ]*' | awk '{print $2}')"
@@ -554,7 +554,7 @@ out_focus_send="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STU
     "$kickoff" "$project_dir" "master...topic" \
     --from '@author' --to '@lkml-panel' --subject 'subj' \
     --focus 'concentrate on the error handling in the mail path' \
-    --template "$focused_template" --send 2>&1)"
+    --version 2 --template "$focused_template" --send 2>&1)"
 rc_focus_send=$?
 if (( rc_focus_send != 0 )); then ok "a focused template with --send refuses"; else no "a focused template with --send refuses" "exit 0: $out_focus_send"; fi
 contains "the focused --send refusal says send starts a new thread" "$out_focus_send" "starts a new thread"
@@ -571,6 +571,29 @@ out_focus_missing="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...
 rc_focus_missing=$?
 if (( rc_focus_missing != 0 )); then ok "a focused template without --focus refuses"; else no "a focused template without --focus refuses" "exit 0: $out_focus_missing"; fi
 contains "the missing-focus refusal names --focus" "$out_focus_missing" "--focus"
+
+# A focused round is a reply, by construction round two or later: an
+# unmarked subject with no --version must not silently default to v1
+# the way a brand-new thread's subject does. --focus is supplied here so
+# the refusal above cannot be the one firing instead.
+out_focus_noversion="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'sched: tidy the thing' \
+    --focus 'patch 2 only' --template "$focused_template" 2>&1)"
+rc_focus_noversion=$?
+if (( rc_focus_noversion != 0 )); then
+    ok "a focused template without --version refuses rather than defaulting to v1"
+else
+    no "a focused template without --version refuses rather than defaulting to v1" "exit 0: $out_focus_noversion"
+fi
+contains "the missing-version-on-focus refusal names --version" "$out_focus_noversion" "--version"
+
+out_focus_version="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'sched: tidy the thing' \
+    --focus 'patch 2 only' --version 2 --template "$focused_template" 2>&1)"
+rc_focus_version=$?
+check "a focused template with --version composes" "0" "$rc_focus_version"
+contains "a focused template with --version stamps the given version" \
+    "$out_focus_version" "PATCH\\ v2\\ 0/2\\]\\ sched:\\ tidy\\ the\\ thing"
 
 out_nofocus_plain="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
     --from '@author' --to '@lkml-panel' --subject 'subj' --summary 'does a thing' \
@@ -634,6 +657,280 @@ contains "series-review Next version keeps the inline-copy convention" "$series_
 single_tail="$(sed -n '/^## Next version/,$p' "$repo_dir/fleet/kickoffs/single-patch.md")"
 contains "single-patch Next version keeps the wake no-attachment guard" "$single_tail" "a wake's reply cannot"
 contains "single-patch Next version keeps the inline-copy convention" "$single_tail" "inline copy is the review copy"
+
+printf '\n== --version stamps the kickoff subject ==\n'
+# Extract fs_subject_versions() from lkml-fleet-status.sh itself, the
+# same "pull the real function rather than keep a hand-copied duplicate"
+# approach used for fill() above -- this is the round-trip check that
+# catches a marker which looks right but the Versions section can't
+# actually parse.
+eval "$(sed -n '/^fs_subject_versions() {/,/^}/p' "$repo_dir/scripts/lkml-fleet-status.sh")"
+
+# The stub records its argv joined by spaces ("$*"), which loses the
+# quoting that told bash "--subject" and "--body" were separate
+# arguments -- so pull the subject back out positionally, between the
+# literal "--subject " and " --body " that cmd= in the script always
+# places around it, rather than retyping the subject by hand. Feeding a
+# hand-typed literal instead would only prove that the literal parses,
+# not that the script's own output does -- the exact gap CLAUDE.md's
+# "self-consistent fixtures" hazard warns about.
+ver_argv_subject() { sed -E 's/^.*--subject (.*) --body .*/\1/' <<<"$1"; }
+
+rm -f -- "$capture_dir/argv"
+PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'unstamped default subject' --send >/dev/null 2>&1
+rc_ver_default=$?
+check "unstamped subject with no --version exits 0" "0" "$rc_ver_default"
+ver_default_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
+contains "default (no --version) stamps v1 with the real patch count" \
+    "$ver_default_argv" "[PATCH v1 0/2] unstamped default subject"
+check "the default-stamped version round-trips through fs_subject_versions" \
+    "1" "$(fs_subject_versions "$(ver_argv_subject "$ver_default_argv")")"
+
+rm -f -- "$capture_dir/argv"
+PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'a series' --version 3 --send >/dev/null 2>&1
+rc_ver_3=$?
+check "--version 3 exits 0" "0" "$rc_ver_3"
+ver_3_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
+contains "--version 3 stamps v3 with the real patch count" \
+    "$ver_3_argv" "[PATCH v3 0/2] a series"
+check "the v3-stamped subject round-trips through fs_subject_versions" \
+    "3" "$(fs_subject_versions "$(ver_argv_subject "$ver_3_argv")")"
+
+# --version must reach `git format-patch -v` too, or the cover subject
+# says "v3" while every attached patch's own Subject line says
+# unversioned "[PATCH i/N]" -- a reviewer reading the attachments (the
+# copy they actually apply) would see a contradiction.
+out_ver_attach="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'a series' --version 3 --attach 2>&1)"
+rc_ver_attach=$?
+check "--version with --attach exits 0" "0" "$rc_ver_attach"
+attach_patch_file="$(printf '%s' "$out_ver_attach" | grep -o -- '--attach [^ ]*' | head -n1 | awk '{print $2}')"
+attach_patch_subject="$([[ -f "$attach_patch_file" ]] && grep -m1 '^Subject:' "$attach_patch_file")"
+contains "the attached patch's own Subject line carries the same version" \
+    "$attach_patch_subject" "[PATCH v3"
+
+# Different fixture range (one commit, not two) so the patch count in the
+# marker is proven to track the real count rather than a hardcoded "2"
+# left over from the range used everywhere else in this file.
+rm -f -- "$capture_dir/argv"
+PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "topic~1..topic" \
+    --from '@author' --to '@lkml-panel' --subject 'single patch subject' --send >/dev/null 2>&1
+rc_ver_count=$?
+check "single-patch range with default version exits 0" "0" "$rc_ver_count"
+ver_count_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
+contains "the marker's patch count tracks the real count (1), not a hardcoded one" \
+    "$ver_count_argv" "[PATCH v1 0/1] single patch subject"
+
+# The cover's "0/1" is a numbering claim, and `git format-patch` does not
+# number a one-commit range on its own -- without -n the sole attached
+# patch's own Subject would carry no "1/1" to agree with it.
+out_single_attach="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "topic~1..topic" \
+    --from '@author' --to '@lkml-panel' --subject 'single patch subject' --attach 2>&1)"
+rc_single_attach=$?
+check "single-patch range with --attach exits 0" "0" "$rc_single_attach"
+single_attach_file="$(printf '%s' "$out_single_attach" | grep -o -- '--attach [^ ]*' | head -n1 | awk '{print $2}')"
+single_attach_subject="$([[ -f "$single_attach_file" ]] && grep -m1 '^Subject:' "$single_attach_file")"
+contains "the single attached patch's own Subject line is numbered 1/1, matching the cover's 0/1" \
+    "$single_attach_subject" "1/1"
+
+rm -f -- "$capture_dir/argv"
+PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject '[PATCH v2 0/2] a series' --send >/dev/null 2>&1
+rc_ver_marked=$?
+check "an already-marked subject with no --version exits 0" "0" "$rc_ver_marked"
+ver_marked_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
+contains "an already-marked subject passes through byte-identical" \
+    "$ver_marked_argv" "[PATCH v2 0/2] a series"
+n_patch_tokens="$(grep -o -- '\[PATCH' <<<"$ver_marked_argv" | wc -l | tr -d '[:space:]')"
+check "an already-marked subject is not double-stamped" "1" "$n_patch_tokens"
+
+# An already-marked subject whose own "i/N" disagrees with the range's
+# real patch count is refused rather than passed through: sending it
+# would leave the Subject claiming 5 patches while the body's
+# ${PATCH_COUNT} fill and (now that --version reaches `git format-patch
+# -v`) every attached patch's own "i/N" both say 2, a three-way
+# contradiction about the size of the series with no warning at all.
+out_ver_count_conflict="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject '[PATCH v2 0/5] a series' 2>&1)"
+rc_ver_count_conflict=$?
+if (( rc_ver_count_conflict != 0 )); then
+    ok "a marked subject whose count disagrees with the real range exits non-zero"
+else
+    no "a marked subject whose count disagrees with the real range exits non-zero" "exit 0: $out_ver_count_conflict"
+fi
+contains "the count-conflict refusal names the declared count" "$out_ver_count_conflict" "5"
+contains "the count-conflict refusal names the real count" "$out_ver_count_conflict" "2"
+
+# A bare "v2" in prose (no leading "[PATCH ...]" bracket) is not a
+# version marker: it is stamped over like any other unmarked subject,
+# and --version remains usable as an escape hatch for it (previously
+# the subject was left unstamped and --version was hard-refused, with
+# no way to get a correct stamp onto such a subject at all).
+rm -f -- "$capture_dir/argv"
+PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'fix the v2 parser' --send >/dev/null 2>&1
+rc_ver_bare=$?
+check "a subject with a bare v2 token exits 0" "0" "$rc_ver_bare"
+ver_bare_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
+contains "a bare v2 anywhere in the subject is prose, not a marker, and gets the default stamp" \
+    "$ver_bare_argv" "[PATCH v1 0/2] fix the v2 parser"
+# This detection is deliberately narrower than fs_subject_versions():
+# that parser matches "v<digits>" anywhere in a Subject, so the "v2" in
+# "fix the v2 parser" -- correctly left as prose above -- still reads as
+# a second, phantom version round once combined with the real "v1" this
+# script stamps. That divergence is a pre-existing limitation of
+# fs_subject_versions() (untouched by this script), not something
+# --version can close from here; this assertion pins the actual,
+# divergent round-trip result so the gap stays visible instead of
+# silently passing an untested case.
+check "the bare-v2 subject's real stamp round-trips as BOTH v1 and the phantom prose v2" \
+    "$(printf '1\n2')" "$(fs_subject_versions "$(ver_argv_subject "$ver_bare_argv")")"
+
+rm -f -- "$capture_dir/argv"
+PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'fix the v2 parser' --version 3 --send >/dev/null 2>&1
+rc_ver_bare_override=$?
+check "--version still overrides a bare v2 in prose (the escape hatch works)" "0" "$rc_ver_bare_override"
+ver_bare_override_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
+contains "the override stamps the given version, prose v2 untouched" \
+    "$ver_bare_override_argv" "[PATCH v3 0/2] fix the v2 parser"
+
+# An already-bracketed but unversioned subject (single-patch.md's
+# documented ${SUBJECT} form) must not be double-stamped: the old
+# bracket is replaced, not nested inside a new one.
+rm -f -- "$capture_dir/argv"
+PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject '[PATCH] fix the thing' --send >/dev/null 2>&1
+rc_ver_bare_bracket=$?
+check "an unversioned [PATCH] subject exits 0" "0" "$rc_ver_bare_bracket"
+ver_bare_bracket_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
+contains "an unversioned [PATCH] bracket is replaced with a real stamp, not nested" \
+    "$ver_bare_bracket_argv" "[PATCH v1 0/2] fix the thing"
+n_patch_tokens_bracket="$(grep -o -- '\[PATCH' <<<"$ver_bare_bracket_argv" | wc -l | tr -d '[:space:]')"
+check "an unversioned [PATCH] subject is not double-stamped" "1" "$n_patch_tokens_bracket"
+
+# An unversioned bracket that carries a qualifier -- "RFC PATCH",
+# "RESEND PATCH", "PATCH net-next" -- must keep that qualifier when
+# stamped, not have its whole bracket thrown away: an RFC round one
+# that lost its RFC tag would read to the panel as a merge-ready
+# series. The stale "0/5" declared count is also expected to be
+# replaced by the real count (2), not left alongside it.
+rm -f -- "$capture_dir/argv"
+PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject '[RFC PATCH 0/5] a series' --send >/dev/null 2>&1
+rc_ver_unversioned_rfc=$?
+check "an unversioned [RFC PATCH ...] subject exits 0" "0" "$rc_ver_unversioned_rfc"
+ver_unversioned_rfc_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
+contains "an unversioned [RFC PATCH ...] subject keeps its RFC tag when stamped" \
+    "$ver_unversioned_rfc_argv" "[RFC PATCH v1 0/2] a series"
+n_patch_tokens_unversioned_rfc="$(grep -o -- 'PATCH' <<<"$ver_unversioned_rfc_argv" | wc -l | tr -d '[:space:]')"
+check "an unversioned [RFC PATCH ...] subject is not double-stamped" "1" "$n_patch_tokens_unversioned_rfc"
+
+rm -f -- "$capture_dir/argv"
+PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject '[RESEND PATCH 0/2] a series' --send >/dev/null 2>&1
+rc_ver_unversioned_resend=$?
+check "an unversioned [RESEND PATCH ...] subject exits 0" "0" "$rc_ver_unversioned_resend"
+ver_unversioned_resend_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
+contains "an unversioned [RESEND PATCH ...] subject keeps its RESEND tag when stamped" \
+    "$ver_unversioned_resend_argv" "[RESEND PATCH v1 0/2] a series"
+
+rm -f -- "$capture_dir/argv"
+PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject '[PATCH net-next 0/2] a series' --send >/dev/null 2>&1
+rc_ver_unversioned_subsystem=$?
+check "an unversioned [PATCH net-next ...] subject exits 0" "0" "$rc_ver_unversioned_subsystem"
+ver_unversioned_subsystem_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
+contains "an unversioned [PATCH net-next ...] subject keeps its subsystem tag when stamped" \
+    "$ver_unversioned_subsystem_argv" "[PATCH v1 net-next 0/2] a series"
+
+out_ver_conflict="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject '[PATCH v2 0/5] a series' --version 4 2>&1)"
+rc_ver_conflict=$?
+if (( rc_ver_conflict != 0 )); then ok "--version plus an already-marked subject exits non-zero"; else no "--version plus an already-marked subject exits non-zero" "exit 0: $out_ver_conflict"; fi
+contains "the conflict refusal names the given --version value" "$out_ver_conflict" "--version 4"
+contains "the conflict refusal names the marker found in the subject" "$out_ver_conflict" "v2"
+
+# A leading bracket that carries a qualifier before the word PATCH --
+# "[RFC PATCH v2 0/5]", "[RESEND PATCH v3 0/5]" -- is the common
+# versioned-series form on a real list, and must be recognised as an
+# existing marker the same as a bare "[PATCH v2 0/5]": anchoring on
+# "^\[PATCH" alone missed these, letting them fall through as unmarked
+# and get a second, contradictory version stamped in front.
+rm -f -- "$capture_dir/argv"
+PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject '[RFC PATCH v2 0/2] a series' --send >/dev/null 2>&1
+rc_ver_rfc=$?
+check "an [RFC PATCH v2 ...] subject exits 0" "0" "$rc_ver_rfc"
+ver_rfc_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
+contains "an [RFC PATCH v2 ...] subject passes through byte-identical" \
+    "$ver_rfc_argv" "[RFC PATCH v2 0/2] a series"
+n_patch_tokens_rfc="$(grep -o -- 'PATCH' <<<"$ver_rfc_argv" | wc -l | tr -d '[:space:]')"
+check "an [RFC PATCH v2 ...] subject is not double-stamped" "1" "$n_patch_tokens_rfc"
+
+rm -f -- "$capture_dir/argv"
+PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject '[RESEND PATCH v3 0/2] a series' --send >/dev/null 2>&1
+rc_ver_resend=$?
+check "a [RESEND PATCH v3 ...] subject exits 0" "0" "$rc_ver_resend"
+ver_resend_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
+contains "a [RESEND PATCH v3 ...] subject passes through byte-identical" \
+    "$ver_resend_argv" "[RESEND PATCH v3 0/2] a series"
+
+out_ver_rfc_conflict="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject '[RFC PATCH v2 0/5] a series' --version 4 2>&1)"
+rc_ver_rfc_conflict=$?
+if (( rc_ver_rfc_conflict != 0 )); then
+    ok "--version plus an already-marked [RFC PATCH ...] subject exits non-zero"
+else
+    no "--version plus an already-marked [RFC PATCH ...] subject exits non-zero" "exit 0: $out_ver_rfc_conflict"
+fi
+contains "the [RFC PATCH ...] conflict refusal names the marker found in the subject" "$out_ver_rfc_conflict" "v2"
+
+for bad_version in 0 -1 abc ''; do
+    out_ver_bad="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+        --from '@author' --to '@lkml-panel' --subject 'a series' --version "$bad_version" 2>&1)"
+    rc_ver_bad=$?
+    if (( rc_ver_bad != 0 )); then
+        ok "--version '$bad_version' exits non-zero"
+    else
+        no "--version '$bad_version' exits non-zero" "exit 0: $out_ver_bad"
+    fi
+    contains "--version '$bad_version' names the validation problem" "$out_ver_bad" "positive integer"
+done
+
+# print-only mode shell-quotes the composed command with printf '%q', so
+# the space-separated subject shows up backslash-escaped here the same
+# way the "printed command carries the subject" assertion above expects.
+contains "--ci-first's wave-one mail carries the v1 stamp (it starts the thread)" \
+    "$out_ci_first" "PATCH\\ v1\\ 0/2\\]\\ subj"
+
+subject_body_template="$template_dir/subject-in-body.md"
+printf '%s\n' 'Subject-in-body: ${SUBJECT}' '' 'Base: ${BASE}' > "$subject_body_template"
+out_ver_body="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subject in the body test' \
+    --template "$subject_body_template" 2>&1)"
+rc_ver_body=$?
+check "a template with \${SUBJECT} in its body exits 0" "0" "$rc_ver_body"
+ver_body_file="$(printf '%s' "$out_ver_body" | grep -o -- '--body [^ ]*' | awk '{print $2}')"
+ver_body_text="$([[ -f "$ver_body_file" ]] && cat "$ver_body_file")"
+contains "the body's \${SUBJECT} fill carries the same stamped subject as the header" \
+    "$ver_body_text" "Subject-in-body: [PATCH v1 0/2] subject in the body test"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))
