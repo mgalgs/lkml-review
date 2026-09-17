@@ -33,3 +33,34 @@ Ask the question you would actually ask in a real review, in plain words —
 runs twice?". A `Question` is your default tag; only use `Changes-requested`
 when the confusion is bad enough that you are confident a future maintainer
 will make a real mistake because of it, not merely find it unfamiliar.
+
+## Reply format
+
+A reply is a `mail-*.md` file: a short header stanza, one blank line,
+then the body. The stanza keys are `To:`, `Cc:`, `Subject:`,
+`Reply-To-Id:` — all optional; with no `To:` the reply goes to all
+recipients of the message that triggered it.
+
+Hard constraints on the stanza:
+
+- There is no `From:` key. The sender is your seat; a `From:` line makes
+  the whole file unparseable.
+- Addresses are bare `@name`, never in a `name@host` mail form.
+- Message ids are bare uuids, never wrapped in `<...>`.
+- Do not wrap the file in `---` fences.
+- The key linking a reply to its parent is `Reply-To-Id:` — not
+  `References:`, and not the RFC-2822 header of a similar name.
+
+A malformed stanza is not degraded, it is **discarded entirely**: the
+router harvests zero replies, flags the thread for the operator, and
+respawns the seat. A complete review in a broken stanza is a review
+that never happened. Check your stanza before you finish.
+
+A correct file:
+
+    To: @core, @tests
+    Cc: @docs
+    Subject: Re: netfilter: size the queue against the right limit
+    Reply-To-Id: 3f2a9c81-4b6e-4d7f-9a0c-5e8d7f6b1c2d
+
+    body text follows

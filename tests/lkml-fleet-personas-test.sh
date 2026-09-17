@@ -57,5 +57,59 @@ else
     no "ci resolves network=sealed" "got '$ci_network'"
 fi
 
+# The reply-format section is a hard contract with the router, not
+# advice: a malformed stanza is discarded wholesale and the seat
+# respawned, so every persona carries the same salient section. The
+# suite compares the sections against each other rather than trusting
+# one file to be right.
+extract_reply_format() {
+    awk '/^## Reply format$/{ f = 1; print; next }
+         f && /^## / { exit }
+         f { print }' "$1"
+}
+
+count=0
+baseline=""
+baseline_name=""
+for f in "$personas_dir"/*.md; do
+    name="$(basename "$f" .md)"
+    count=$(( count + 1 ))
+    section="$(extract_reply_format "$f")"
+    if [[ -z "$section" ]]; then
+        no "$name carries the Reply format section" "no '## Reply format' heading"
+        continue
+    fi
+    if [[ -z "$baseline" ]]; then
+        baseline="$section"
+        baseline_name="$name"
+        ok "$name carries the Reply format section"
+        continue
+    fi
+    if [[ "$section" == "$baseline" ]]; then
+        ok "$name's Reply format section matches $baseline_name's"
+    else
+        no "$name's Reply format section matches $baseline_name's" "section text diverges"
+    fi
+done
+if (( count == 9 )); then
+    ok "fleet/personas holds exactly nine personas"
+else
+    no "fleet/personas holds exactly nine personas" "found $count"
+fi
+if [[ -n "$baseline" ]]; then
+    if grep -q 'Reply-To-Id:' <<<"$baseline" && ! grep -q 'In-Reply-To:' <<<"$baseline"; then
+        ok "Reply format section names Reply-To-Id and no In-Reply-To"
+    else
+        no "Reply format section names Reply-To-Id and no In-Reply-To"
+    fi
+    # @localhost is the dialect the router cannot parse; a persona that
+    # shows it as an example primes the seats to write it.
+    if ! grep -rqF '@localhost' "$personas_dir"; then
+        ok "no persona file contains @localhost"
+    else
+        no "no persona file contains @localhost" "found '@localhost' in fleet/personas/"
+    fi
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))
