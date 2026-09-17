@@ -1134,5 +1134,70 @@ ver_body_text="$([[ -f "$ver_body_file" ]] && cat "$ver_body_file")"
 contains "the body's \${SUBJECT} fill carries the same stamped subject as the header" \
     "$ver_body_text" "Subject-in-body: [PATCH v1 0/2] subject in the body test"
 
+printf '\n== Sign-off convention: tag-form contract round-trips through the real fs_body_tags ==\n'
+# Pull lkml-fleet-status.sh's own fs_body_tags() definition out of the
+# script text and eval it into this shell, the same "pull the real
+# function rather than hand-copy its behavior" technique used for
+# fill() and fs_subject_versions() above -- the point is that the
+# Sign-off convention paragraph's claims and the SHIPPED PARSER cannot
+# silently drift apart (CLAUDE.md's "false green" hazard).
+eval "$(sed -n '/^fs_body_tags() {/,/^}/p' "$repo_dir/scripts/lkml-fleet-status.sh")"
+
+# fs_body_tags reads a message FILE: header lines, a blank line, then
+# the body. A minimal fixture skips the header entirely -- the leading
+# blank line alone is what flips awk's `body` flag.
+body_tag_dir="$(mktemp -d)"; tmpdirs+=("$body_tag_dir")
+body_tag_n=0
+body_tag_file() {
+    body_tag_n=$(( body_tag_n + 1 ))
+    local f="$body_tag_dir/msg-$body_tag_n"
+    printf '\n%s\n' "$1" > "$f"
+    printf '%s' "$f"
+}
+
+contains "a colon-form trailer starting its own line IS counted" \
+    "$(fs_body_tags "$(body_tag_file 'Reviewed-by: Core')")" "Reviewed-by"
+
+case "$(fs_body_tags "$(body_tag_file 'Reviewed-by Core')")" in
+    *Reviewed-by*) no "the same trailer without the colon is NOT counted" "tag registered with no colon" ;;
+    *) ok "the same trailer without the colon is NOT counted" ;;
+esac
+
+case "$(fs_body_tags "$(body_tag_file 'Signed -- Reviewed-by: Core')")" in
+    *Reviewed-by*) no "the same trailer embedded mid-prose is NOT counted" "tag registered from mid-prose" ;;
+    *) ok "the same trailer embedded mid-prose is NOT counted" ;;
+esac
+
+contains "a bare verdict on the last line IS counted" \
+    "$(fs_body_tags "$(body_tag_file "$(printf 'Some findings here.\nNAK')")")" "NAK"
+
+contains "a bare verdict on the first line IS counted" \
+    "$(fs_body_tags "$(body_tag_file "$(printf 'NAK\nMore detail follows.')")")" "NAK"
+
+case "$(fs_body_tags "$(body_tag_file "$(printf 'Some findings.\nNAK\nMore detail follows.')")")" in
+    *NAK*) no "a verdict mid-body is NOT counted" "tag registered from a middle line" ;;
+    *) ok "a verdict mid-body is NOT counted" ;;
+esac
+
+printf '\n== Sign-off convention blocks stay byte-identical across all three kickoff templates ==\n'
+extract_signoff_block() {
+    awk '/^## Sign-off convention$/{ f = 1; print; next }
+         f && /^## / { exit }
+         f { print }' "$1"
+}
+so_series="$(extract_signoff_block "$repo_dir/fleet/kickoffs/series-review.md")"
+so_single="$(extract_signoff_block "$repo_dir/fleet/kickoffs/single-patch.md")"
+so_focused="$(extract_signoff_block "$repo_dir/fleet/kickoffs/focused-review.md")"
+if [[ "$so_series" == "$so_single" ]]; then
+    ok "series-review and single-patch Sign-off convention blocks are byte-identical"
+else
+    no "series-review and single-patch Sign-off convention blocks are byte-identical" "blocks diverge"
+fi
+if [[ "$so_series" == "$so_focused" ]]; then
+    ok "series-review and focused-review Sign-off convention blocks are byte-identical"
+else
+    no "series-review and focused-review Sign-off convention blocks are byte-identical" "blocks diverge"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))
