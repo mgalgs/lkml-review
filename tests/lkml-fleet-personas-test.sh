@@ -131,10 +131,10 @@ for f in "$personas_dir"/*.md; do
         no "$name's Reply format section matches $baseline_name's" "section text diverges"
     fi
 done
-if (( count == 9 )); then
-    ok "fleet/personas holds exactly nine personas"
+if (( count == 10 )); then
+    ok "fleet/personas holds exactly ten personas"
 else
-    no "fleet/personas holds exactly nine personas" "found $count"
+    no "fleet/personas holds exactly ten personas" "found $count"
 fi
 if [[ -n "$baseline" ]]; then
     if grep -q 'Reply-To-Id:' <<<"$baseline" && ! grep -q 'In-Reply-To:' <<<"$baseline"; then
