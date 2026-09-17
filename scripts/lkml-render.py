@@ -929,6 +929,8 @@ def render_message(m, depth=0, series_name=""):
     model = m["model"]
     if model:
         model_chip = f'<span class="model">{esc(model)}</span>'
+    elif m.get("fleet"):
+        model_chip = ""
     else:
         model_chip = '<span class="model unknown">model unknown</span>'
     if m["body"].strip():
@@ -938,19 +940,24 @@ def render_message(m, depth=0, series_name=""):
                      f'<code class="inline">lkml-mailbox.sh show {esc(series_name)} {esc(m["id"])}</code></p>')
     attachment_html = ""
     if m["attachments"]:
-        items = []
-        for attachment in m["attachments"]:
-            label = esc(attachment["ref"])
-            if attachment["href"]:
-                link = (f'<a download href="{esc(attachment["href"])}">{label}</a>'
-                        f' <span class="attachment-type">({esc(attachment["mime"])})</span>')
-                if attachment["mime"].startswith("image/") and attachment["mime"] != "image/svg+xml":
-                    link += f'<br><img class="attachment-preview" src="{esc(attachment["href"])}" alt="{label}">'
-            else:
-                link = f"{label} <span class=\"attachment-missing\">(unavailable)</span>"
-            items.append(f"<li>{link}</li>")
-        attachment_html = ('<div class="attachments"><span class="attachment-label">attachments</span><ul>'
-                           + "".join(items) + "</ul></div>")
+        if m.get("fleet"):
+            names = ", ".join(esc(a["ref"]) for a in m["attachments"])
+            attachment_html = (f'<div class="attachments">'
+                               f'<span class="attachment-label">attachments</span> {names}</div>')
+        else:
+            items = []
+            for attachment in m["attachments"]:
+                label = esc(attachment["ref"])
+                if attachment["href"]:
+                    link = (f'<a download href="{esc(attachment["href"])}">{label}</a>'
+                            f' <span class="attachment-type">({esc(attachment["mime"])})</span>')
+                    if attachment["mime"].startswith("image/") and attachment["mime"] != "image/svg+xml":
+                        link += f'<br><img class="attachment-preview" src="{esc(attachment["href"])}" alt="{label}">'
+                else:
+                    link = f"{label} <span class=\"attachment-missing\">(unavailable)</span>"
+                items.append(f"<li>{link}</li>")
+            attachment_html = ('<div class="attachments"><span class="attachment-label">attachments</span><ul>'
+                               + "".join(items) + "</ul></div>")
     return (
         f'<details class="msg" data-depth="{depth}" id="m-{esc(m["id"])}">\n'
         f'  <summary>\n'

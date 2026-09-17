@@ -1781,6 +1781,31 @@ contains "fleet thread renders its own series wrapper" "$combo" '<div class="ser
 contains "old-layout series still renders on the same page" "$combo" '<div class="series" id="ser-card">'
 contains "fleet series title comes from its cover subject" "$combo" '<h1>fleet demo series</h1>'
 
+contains "core seat row shows the stripped name" "$fhtml" '<span class="who">core<small>core</small></span>'
+contains "scout seat row shows the stripped name" "$fhtml" '<span class="who">scout<small>scout</small></span>'
+if python3 - "$fleet_html" <<'PY'
+import re
+import sys
+html = open(sys.argv[1], encoding="utf-8").read()
+i = html.index('where each reviewer stands')
+panel = html[i:html.index('</section>', i)]
+errors = []
+if '<span class="chip reviewed">reviewed-by</span>' not in panel:
+    errors.append("core's chip is not reviewed-by in the reviewer panel")
+if '<span class="chip question">question</span>' not in panel:
+    errors.append("scout's chip is not question (its latest-by-seq tag) in the reviewer panel")
+if '<span class="chip changes">changes</span>' in panel:
+    errors.append("scout's superseded changes-requested chip leaked into the reviewer panel")
+for e in errors:
+    print(e)
+sys.exit(1 if errors else 0)
+PY
+then
+    ok "reviewer panel: core is reviewed-by, scout is its LATEST tag by seq (question, not changes)"
+else
+    no "reviewer panel: core is reviewed-by, scout is its LATEST tag by seq (question, not changes)"
+fi
+
 contains "root is depth 0" "$fhtml" "data-depth=\"0\" id=\"m-${root_uuid}\""
 contains "core's direct reply is depth 1" "$fhtml" "data-depth=\"1\" id=\"m-${core_uuid}\""
 contains "scout's nested reply under core is depth 2" "$fhtml" "data-depth=\"2\" id=\"m-${nest_uuid}\""
@@ -1795,6 +1820,12 @@ PY
 then ok "002 (core) renders before 003 (scout) despite tied Date, by NNN"
 else no "002 (core) renders before 003 (scout) despite tied Date, by NNN"
 fi
+
+contains "root's first attachment basename is listed" "$fhtml" 'design-notes.txt'
+contains "root's second attachment basename is listed" "$fhtml" 'interdiff.patch'
+case "$fhtml" in *'attachments/design-notes.txt'*) no "fleet attachment line strips the attachments/ prefix" ;; *) ok "fleet attachment line strips the attachments/ prefix" ;; esac
+case "$fhtml" in *'<a download'*) no "fleet attachments render no download links" ;; *) ok "fleet attachments render no download links" ;; esac
+case "$fhtml" in *'model unknown'*) no "fleet messages suppress the model-unknown chip (uniform, not an anomaly)" ;; *) ok "fleet messages suppress the model-unknown chip (uniform, not an anomaly)" ;; esac
 
 if [[ "$(grep -o '<details class="msg"' "$fleet_html" | wc -l)" -eq 4 ]]; then
     ok "exactly 4 messages rendered; .postmaster/ produced no phantom 5th"
