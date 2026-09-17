@@ -107,21 +107,17 @@ parse_paths=()
 while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -n "$line" ]] || continue
     total_runs=$(( total_runs + 1 ))
-    run_dir="$(printf '%s' "$line" | jq -r '.run_dir // empty' 2>/dev/null)"
-    persona="$(printf '%s' "$line" | jq -r '.persona // empty' 2>/dev/null)"
-    # A persona-less line is the one shape this ledger cannot attribute
-    # at all (unparseable JSON, or a line simply missing the field) --
-    # that, and only that, is "unreadable". A cluster seat's line
-    # (scripts/lkml-round.sh) has a persona but deliberately no
-    # run_dir -- its cost is unknown, not unreadable, so it falls
-    # through to the same "no summary" bucket a not-yet-finished local
-    # run would, under its real persona, matching how
+    # A line that is not even valid JSON cannot be attributed to
+    # anything -- not a persona, not a run_dir -- so it is "unreadable"
+    # before either field is ever looked at. That is different from a
+    # line that parses fine but simply omits the persona field: such a
+    # line still has a run_dir to classify by, matching how
     # scripts/lkml-fleet-status.sh's print_cost_per_agent() treats an
-    # empty run_dir. Collapsing that into "unreadable" would both
-    # discard real attribution and desync the two screens' answers for
-    # the same run -- see the classifier comment below for why that
-    # parity matters.
-    if [[ -z "$persona" ]]; then
+    # empty agent -- fall back to a sentinel name and keep going, rather
+    # than discarding real attribution and desyncing the two screens'
+    # answers for the same run. See the classifier comment below for why
+    # that parity matters.
+    if ! printf '%s' "$line" | jq -e . >/dev/null 2>&1; then
         persona='unknown persona'
         RUN_COUNT[$persona]=$(( ${RUN_COUNT[$persona]:-0} + 1 ))
         unreadable=$(( unreadable + 1 ))
@@ -129,6 +125,9 @@ while IFS= read -r line || [[ -n "$line" ]]; do
         UNREADABLE_COUNT[$persona]=$(( ${UNREADABLE_COUNT[$persona]:-0} + 1 ))
         continue
     fi
+    run_dir="$(printf '%s' "$line" | jq -r '.run_dir // empty' 2>/dev/null)"
+    persona="$(printf '%s' "$line" | jq -r '.persona // empty' 2>/dev/null)"
+    [[ -n "$persona" ]] || persona='unknown persona'
     RUN_COUNT[$persona]=$(( ${RUN_COUNT[$persona]:-0} + 1 ))
     if [[ -z "$run_dir" || ! -f "$run_dir/summary.json" ]]; then
         missing_summary=$(( missing_summary + 1 ))

@@ -145,8 +145,12 @@ not_contains "cost-basic: corrupt file is never claimed free" "$OUT" $'corrupt  
 contains "cost-basic: string cost is no cost, not summed" "$OUT" "isstring       \$0.000000 (1 no cost)"
 not_contains "cost-basic: string cost is never claimed to be \$1.23" "$OUT" "isstring       \$1.230000"
 # A negative cost is invalid, no longer summed as negative unannotated.
-contains "cost-basic: negative cost is invalid, not summed" "$OUT" "negative       \$0.000000 (1 invalid)"
-not_contains "cost-basic: negative cost is never claimed free" "$OUT" $'negative       $0.000000\n'
+# (No separate not_contains here: `negative` is the last row printed --
+# sorted after absent, corrupt, fallback, isfalse, isnull, isstring,
+# istrue -- so a $'...\n'-anchored needle would have nothing after it to
+# match against once $(...) strips OUT's trailing newline, making such an
+# assertion pass unconditionally. The `contains` above already demands
+# the annotated form, which is the real regression guard.)
 contains "cost-basic: fallback cost_usd is used and summed" "$OUT" "fallback       \$2.500000"
 not_contains "cost-basic: fallback is not annotated" "$OUT" "fallback       \$2.500000 ("
 # Aggregate: only fallback's 2.5 is a usable cost now.
@@ -188,37 +192,59 @@ contains "cost-huge: an unrepresentable magnitude is invalid" "$OUT" "huge      
 not_contains "cost-huge: the aggregate is never +inf" "$OUT" "+inf"
 contains "cost-huge: the aggregate stays a real zero" "$OUT" "Total cost so far: \$0"
 
-printf '\n== cost-malformed: a ledger line that cannot be read ==\n'
+printf '\n== cost-malformed: a ledger line that is not valid JSON at all ==\n'
 init_series cost-malformed
 mkdir -p "$work/cm-clean"
 printf '{"total_cost_usd": 4.0}' > "$work/cm-clean/summary.json"
 write_run cost-malformed "$work/cm-clean" clean
 printf 'not a json line at all\n' >> "$LKML_MAILBOX_ROOT/cost-malformed/runs.jsonl"
+# Valid JSON that simply omits persona still names a run_dir -- it is
+# classified by that run_dir like any other line under the "unknown
+# persona" sentinel, not folded into the ledger-unreadable bucket that is
+# reserved for JSON that failed to parse at all.
 printf '{"kind":"implement"}\n' >> "$LKML_MAILBOX_ROOT/cost-malformed/runs.jsonl"
 
 OUT="$("$status" cost-malformed 2>/dev/null)"
 contains "cost-malformed: runs launched is 3" "$OUT" "Runs launched: 3"
-# A ledger line that is not valid JSON, or is valid JSON missing run_dir
-# or persona, is its own state -- unreadable -- rather than being folded
-# into missing-summary via an empty/null run_dir passing the -f check.
-contains "cost-malformed: both malformed lines are unreadable" "$OUT" \
-    "Runs launched: 3 (2 unreadable)"
+# Only the non-JSON line is unreadable; the persona-less-but-valid line
+# has no run_dir either, so it lands in "no summary" instead.
+contains "cost-malformed: only the unparseable line is unreadable" "$OUT" \
+    "Runs launched: 3 (1 no summary, 1 unreadable)"
 not_contains "cost-malformed: no longer described as missing summaries" "$OUT" \
     "with no summary.json yet"
 contains "cost-malformed: the readable run's cost is unaffected" "$OUT" "clean          \$4.000000"
 contains "cost-malformed: aggregate only includes the readable run" "$OUT" "Total cost so far: \$4.000000"
-# The two malformed lines share the "unknown persona" sentinel and must
-# collapse into ONE row, not word-split into two by a persona name that
-# itself contains a space.
-contains "cost-malformed: both malformed lines collapse into one row" "$OUT" \
-    "unknown persona \$0.000000 (2 unreadable)"
+# The two lines share the "unknown persona" sentinel and must collapse
+# into ONE row, not word-split into two by a persona name that itself
+# contains a space.
+contains "cost-malformed: both lines collapse into one row" "$OUT" \
+    "unknown persona \$0.000000 (1 no summary, 1 unreadable)"
 # The unreadable source here is the ledger line itself, not any
-# summary.json (there is none to blame -- neither malformed line names a
+# summary.json (there is none to blame -- neither line names a readable
 # run_dir), so the banner must say so instead of pointing at summary.json.
 contains "cost-malformed: banner blames the ledger line, not summary.json" "$OUT" \
     "(some runs.jsonl lines could not be parsed and are counted as unreadable)"
 not_contains "cost-malformed: banner does not blame summary.json" "$OUT" \
     "some summary.json files could not be parsed"
+
+printf '\n== cost-personaless: valid JSON missing only persona, with a readable run_dir ==\n'
+init_series cost-personaless
+mkdir -p "$work/cpl-run"
+printf '{"total_cost_usd": 6.0}' > "$work/cpl-run/summary.json"
+printf '{"run_dir":"%s","kind":"review"}\n' "$work/cpl-run" \
+    >> "$LKML_MAILBOX_ROOT/cost-personaless/runs.jsonl"
+
+OUT="$("$status" cost-personaless 2>/dev/null)"
+contains "cost-personaless: runs launched is 1" "$OUT" "Runs launched: 1"
+not_contains "cost-personaless: not counted as unreadable" "$OUT" "unreadable"
+# A missing persona must not shadow a readable run_dir: the cost sitting
+# on disk is real and must be attributed and summed, matching
+# scripts/lkml-fleet-status.sh's print_cost_per_agent() on the identical
+# shape (an empty agent falls back to a sentinel and keeps reading).
+contains "cost-personaless: the cost is read under the sentinel persona" "$OUT" \
+    "unknown persona \$6.000000"
+contains "cost-personaless: the cost is summed into the total" "$OUT" \
+    "Total cost so far: \$6.000000"
 
 printf '\n== cost-cluster: a cluster seat line has a persona but no run_dir ==\n'
 init_series cost-cluster
