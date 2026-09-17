@@ -20,6 +20,10 @@
 #     not nested into (ln -sfn would link inside it and report success);
 #     the same install links cleanly once the directory is gone.
 #   - re-running the install is idempotent.
+#   - the porcelain and plumbing lists this test keeps as its own copy
+#     agree with install.sh's, are disjoint, and together cover exactly
+#     the files in scripts/ (the copies are independent on purpose;
+#     only the agreement is checked).
 
 set -uo pipefail
 
@@ -41,6 +45,39 @@ contains() {
 check() {
     local label="$1" expected="$2" actual="$3"
     if [[ "$expected" == "$actual" ]]; then ok "$label"; else no "$label" "expected '$expected', got '$actual'"; fi
+}
+
+# Read one of install.sh's script lists straight out of its source by
+# parsing the array literal. install.sh is neither executed nor
+# sourced: running it would symlink into the real $HOME/.claude/scripts,
+# and sourcing it is safe only while the arrays happen to come before
+# any work -- an invariant a later edit could break. The literal is
+# plain names, one per line, until the closing paren.
+install_list() {
+    local var="$1"
+    awk -v v="$var" '
+        !inarr && $0 ~ "^" v "=\\($" { inarr = 1; next }
+        inarr && /^\)/ { exit }
+        inarr {
+            gsub(/^[[:space:]]+/, ""); gsub(/[[:space:]]+$/, "")
+            if ($0 != "") print
+        }
+    ' "$install"
+}
+
+# Set equality over two newline-separated sorted name lists. The
+# failure names which side holds which extra, so a drift is readable
+# without diffing the two files by hand.
+assert_set_eq() {
+    local label="$1" left="$2" right="$3"
+    local only_left only_right
+    only_left="$(comm -23 <(printf '%s\n' "$left") <(printf '%s\n' "$right") | tr '\n' ' ')"
+    only_right="$(comm -13 <(printf '%s\n' "$left") <(printf '%s\n' "$right") | tr '\n' ' ')"
+    if [[ -z "$only_left" && -z "$only_right" ]]; then
+        ok "$label"
+    else
+        no "$label" "only in the first: ${only_left:-none}; only in the second: ${only_right:-none}"
+    fi
 }
 
 work="$(mktemp -d)"; tmpdirs+=("$work")
@@ -69,6 +106,35 @@ FARMS=(
     "$home_dir/.agents/skills"
     "$home_dir/.pi/agent/skills"
 )
+
+printf '\n== the lists here agree with install.sh ==\n'
+# This test keeps its own copy of install.sh's two lists, deliberately:
+# importing them would make every later check a tautology. The price
+# is two copies of one fact, so the copies are pinned here -- a name
+# moved between lists in install.sh without the matching move here
+# fails this section instead of passing over the old classification.
+inst_p="$(install_list PORCELAIN | sort)"
+inst_l="$(install_list PLUMBING | sort)"
+test_p="$(printf '%s\n' "${PORCELAIN[@]}" | sort)"
+test_l="$(printf '%s\n' "${PLUMBING[@]}" | sort)"
+assert_set_eq "porcelain: install.sh and this test agree" "$inst_p" "$test_p"
+assert_set_eq "plumbing: install.sh and this test agree" "$inst_l" "$test_l"
+both="$(comm -12 <(printf '%s\n' "$inst_p") <(printf '%s\n' "$inst_l") | tr '\n' ' ')"
+if [[ -z "$both" ]]; then
+    ok "install.sh: porcelain and plumbing are disjoint"
+else
+    no "install.sh: porcelain and plumbing are disjoint" "in both lists: $both"
+fi
+list_union="$(printf '%s\n' "$inst_p" "$inst_l" | sort -u)"
+scripts_now=""
+for f in "$repo_dir/scripts"/*; do
+    [[ -f "$f" ]] || continue
+    scripts_now+="${f##*/}"$'\n'
+done
+scripts_now="$(printf '%s' "$scripts_now" | sort)"
+# Same file test install.sh's fail-closed check uses: a regular file,
+# or a symlink to one.
+assert_set_eq "union of install.sh's lists is exactly scripts/" "$list_union" "$scripts_now"
 
 printf '\n== install: porcelain linked, plumbing not ==\n'
 OUT="$(HOME="$home_dir" "$install" 2>&1)"; RC=$?
