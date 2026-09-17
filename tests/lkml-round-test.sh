@@ -567,10 +567,11 @@ printf '\n== --k8s: the panel runs as cluster jobs ==\n'
 # number of times STUB_K8S_DONE_AFTER names for it (persona:N pairs,
 # space-separated; default 1), STUB_K8S_DEAD names seats whose pod is
 # terminal (wait exits 2, the real terminal code), and STUB_K8S_NEVER
-# names seats that stay running past the round's deadline: wait BLOCKS
-# a short sleep (standing in for the real wait's full probe window,
-# which is 30s) and then exits 1, the real probe-deadline code, every
-# time. collect
+# names seats that stay running past the round's deadline: wait
+# BLOCKS for STUB_K8S_NEVER_BLOCK seconds (the deadline section sets
+# it EQUAL to the round's --timeout -- see the comment there for why
+# that equality is load-bearing) and then exits 1, the real
+# probe-deadline code, every time. collect
 # fabricates the pulled-back outbox, with a DISTINCT reply per seat, so
 # a cross-seat mix-up is visible in the mailbox; STUB_K8S_COLLECT_FAIL
 # names seats whose collect fails instead of exiting 0.
@@ -605,10 +606,10 @@ case "$verb" in
             if [[ "$never" == "$persona" ]]; then
                 # Still running at the probe's own deadline, forever:
                 # the real wait's exit 1 (the transient code), after
-                # blocking for the probe window (a 1s stand-in). Never
-                # counted against the probe counter, so the round's
-                # --timeout deadline is what ends its probing.
-                sleep 1
+                # blocking for STUB_K8S_NEVER_BLOCK. Never counted
+                # against the probe counter, so the round's --timeout
+                # deadline is what ends its probing.
+                sleep "${STUB_K8S_NEVER_BLOCK:-1}"
                 exit 1
             fi
         done
@@ -861,27 +862,38 @@ check "the live seat's reply still landed alongside the dead seat" "2" \
     "$(printf '%s\n' "$k8s_tree_dead" | grep -c 'k8s core reply')"
 
 printf '\n== --k8s: a seat that outruns the deadline is named, and the probe stops at the deadline ==\n'
-# security and pi-local never finish: each of their probes blocks the
-# probe window (1s in the stub) and exits with the probe-deadline code,
-# so with --timeout 1 the round must stop BEFORE pi-local''s first
+# security and pi-local never finish: each of their probes blocks
+# for STUB_K8S_NEVER_BLOCK seconds and exits with the probe-deadline
+# code. The block EQUALS the round's --timeout -- not a fixed small
+# sleep -- and that equality is what makes the timing deterministic:
+# a still-running seat's probe then runs past the deadline, so the
+# check before pi-local's probe is past it by arithmetic, whatever
+# the startup cost, and the round must stop BEFORE pi-local's first
 # probe -- a once-per-outer-cycle check would have probed both seats
 # in one cycle, past the deadline -- and the timeout warning must then
 # name BOTH still-running seats with a by-hand collect, while core
 # (done in time, in the SAME cycle as the deadline hits) is harvested
-# and NOT named as a straggler, and the round still exits 0.
+# and NOT named as a straggler, and the round still exits 0. The
+# budget is 10s, not 1s, for the ONE check that still races the wall
+# clock: the first one, which runs a few bash ops after the deadline
+# clock starts, and whose margin is startup cost -- 1s raced it to a
+# flake under load. Do not shrink the block below the budget (the
+# second seat's check stops holding) or the budget toward 1s (the
+# first check starts racing again).
 cap_k8s_slow="$(mktemp -d)"; tmpdirs+=("$cap_k8s_slow")
 k8s_state_slow="$(mktemp -d)"; tmpdirs+=("$k8s_state_slow")
 out_k8s_slow="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_k8s_slow" STUB_RUN_PREFIX="$run_prefix_dir" \
     STUB_K8S_CAPTURE_DIR="$cap_k8s_slow" STUB_K8S_STATE_DIR="$k8s_state_slow" \
     STUB_K8S_DONE_AFTER="core:1" STUB_K8S_NEVER="security pi-local" \
+    STUB_K8S_NEVER_BLOCK=10 \
     STUB_REPLY_TO="$patch2_id" STUB_REPLY_TO_BRACKETED="$patch_id_bracketed" \
     "$round" widget-frob --project "$project_dir" --checkout otherbranch \
     --personas "core, security, pi-local" --personas-dir "$work" \
-    --reply-to "$patch2_id" --no-summarize --timeout 1 \
+    --reply-to "$patch2_id" --no-summarize --timeout 10 \
     --k8s --endpoint test-endpoint 2>&1)"
 rc_k8s_slow=$?
 if (( rc_k8s_slow == 0 )); then ok "hitting the deadline with live seats does not fail the round"; else no "hitting the deadline with live seats does not fail the round" "exit $rc_k8s_slow: $out_k8s_slow"; fi
-contains "the deadline warning is printed" "$out_k8s_slow" "Warning: timed out after 1s"
+contains "the deadline warning is printed" "$out_k8s_slow" "Warning: timed out after 10s"
 contains "the seat probed in the deadline cycle is named as still running" "$out_k8s_slow" "security's job"
 contains "the seat not probed at the deadline is named too" "$out_k8s_slow" "pi-local's job"
 contains "the stragglers are told they will not be harvested this round" "$out_k8s_slow" "will not be harvested this round"
