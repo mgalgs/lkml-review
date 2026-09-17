@@ -232,13 +232,19 @@ def fleet_version(subject):
     of any Re: layers): the v<N> token inside a leading bracket that
     carries the word PATCH, or 1 when the bracket carries no such token
     or no PATCH word at all -- fleet messages carry no X-Version header,
-    unlike the old layout. Mirrors lkml-fleet-status.sh's
-    fs_subject_versions(): a qualifier before or after PATCH ('[RFC
-    PATCH v3 0/2]', '[PATCH net-next v2 0/2]') must not make the parse
-    fall back to 1, the same reason is_cover_subject does not require a
-    literal '[PATCH ' prefix. The leading non-alphanumeric guard on 'v'
-    keeps a token like 'v4' inside a word (e.g. an 'IPv4' mention) from
-    being mistaken for a version marker."""
+    unlike the old layout. NOT the same parse as lkml-fleet-status.sh's
+    fs_subject_versions(): that one greps v[0-9]+ across the WHOLE
+    subject and returns every match it finds, where this one looks only
+    inside the leading bracket and returns a single value. The narrower
+    parse here is deliberate -- it is immune to a stray 'v4l2' or 'v6.12'
+    token elsewhere in the subject that --allow-ambiguous-version lets
+    through -- but it means the two parses can disagree on a subject
+    fs_subject_versions() would call ambiguous. A qualifier before or
+    after PATCH ('[RFC PATCH v3 0/2]', '[PATCH net-next v2 0/2]') must
+    not make the parse fall back to 1, the same reason is_cover_subject
+    does not require a literal '[PATCH ' prefix. The leading
+    non-alphanumeric guard on 'v' keeps a token like 'v4' inside a word
+    (e.g. an 'IPv4' mention) from being mistaken for a version marker."""
     subj = subject
     while subj.startswith("Re: "):
         subj = subj[4:]
@@ -434,7 +440,11 @@ def build_old_layout(series_dir):
     for m in msgs.values():
         m["children"].sort(key=lambda x: (x["seq"], x["date"] or datetime.min))
     roots.sort(key=lambda x: (x["version"], x["seq"]))
-    return name, msgs, roots
+    # The old layout has no nested-version-boundary concept: every
+    # posting is already its own structural root, so "version roots"
+    # (what render_series/render_text_series iterate to find each
+    # version's own top-level messages) is just `roots` itself.
+    return name, msgs, roots, roots
 
 
 FLEET_MSG_RE = re.compile(r"^\d{3}-.*\.msg$")
@@ -508,6 +518,11 @@ def build_fleet_layout(series_dir):
     msgs = {}
     for fn in fleet_msg_paths(series_dir):
         m = read_fleet_msg(os.path.join(series_dir, fn), int(fn[:3]), attachment_root)
+        if not m["id"] or m["id"] in msgs:
+            raise ValueError(
+                f"{series_dir}: {fn} has a missing or duplicate Message-ID "
+                f"({m['id'] or '<empty>'}); cannot key the thread tree on it"
+            )
         msgs[m["id"]] = m
     roots = []
     for m in msgs.values():
@@ -519,14 +534,33 @@ def build_fleet_layout(series_dir):
     for m in msgs.values():
         m["children"].sort(key=lambda x: (x["seq"], x["date"] or datetime.min))
 
-    def set_depth(m, d):
+    # A message whose OWN subject is a fresh [PATCH ...] cover starts a
+    # new version's thread section even when it is structurally a reply
+    # (the thread id is fixed to the root message, so v2 and later are
+    # always replies, never roots): its depth resets to 0 the same way
+    # a real root's does, and it is collected into version_roots
+    # alongside the true root(s), so every version-scoped walk
+    # downstream (tally, open-thread detection, the trace render) can
+    # start from its own cover and see its own subtree numbered from 0.
+    # Walking down from `roots` (never from a raw depth==0 scan over
+    # ALL messages) is what keeps a reference cycle out of
+    # version_roots: two messages that are each other's In-Reply-To are
+    # each other's children and neither is a root, so this walk never
+    # reaches either one, and require_full_coverage catches the drop.
+    version_roots = []
+
+    def set_depth(m, d, is_version_root):
         m["depth"] = d
+        if is_version_root:
+            version_roots.append(m)
         for c in m["children"]:
-            set_depth(c, d + 1)
+            is_cover = is_cover_subject(c["subject"])
+            set_depth(c, 0 if is_cover else d + 1, is_cover)
     for r in roots:
-        set_depth(r, 0)
+        set_depth(r, 0, True)
     roots.sort(key=lambda x: (x["version"], x["seq"]))
-    return name, msgs, roots
+    version_roots.sort(key=lambda x: (x["version"], x["seq"]))
+    return name, msgs, roots, version_roots
 
 
 def build(series_dir):
@@ -540,15 +574,16 @@ def build(series_dir):
 
 def require_fleet_covers(series_dir, msgs, covers):
     """A fleet thread that parsed real messages but found no [PATCH ...]
-    cover among its roots is not a render bug to paper over -- it is
-    either a genuine non-series discussion or a cover subject this
-    render mis-parsed, and either way a silent zero-message page is the
-    false green CLAUDE.md warns about: --text is the interface
-    lkml-round.sh and lkml-summarize.sh consume, and an empty render is
-    indistinguishable from a quiet round to them. The old layout raises
-    the same way it always has (FileNotFoundError on a missing cur/),
-    so this only adds a diagnostic where fleet parsing used to have
-    none at all."""
+    cover among its version roots (the structural root plus any later
+    reply that itself opens a new version) is not a render bug to paper
+    over -- it is either a genuine non-series discussion or a cover
+    subject this render mis-parsed, and either way a silent
+    zero-message page is the false green CLAUDE.md warns about: --text
+    is the interface lkml-round.sh and lkml-summarize.sh consume, and
+    an empty render is indistinguishable from a quiet round to them.
+    The old layout raises the same way it always has (FileNotFoundError
+    on a missing cur/), so this only adds a diagnostic where fleet
+    parsing used to have none at all."""
     if covers or not msgs:
         return
     if not any(m.get("fleet") for m in msgs.values()):
@@ -560,6 +595,28 @@ def require_fleet_covers(series_dir, msgs, covers):
     )
 
 
+def require_full_coverage(series_dir, msgs, rendered_ids):
+    """Every message build() parsed must show up under some version's
+    render, or the thread tree is silently dropping one -- a reference
+    cycle (each message resolves as the other's child, so neither
+    becomes a root and neither is reachable from one), or a root whose
+    own version matches no [PATCH ...] cover's version (an unresolvable
+    In-Reply-To, or a stray subject on an orphaned reply). Both are
+    exit-0-with-a-message-missing today; a standing NAK silently
+    dropped is exactly the false green CLAUDE.md warns about. This
+    fires for the old layout too (the same silent-drop shape is
+    possible there), not just fleet threads."""
+    missing = set(msgs) - rendered_ids
+    if not missing:
+        return
+    raise ValueError(
+        f"{series_dir}: {len(missing)} of {len(msgs)} parsed message(s) never "
+        "rendered under any version (an unreachable reference cycle, or a "
+        "root whose version matches no [PATCH ...] cover): "
+        + ", ".join(sorted(m[:7] for m in missing))
+    )
+
+
 def subtree(m):
     yield m
     for c in m["children"]:
@@ -567,7 +624,8 @@ def subtree(m):
 
 
 def subtree_before(m, stop_ids):
-    """Walk a thread, stopping before any nested patch root."""
+    """Walk a thread, stopping before any nested patch root or, for a
+    fleet thread, any nested reply that itself opens a new version."""
     yield m
     for c in m["children"]:
         if c["id"] in stop_ids:
@@ -575,15 +633,28 @@ def subtree_before(m, stop_ids):
         yield from subtree_before(c, stop_ids)
 
 
-def tally(cover):
-    """Latest tag per persona per patch (and the cover), in cover order."""
+def tally(cover, boundary_ids=frozenset()):
+    """Latest tag per persona per patch (and the cover), in cover order.
+    boundary_ids is every OTHER version's cover id (empty for the old
+    layout, where a later version is never nested under this one) --
+    the walk stops there so a later version's messages, and its own
+    cover, are never counted as this version's patches or replies."""
     rows = []
     personas = {}
-    targets = [cover] + [c for c in cover["children"] if c["subject"].startswith("[PATCH")]
+    # A child's subject starting with '[PATCH' is only a same-version
+    # patch in the old layout, where a real '[PATCH vN i/M]' message and
+    # this cover always share one X-Version. In a fleet thread the only
+    # child that can match is a later version's own cover reply
+    # ('[PATCH v3 0/1] ...'), which never shares this cover's version --
+    # the version check is what tells the two apart, since fleet has no
+    # individual patch messages at all.
+    targets = [cover] + [c for c in cover["children"]
+                         if c["subject"].startswith("[PATCH") and c["version"] == cover["version"]]
     patch_roots = {c["id"] for c in targets[1:]}
     for t in targets:
         latest = {}
-        walk = subtree_before(t, patch_roots) if t is cover else subtree(t)
+        stop = (patch_roots | boundary_ids) if t is cover else boundary_ids
+        walk = subtree_before(t, stop)
         for m in walk:
             if m is t or not m["tags"] or m["persona"] == t["persona"]:
                 continue
@@ -1042,23 +1113,34 @@ def render_message(m, depth=0, series_name=""):
     )
 
 
-def render_trace(m, depth=0, series_name=""):
+def render_trace(m, depth=0, series_name="", stop_ids=frozenset()):
     """The thread as a flat pre-order list of collapsed <details>, one
     per message, in reply order: the trace is the list, the depth is
     the indent (render_message's data-depth), and every message opens
-    in place regardless of nesting."""
+    in place regardless of nesting. stop_ids is every OTHER version's
+    cover id (empty for the old layout): a fleet thread's later
+    versions are nested replies in the same tree, and each version's
+    own section renders only up to the next one's cover, not into it."""
     out = [render_message(m, depth, series_name)]
     for c in m["children"]:
-        out.append(render_trace(c, depth + 1, series_name))
+        if c["id"] in stop_ids:
+            continue
+        out.append(render_trace(c, depth + 1, series_name, stop_ids))
     return "\n".join(out)
 
 
 def render_series(series_dir):
-    name, msgs, roots = build(series_dir)
+    name, msgs, roots, all_version_roots = build(series_dir)
     id_map = id_prefix_map(msgs)
-    root_ids = {r["id"] for r in roots}
-    covers = [r for r in roots if r["depth"] == 0 and is_cover_subject(r["subject"])]
+    # all_version_roots is roots widened, for a fleet thread, to every
+    # nested reply that itself opens a new version (build_fleet_layout
+    # resets such a reply's depth to 0 for exactly this reason -- the
+    # thread id is fixed to the root message, so v2 and later are
+    # always replies there, never roots); for the old layout it is
+    # exactly `roots`.
+    covers = [m for m in all_version_roots if is_cover_subject(m["subject"])]
     require_fleet_covers(series_dir, msgs, covers)
+    fleet_cover_ids = {c["id"] for c in covers if c.get("fleet")}
     versions = sorted({c["version"] for c in covers})
     current = versions[-1] if versions else 1
     # The current version's state drives the rail, the banner and the
@@ -1066,9 +1148,11 @@ def render_series(series_dir):
     version_data = {}
     for v in versions:
         cover = next(c for c in covers if c["version"] == v)
-        version_roots = [r for r in roots if r["version"] == v]
-        version_msgs = [m for root in version_roots for m in subtree(root)]
-        rows, _personas = tally(cover)
+        version_roots = [r for r in all_version_roots if r["version"] == v]
+        local_root_ids = {r["id"] for r in version_roots}
+        version_msgs = [m for root in version_roots
+                        for m in subtree_before(root, fleet_cover_ids)]
+        rows, _personas = tally(cover, fleet_cover_ids)
         patch_root_ids = {t[0]["id"] for t in rows[1:]}
         reviewer_entries = reviewer_rollup(version_msgs, cover["persona"], rows)
         # The strongest latest tag per persona across the version's
@@ -1091,7 +1175,7 @@ def render_series(series_dir):
 
         for r in version_roots:
             d1walk(r, None)
-        opens = open_threads_of(version_msgs, patch_root_ids, root_ids)
+        opens = open_threads_of(version_msgs, patch_root_ids, local_root_ids)
         n_open = len(opens)
         # The banner names the patch every open thread sits on; that is
         # one patch only when EVERY open thread parents to a patch and
@@ -1130,6 +1214,8 @@ def render_series(series_dir):
             "open_patch_idx": open_patch_idx,
             "n_naks": naks, "nak_idx": nak_idx, "nak_names": nak_names,
         }
+    rendered_ids = {m["id"] for d in version_data.values() for m in d["version_msgs"]}
+    require_full_coverage(series_dir, msgs, rendered_ids)
     cur = version_data.get(current)
     n_replies_cur = (sum(1 for m in cur["version_msgs"] if m["depth"] >= 1 and not is_patch(m))
                      if cur else 0)
@@ -1200,7 +1286,7 @@ def render_series(series_dir):
             shell += sump + "\n"
         for v in versions:
             d = version_data[v]
-            thread = "\n".join(render_trace(r, 0, name) for r in d["version_roots"])
+            thread = "\n".join(render_trace(r, 0, name, fleet_cover_ids) for r in d["version_roots"])
             maxd = max((m["depth"] for m in d["version_msgs"]), default=0)
             shell += (f'    <section class="section" id="{esc(name)}-v{v}">\n'
                       f'      <div class="trace-head"><h2>Thread \u00b7 v{v}</h2>'
@@ -1645,11 +1731,15 @@ def text_body(m):
     return out
 
 
-def render_text_message(out, m, nums, depth):
+def render_text_message(out, m, nums, depth, stop_ids=frozenset()):
     """One message of the --text thread: separator, numbered header, the
     From/Subject/Tags lines, then the body. `nums` maps id to
     (number, parent number) from a pre-order walk, so this prints the
-    thread in the same order the HTML render nests it in."""
+    thread in the same order the HTML render nests it in. stop_ids is
+    every OTHER version's cover id (empty for the old layout): a fleet
+    thread's later versions are nested replies in the same tree, and
+    each version's own section prints only up to the next one's cover,
+    not into it."""
     num, parent_num = nums[m["id"]]
     rel = f" · reply to #{parent_num}" if parent_num else ""
     out.append("-" * 72)
@@ -1693,7 +1783,9 @@ def render_text_message(out, m, nums, depth):
     else:
         out.append("")
     for c in m["children"]:
-        render_text_message(out, c, nums, depth + 1)
+        if c["id"] in stop_ids:
+            continue
+        render_text_message(out, c, nums, depth + 1, stop_ids)
 
 
 def fit_tally_label(label, budget):
@@ -1771,8 +1863,9 @@ def render_text_reviewers(out, name, series_dir, reviewer_entries):
 def render_text_series(series_dir):
     """One series dir as plain text: a header with the same counts the
     HTML header shows, then every message in thread order."""
-    name, msgs, roots = build(series_dir)
+    name, msgs, roots, all_version_roots = build(series_dir)
     sections = []
+    rendered_ids = set()
     # The whole-series results file, if any: a 'series-summary' block
     # at the very top, before the first version section, with the same
     # column-0 labels / two-space body rules as the per-version
@@ -1790,13 +1883,16 @@ def render_text_series(series_dir):
             lines.append("# Details")
             lines.extend("  " + ln for ln in series_res[1].split("\n"))
         sections.append("\n".join(lines))
-    covers = [r for r in roots if r["depth"] == 0 and is_cover_subject(r["subject"])]
+    covers = [m for m in all_version_roots if is_cover_subject(m["subject"])]
     require_fleet_covers(series_dir, msgs, covers)
+    fleet_cover_ids = {c["id"] for c in covers if c.get("fleet")}
     for cover in covers:
         v = cover["version"]
-        version_roots = [r for r in roots if r["version"] == v]
-        version_msgs = [m for root in version_roots for m in subtree(root)]
-        rows, personas = tally(cover)
+        version_roots = [r for r in all_version_roots if r["version"] == v]
+        version_msgs = [m for root in version_roots
+                        for m in subtree_before(root, fleet_cover_ids)]
+        rendered_ids.update(m["id"] for m in version_msgs)
+        rows, personas = tally(cover, fleet_cover_ids)
         # The same counts the HTML header shows, computed the same way:
         # patches from the tally's targets, replies as everything at
         # depth >= 1 that is not a patch.
@@ -1844,13 +1940,16 @@ def render_text_series(series_dir):
             counter[0] += 1
             nums[m["id"]] = (counter[0], parent_id and nums[parent_id][0])
             for c in m["children"]:
+                if c["id"] in fleet_cover_ids:
+                    continue
                 assign(c, m["id"])
 
         for root in version_roots:
             assign(root, None)
         for root in version_roots:
-            render_text_message(lines, root, nums, 0)
+            render_text_message(lines, root, nums, 0, fleet_cover_ids)
         sections.append("\n".join(lines))
+    require_full_coverage(series_dir, msgs, rendered_ids)
     return "\n\n".join(sections) + ("\n" if sections else "")
 
 

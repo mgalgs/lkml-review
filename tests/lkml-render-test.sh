@@ -1943,5 +1943,215 @@ else
     no "the loud failure explains itself on stderr"
 fi
 
+printf '\n== fleet-store thread: a later version posted as a reply keeps its own section ==\n'
+# The thread id is fixed to the root message on this transport, so a
+# real v3 posting is a REPLY, not a new root -- lkml-fleet-kickoff.sh's
+# --version and the author persona's "post the next version" both land
+# it in-thread with a fresh, un-prefixed "[PATCH v3 0/1] ..." subject
+# (fork-sandbox-mail.sh's reply only defaults to "Re: <parent subject>"
+# when --subject is omitted; a wake's Subject stanza is an override).
+# Built against a real fork-sandbox-mail.sh store and cross-checked
+# against lkml-fleet-status.sh's "v2 ... 2 messages / v3 ... 2 messages"
+# reading of the same thread before this fixture was written.
+multi="$work/fleet-mail/threads/multiver-thread"
+mkdir -p "$multi"
+mv_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+mv_v2_reply="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+mv_v3_cover="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+mv_v3_reply="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+printf '%s\n' \
+    "Message-ID: ${mv_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+    'Subject: [PATCH v2 0/1] real store demo' \
+    '' \
+    'kickoff v2' \
+    > "$multi/001-${mv_root}.msg"
+printf '%s\n' \
+    "Message-ID: ${mv_v2_reply}" \
+    "In-Reply-To: ${mv_root}" \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: [PATCH v2 0/1] real store demo' \
+    '' \
+    'Reviewed-by: core' \
+    > "$multi/002-${mv_v2_reply}.msg"
+printf '%s\n' \
+    "Message-ID: ${mv_v3_cover}" \
+    "In-Reply-To: ${mv_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Date: Wed, 17 Sep 2025 02:00:00 +0000' \
+    'Subject: [PATCH v3 0/1] real store demo' \
+    '' \
+    'v3 posting' \
+    > "$multi/003-${mv_v3_cover}.msg"
+printf '%s\n' \
+    "Message-ID: ${mv_v3_reply}" \
+    "In-Reply-To: ${mv_v3_cover}" \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 03:00:00 +0000' \
+    'Subject: Re: [PATCH v3 0/1] real store demo' \
+    '' \
+    'NAK' \
+    > "$multi/004-${mv_v3_reply}.msg"
+multi_text="$(python3 "$renderer" --text "$multi")"
+contains "multi-version fleet thread: v2's section header is present" "$multi_text" "$(basename "$multi") v2"
+contains "multi-version fleet thread: v3's section header is present" "$multi_text" "$(basename "$multi") v3"
+contains "multi-version fleet thread: v2 reports its own 2 messages, not the whole thread's 4" \
+    "$multi_text" '0 patches · 1 replies · 1 reviewers'
+case "$multi_text" in
+    *'1 patches'*)
+        no "multi-version fleet thread: v3's cover reply is not tallied as a patch of v2" ;;
+    *) ok "multi-version fleet thread: v3's cover reply is not tallied as a patch of v2" ;;
+esac
+multi_html="$work/multiver.html"
+python3 "$renderer" "$multi" -o "$multi_html"
+mvhtml="$(<"$multi_html")"
+contains "multi-version fleet thread: masthead reports 2 versions" "$mvhtml" '2 versions'
+contains "multi-version fleet thread: current version is v3" "$mvhtml" '<b>v3</b>'
+contains "multi-version fleet thread: v3's standing NAK banner shows" "$mvhtml" 'A NAK stands'
+if [[ "$(grep -o '<section class="section"' "$multi_html" | wc -l)" -eq 2 ]]; then
+    ok "multi-version fleet thread: two version sections render, not one"
+else
+    no "multi-version fleet thread: two version sections render, not one"
+fi
+if [[ "$(grep -o '<details class="msg"' "$multi_html" | wc -l)" -eq 4 ]]; then
+    ok "multi-version fleet thread: all 4 messages render exactly once (no v3-under-v2 duplication)"
+else
+    no "multi-version fleet thread: all 4 messages render exactly once (no v3-under-v2 duplication)"
+fi
+
+printf '\n== fleet-store thread: an orphaned reply whose version matches no cover fails loudly ==\n'
+# An In-Reply-To naming an id absent from the thread dir (a truncated
+# harvest, a hand-edited store) makes build_fleet_layout treat the
+# reply as an extra root; when its own subject carries no [PATCH ...]
+# version marker either, fleet_version() falls back to 1, which
+# matches no real cover's version -- before require_full_coverage this
+# vanished with exit 0, taking a standing NAK with it.
+orphan="$work/fleet-mail/threads/orphan-thread"
+mkdir -p "$orphan"
+orphan_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+orphan_reply="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+missing_parent="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+printf '%s\n' \
+    "Message-ID: ${orphan_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+    'Subject: [PATCH v2 0/1] orphan repro' \
+    '' \
+    'kickoff' \
+    > "$orphan/001-${orphan_root}.msg"
+printf '%s\n' \
+    "Message-ID: ${orphan_reply}" \
+    "In-Reply-To: ${missing_parent}" \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: a standing objection' \
+    '' \
+    'NAK' \
+    > "$orphan/002-${orphan_reply}.msg"
+if python3 "$renderer" --text "$orphan" >/dev/null 2>"$work/orphan.err"; then
+    no "an orphaned reply matching no version fails loudly, not exit 0"
+else
+    ok "an orphaned reply matching no version fails loudly, not exit 0"
+fi
+contains "the orphan failure names the dropped message" "$(cat "$work/orphan.err")" "${orphan_reply:0:7}"
+
+printf '\n== fleet-store thread: an unreachable reference cycle fails loudly ==\n'
+# Two replies whose In-Reply-To each name the other resolve as each
+# other's child, so neither becomes a root and neither is reachable
+# from the real cover -- before require_full_coverage this silently
+# dropped both (exit 0, thread reported as just the cover).
+cycle="$work/fleet-mail/threads/cycle-thread"
+mkdir -p "$cycle"
+cycle_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+cycle_a="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+cycle_b="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+printf '%s\n' \
+    "Message-ID: ${cycle_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+    'Subject: [PATCH v1 0/1] cycle repro' \
+    '' \
+    'kickoff' \
+    > "$cycle/001-${cycle_root}.msg"
+printf '%s\n' \
+    "Message-ID: ${cycle_a}" \
+    "In-Reply-To: ${cycle_b}" \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: [PATCH v1 0/1] cycle repro' \
+    '' \
+    'a' \
+    > "$cycle/002-${cycle_a}.msg"
+printf '%s\n' \
+    "Message-ID: ${cycle_b}" \
+    "In-Reply-To: ${cycle_a}" \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 02:00:00 +0000' \
+    'Subject: Re: [PATCH v1 0/1] cycle repro' \
+    '' \
+    'b' \
+    > "$cycle/003-${cycle_b}.msg"
+if python3 "$renderer" --text "$cycle" >/dev/null 2>"$work/cycle.err"; then
+    no "a reference cycle fails loudly, not exit 0"
+else
+    ok "a reference cycle fails loudly, not exit 0"
+fi
+contains "the cycle failure names both dropped messages" "$(cat "$work/cycle.err")" "${cycle_a:0:7}"
+contains "the cycle failure names both dropped messages (b too)" "$(cat "$work/cycle.err")" "${cycle_b:0:7}"
+
+printf '\n== fleet-store thread: a missing or duplicate Message-ID fails loudly ==\n'
+# msgs is keyed on m["id"]; two messages that both lack a Message-ID
+# (a hand-edited or truncated .msg file) would otherwise collapse to
+# one silently under the key "".
+dupid="$work/fleet-mail/threads/dupid-thread"
+mkdir -p "$dupid"
+dupid_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+printf '%s\n' \
+    "Message-ID: ${dupid_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+    'Subject: [PATCH v1 0/1] dup id repro' \
+    '' \
+    'kickoff' \
+    > "$dupid/001-${dupid_root}.msg"
+printf '%s\n' \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: no Message-ID at all' \
+    '' \
+    'huh' \
+    > "$dupid/002-nomsgid.msg"
+printf '%s\n' \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 02:00:00 +0000' \
+    'Subject: also no Message-ID' \
+    '' \
+    'huh2' \
+    > "$dupid/003-nomsgid2.msg"
+if python3 "$renderer" --text "$dupid" >/dev/null 2>"$work/dupid.err"; then
+    no "two messages with no Message-ID fail loudly, not a silent collapse"
+else
+    ok "two messages with no Message-ID fail loudly, not a silent collapse"
+fi
+if [[ -s "$work/dupid.err" ]]; then
+    ok "the missing-Message-ID failure explains itself on stderr"
+else
+    no "the missing-Message-ID failure explains itself on stderr"
+fi
+
 printf '%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))
