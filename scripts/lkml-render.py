@@ -40,6 +40,11 @@ change out from under the panel scripts.
 A series dir is $LKML_MAILBOX_ROOT/<series> (it holds cur/*.msg). Reads
 only; never runs git.
 
+SOURCE_DATE_EPOCH, when set, pins the 'rendered' stamp to that epoch (UTC)
+so repeated HTML renders are reproducible; without it the stamp is the
+local wall clock. It affects only the HTML backend; --text is
+unaffected.
+
 When a series dir holds results-v<N>.md (the per-version results file,
 written by the summarizer; a results-v<N>.json may sit next to it and
 is ignored except for the card's presence when the .md is absent), the
