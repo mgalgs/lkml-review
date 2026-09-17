@@ -173,6 +173,40 @@ def strip_id(v):
     return v.split("@", 1)[0]
 
 
+def fleet_body_tags(body):
+    """Verdict tags for a fleet-format message, parsed OUT OF THE BODY
+    (this format stamps no X-Tags header). Ports lkml-fleet-status.sh's
+    fs_body_tags awk exactly: quoted/blank lines are skipped, the three
+    '-by' trailers count if ANY surviving line starts with 'Name:', the
+    three verdict-only trailers count only if the FIRST or LAST
+    surviving line starts with the name followed by whitespace, a
+    punctuation mark, or end of line."""
+    lines = [ln for ln in body.splitlines()
+             if ln.strip() and not re.match(r"^\s*>", ln)]
+    if not lines:
+        return []
+    trailers = TAG_ORDER[:3]   # Reviewed-by, Acked-by, Tested-by
+    verdicts = TAG_ORDER[3:]   # Changes-requested, Question, NAK
+    seen = [t for t in trailers if any(ln.startswith(t + ":") for ln in lines)]
+    first, last = lines[0], lines[-1]
+    for v in verdicts:
+        pat = re.compile(r"^" + re.escape(v) + r"([\s:.!,]|$)")
+        if pat.match(first) or pat.match(last):
+            seen.append(v)
+    return seen
+
+
+def fleet_version(subject):
+    """The version marker from a fleet message's own [PATCH vN ...]
+    subject (stripped of any Re: layers), or 1 when absent -- fleet
+    messages carry no X-Version header, unlike the old layout."""
+    subj = subject
+    while subj.startswith("Re: "):
+        subj = subj[4:]
+    mm = re.match(r"^\[PATCH v(\d+) ", subj)
+    return int(mm.group(1)) if mm else 1
+
+
 def esc(s):
     return html.escape(s, quote=True)
 
@@ -340,7 +374,7 @@ def badge(persona):
     return f'<span class="mono-badge{cls} p-color-{mono_color(persona)}">{esc(monogram(persona))}</span>'
 
 
-def build(series_dir):
+def build_old_layout(series_dir):
     name = os.path.basename(series_dir.rstrip("/"))
     cur = os.path.join(series_dir, "cur")
     msgs = {}
@@ -359,6 +393,97 @@ def build(series_dir):
         m["children"].sort(key=lambda x: (x["seq"], x["date"] or datetime.min))
     roots.sort(key=lambda x: (x["version"], x["seq"]))
     return name, msgs, roots
+
+
+FLEET_MSG_RE = re.compile(r"^\d{3}-.*\.msg$")
+
+
+def fleet_msg_paths(thread_dir):
+    """.msg files directly in a fleet thread dir, sorted by the NNN-
+    arrival prefix: Date has only 1s resolution and two replies can
+    land in the same second, so the filename, not Date, is the
+    authoritative sibling order. A dot-directory (router state, e.g.
+    .postmaster/) never matches and is silently skipped, the same way
+    lkml-fleet-status.sh skips it."""
+    return sorted(fn for fn in os.listdir(thread_dir) if FLEET_MSG_RE.match(fn))
+
+
+def read_fleet_msg(path, seq):
+    """One fleet-store message: <mail-root>/threads/<tid>/NNN-<uuid>.msg,
+    RFC-5322-shaped. Message-ID/In-Reply-To are bare uuids (opaque,
+    compared as-is -- no angle brackets to strip). From is '@name'; the
+    leading '@' is stripped into the seat name build() and who_of() both
+    key off (stored in both 'from' and 'persona' so who_of needs no
+    change). No X-AI-Persona/Harness/Model/Network headers exist in this
+    format -- render_message's fleet branch covers the model chip.
+    X-Tags does not exist either -- tags come from the body via
+    fleet_body_tags, the same trailers lkml-fleet-status.sh reads.
+    depth and version are filled in by build_fleet_layout (depth needs
+    the whole tree; version reads the subject via fleet_version)."""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        raw = f.read()
+    head, _, body = raw.partition("\n\n")
+    hdr = {}
+    attachments = []
+    for line in head.splitlines():
+        k, _, v = line.partition(": ")
+        if k == "X-Attachment":
+            v = v.strip()
+            ref = v.removeprefix("attachments/") if v.startswith("attachments/") else v
+            attachments.append({"ref": ref, "href": None, "mime": None})
+        else:
+            hdr[k] = v
+    who = hdr.get("From", "").strip().removeprefix("@")
+    subject = hdr.get("Subject", "")
+    try:
+        date = parsedate_to_datetime(hdr.get("Date", ""))
+    except Exception:
+        date = None
+    return {
+        "id": hdr.get("Message-ID", "").strip(),
+        "parent": hdr.get("In-Reply-To", "").strip(),
+        "seq": seq, "date": date,
+        "from": who, "subject": subject,
+        "persona": who, "harness": "", "network": "", "model": "",
+        "version": fleet_version(subject),
+        "depth": 0, "tags": fleet_body_tags(body), "body": body,
+        "attachments": attachments, "children": [], "fleet": True,
+    }
+
+
+def build_fleet_layout(series_dir):
+    name = os.path.basename(series_dir.rstrip("/"))
+    msgs = {}
+    for fn in fleet_msg_paths(series_dir):
+        m = read_fleet_msg(os.path.join(series_dir, fn), int(fn[:3]))
+        msgs[m["id"]] = m
+    roots = []
+    for m in msgs.values():
+        p = msgs.get(m["parent"]) if m["parent"] else None
+        if p:
+            p["children"].append(m)
+        else:
+            roots.append(m)
+    for m in msgs.values():
+        m["children"].sort(key=lambda x: (x["seq"], x["date"] or datetime.min))
+
+    def set_depth(m, d):
+        m["depth"] = d
+        for c in m["children"]:
+            set_depth(c, d + 1)
+    for r in roots:
+        set_depth(r, 0)
+    roots.sort(key=lambda x: (x["version"], x["seq"]))
+    return name, msgs, roots
+
+
+def build(series_dir):
+    if os.path.isdir(os.path.join(series_dir, "cur")):
+        return build_old_layout(series_dir)
+    if os.path.isdir(series_dir) and any(
+            FLEET_MSG_RE.match(fn) for fn in os.listdir(series_dir)):
+        return build_fleet_layout(series_dir)
+    return build_old_layout(series_dir)
 
 
 def subtree(m):

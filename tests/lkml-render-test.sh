@@ -1703,5 +1703,118 @@ else
     no "multi-series: every id is unique, version and summary ids namespaced per series"
 fi
 
+printf '\n== fleet-store thread: auto-detect and header mapping ==\n'
+fleet="$work/fleet-mail/threads/demo-thread"
+mkdir -p "$fleet/attachments" "$fleet/.postmaster"
+printf '{"state":"ignored"}\n' > "$fleet/.postmaster/state.json"
+
+root_uuid="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+core_uuid="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+scout_uuid="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+nest_uuid="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+
+printf 'design notes\n' > "$fleet/attachments/design-notes.txt"
+printf 'interdiff\n' > "$fleet/attachments/interdiff.patch"
+
+printf '%s\n' \
+    "Message-ID: ${root_uuid}" \
+    "Thread-ID: ${root_uuid}" \
+    'From: @author' \
+    'To: @core, @scout' \
+    'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+    'Subject: [PATCH v1 0/2] fleet demo series' \
+    'X-Attachment: attachments/design-notes.txt' \
+    'X-Attachment: attachments/interdiff.patch' \
+    '' \
+    'Kickoff body for the fleet demo series.' \
+    > "$fleet/001-${root_uuid}.msg"
+
+printf '%s\n' \
+    "Message-ID: ${core_uuid}" \
+    "Thread-ID: ${root_uuid}" \
+    "In-Reply-To: ${root_uuid}" \
+    "References: ${root_uuid}" \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: [PATCH v1 0/2] fleet demo series' \
+    '' \
+    'Looks solid, one nit below.' \
+    '' \
+    'Reviewed-by: core' \
+    > "$fleet/002-${core_uuid}.msg"
+
+printf '%s\n' \
+    "Message-ID: ${scout_uuid}" \
+    "Thread-ID: ${root_uuid}" \
+    "In-Reply-To: ${root_uuid}" \
+    "References: ${root_uuid}" \
+    'From: @scout' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: [PATCH v1 0/2] fleet demo series' \
+    '' \
+    'Changes-requested: the retry loop needs a cap.' \
+    > "$fleet/003-${scout_uuid}.msg"
+
+printf '%s\n' \
+    "Message-ID: ${nest_uuid}" \
+    "Thread-ID: ${root_uuid}" \
+    "In-Reply-To: ${core_uuid}" \
+    "References: ${root_uuid} ${core_uuid}" \
+    'From: @scout' \
+    'To: @core' \
+    'Date: Wed, 17 Sep 2025 02:00:00 +0000' \
+    'Subject: Re: [PATCH v1 0/2] fleet demo series' \
+    '' \
+    'Question: does this also need the v1 fallback?' \
+    > "$fleet/004-${nest_uuid}.msg"
+
+fleet_html="$work/fleet.html"
+python3 "$renderer" "$fleet" -o "$fleet_html"
+fhtml="$(<"$fleet_html")"
+
+combo_html="$work/fleet-combo.html"
+python3 "$renderer" "$fleet" "$LKML_MAILBOX_ROOT/ser-card" -o "$combo_html"
+combo="$(<"$combo_html")"
+contains "fleet thread renders its own series wrapper" "$combo" '<div class="series" id="demo-thread">'
+contains "old-layout series still renders on the same page" "$combo" '<div class="series" id="ser-card">'
+contains "fleet series title comes from its cover subject" "$combo" '<h1>fleet demo series</h1>'
+
+contains "root is depth 0" "$fhtml" "data-depth=\"0\" id=\"m-${root_uuid}\""
+contains "core's direct reply is depth 1" "$fhtml" "data-depth=\"1\" id=\"m-${core_uuid}\""
+contains "scout's nested reply under core is depth 2" "$fhtml" "data-depth=\"2\" id=\"m-${nest_uuid}\""
+
+if python3 - "$fleet_html" "$core_uuid" "$scout_uuid" <<'PY'
+import sys
+html = open(sys.argv[1], encoding="utf-8").read()
+i_core = html.find(f'id="m-{sys.argv[2]}"')
+i_scout = html.find(f'id="m-{sys.argv[3]}"')
+sys.exit(0 if 0 <= i_core < i_scout else 1)
+PY
+then ok "002 (core) renders before 003 (scout) despite tied Date, by NNN"
+else no "002 (core) renders before 003 (scout) despite tied Date, by NNN"
+fi
+
+if [[ "$(grep -o '<details class="msg"' "$fleet_html" | wc -l)" -eq 4 ]]; then
+    ok "exactly 4 messages rendered; .postmaster/ produced no phantom 5th"
+else
+    no "exactly 4 messages rendered; .postmaster/ produced no phantom 5th"
+fi
+
+if python3 -c '
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("lkml_render", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+assert mod.fleet_body_tags("Reviewed-by: core\n") == ["Reviewed-by"]
+assert mod.fleet_body_tags("> quoted junk\nChanges-requested: x\n") == ["Changes-requested"]
+assert mod.fleet_body_tags("no trailer here\n") == []
+print("ok")' "$renderer"; then
+    ok "fleet_body_tags: trailer and verdict detection, quoted-line skip"
+else
+    no "fleet_body_tags: trailer and verdict detection, quoted-line skip"
+fi
+
 printf '%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))
