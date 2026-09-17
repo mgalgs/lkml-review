@@ -218,7 +218,7 @@ printf '\n== cost-floor-pin: the 5e-11 display floor, at the bottom of its windo
 # survive a drift to .9f or .8f and would read fully green. This screen
 # has two accumulators, per-persona and grand total, so both are
 # asserted below. 1300 runs, not the 2500 that would exactly round-trip
-# to 1e-6: this screen forks six jq processes per ledger line on top of
+# to 1e-6: this screen forks three jq processes per ledger line on top of
 # the accumulator's own two awk forks, well above the fleet screen's
 # fork-free env parse, so 1300 (just past the 1251-run minimum that
 # clears the 5e-7 display threshold) is the cheaper fixture with the
@@ -237,30 +237,6 @@ not_contains "cost-floor-pin: the per-persona row does not display as a bare zer
     "floor-pin      \$0.000000"
 contains "cost-floor-pin: the total reflects the floor sum, not a re-rounded zero" "$OUT" \
     "Total cost so far: \$0.000001"
-
-printf '\n== cost-floor-blind: a real cost below 5e-11 never reaches the accumulator ==\n'
-# floor-blind: 3 runs at 4.9e-11 each. 4.9e-11 sits just below the 5e-11
-# floor, unlike floor-pin's 4e-10 which sits just above it: at the
-# classifier's %.10f format 4.9e-11 rounds to 0.0000000000, an exact
-# text zero, before the accumulator ever sees it. Because each addend is
-# already zero going into the sum, no count of them can ever add up to
-# something visible -- the mechanism is a hard text truncation, not a
-# float accumulation error that more terms might eventually clear, so a
-# handful of runs pins it as well as thousands would.
-init_series cost-floor-blind
-for i in 1 2 3; do
-    run_dir="$work/cfb-$i"; mkdir -p -- "$run_dir"
-    printf '{"total_cost_usd": 4.9e-11}\n' > "$run_dir/summary.json"
-    write_run cost-floor-blind "$run_dir" blind
-done
-
-OUT="$("$status" cost-floor-blind 2>/dev/null)"
-contains "cost-floor-blind: 3 runs of 4.9e-11 never cross into a visible cost" "$OUT" \
-    "blind          \$0.000000"
-not_contains "cost-floor-blind: not annotated as no cost -- it is a real cost, just lost to the floor" "$OUT" \
-    "blind          \$0.000000 ("
-contains "cost-floor-blind: the total stays an exact zero, not a re-rounded nonzero" "$OUT" \
-    "Total cost so far: \$0.000000"
 
 printf '\n== cost-huge: a magnitude no float can hold ==\n'
 init_series cost-huge

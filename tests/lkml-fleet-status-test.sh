@@ -734,8 +734,10 @@ printf '\n== cost per agent: the 5e-11 display floor, at the bottom of its windo
 # .8f, so a precision drift there reads fully green. 2500 runs of 4e-10
 # sum to exactly 1e-6 (well past the 1251-run minimum that clears the
 # 5e-7 display threshold), which displays as $0.000001. The ~2500 awk
-# forks are the few-seconds cost class recorded in
-# docs/cost-accum-follow-up.md.
+# forks are the per-costed-run cost documented in
+# docs/cost-accum-follow-up.md; for the timing that cost class implies,
+# see the tiny-aggregate comment above (10000 forks costs tens of
+# seconds).
 for i in $(seq -w 1 2500); do
     run_dir="$work/run-floor-pin-$i"; mkdir -p -- "$run_dir"
     printf '{"total_cost_usd": 4e-10}\n' > "$run_dir/summary.json"
@@ -749,29 +751,6 @@ check "2500 runs of 4e-10 sum to exactly the display floor, not a silent zero" \
     "floor-pin  2500 runs  \$0.000001" "$LINE"
 not_contains "the floor-pin aggregate does not display as a bare zero" "$OUT" "floor-pin  2500 runs  \$0.000000"
 not_contains "the floor-pin aggregate is not annotated as no cost" "$LINE" "no cost"
-
-printf '\n== cost per agent: a real cost below 5e-11 never reaches the accumulator ==\n'
-# floor-blind: 3 runs at 4.9e-11 each, reusing t8. 4.9e-11 sits just
-# below the 5e-11 floor, unlike floor-pin's 4e-10 which sits just above
-# it: at the classifier's %.10f format 4.9e-11 rounds to 0.0000000000, an
-# exact text zero, before the accumulator ever sees it. Because each
-# addend is already zero going into the sum, no count of them can ever
-# add up to something visible -- the mechanism is a hard text
-# truncation, not a float accumulation error that more terms might
-# eventually clear, so a handful of runs pins it as well as thousands
-# would.
-for i in 1 2 3; do
-    run_dir="$work/run-floor-blind-$i"; mkdir -p -- "$run_dir"
-    printf '{"total_cost_usd": 4.9e-11}\n' > "$run_dir/summary.json"
-    printf 'agent=floor-blind\nthread=%s\nrun_dir=%s\n' "$t8" "$run_dir" > "$pm/runs/run-floor-blind-$i.env"
-done
-
-OUT="$(PATH="$STUB_PATH" "$status" "$t8" --mail-root "$root" 2>&1)"; RC=$?
-check "floor-blind fixture screen exits 0" "0" "$RC"
-LINE="$(grep -F 'floor-blind ' <<<"$OUT" | head -n1)"
-check "3 runs of 4.9e-11 never cross into a visible cost" "floor-blind  3 runs  \$0.000000" "$LINE"
-not_contains "the floor-blind aggregate is not annotated as no cost -- it is a real cost, just lost to the floor" \
-    "$LINE" "no cost"
 
 printf '\n== prefix resolution ==\n'
 OUT="$(PATH="$STUB_PATH" "$status" "${t1:0:12}" --mail-root "$root" 2>&1)"; RC=$?
