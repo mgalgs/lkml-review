@@ -572,20 +572,16 @@ rc_focus_missing=$?
 if (( rc_focus_missing != 0 )); then ok "a focused template without --focus refuses"; else no "a focused template without --focus refuses" "exit 0: $out_focus_missing"; fi
 contains "the missing-focus refusal names --focus" "$out_focus_missing" "--focus"
 
-# A focused round is a reply, by construction round two or later: an
-# unmarked subject with no --version must not silently default to v1
-# the way a brand-new thread's subject does. --focus is supplied here so
-# the refusal above cannot be the one firing instead.
+# A focused template takes the default v1 stamp like any other. Whether
+# a focused round -- a reply, so round two or later -- should instead be
+# made to name its version is an open question with the review panel.
 out_focus_noversion="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
     --from '@author' --to '@lkml-panel' --subject 'sched: tidy the thing' \
     --focus 'patch 2 only' --template "$focused_template" 2>&1)"
 rc_focus_noversion=$?
-if (( rc_focus_noversion != 0 )); then
-    ok "a focused template without --version refuses rather than defaulting to v1"
-else
-    no "a focused template without --version refuses rather than defaulting to v1" "exit 0: $out_focus_noversion"
-fi
-contains "the missing-version-on-focus refusal names --version" "$out_focus_noversion" "--version"
+check "a focused template without --version composes" "0" "$rc_focus_noversion"
+contains "a focused template without --version takes the default v1 stamp" \
+    "$out_focus_noversion" 'PATCH\ v1\ 0/'
 
 out_focus_version="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
     --from '@author' --to '@lkml-panel' --subject 'sched: tidy the thing' \
@@ -676,6 +672,12 @@ eval "$(sed -n '/^fs_subject_versions() {/,/^}/p' "$repo_dir/scripts/lkml-fleet-
 # "self-consistent fixtures" hazard warns about.
 ver_argv_subject() { sed -E 's/^.*--subject (.*) --body .*/\1/' <<<"$1"; }
 
+# Pulls the stamped subject back out of the multi-version refusal message
+# (between "produces subject '" and "', which lkml-fleet-status.sh") so a
+# refusal case can be re-checked against the real fs_subject_versions()
+# parser instead of trusting the message's own prose.
+refusal_stamped_subject() { sed -E "s/^.*produces subject '(.*)', which lkml-fleet-status\\.sh.*/\\1/" <<<"$1"; }
+
 rm -f -- "$capture_dir/argv"
 PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
     "$kickoff" "$project_dir" "master...topic" \
@@ -750,6 +752,33 @@ contains "an already-marked subject passes through byte-identical" \
 n_patch_tokens="$(grep -o -- '\[PATCH' <<<"$ver_marked_argv" | wc -l | tr -d '[:space:]')"
 check "an already-marked subject is not double-stamped" "1" "$n_patch_tokens"
 
+# An already-marked subject with a stray "v<digits>" token elsewhere in
+# it (here "v3 parser") parses under fs_subject_versions() as two
+# distinct versions -- v2 from the marker, v3 from the stray prose
+# token -- the exact phantom-round shape the multi-version re-parse
+# guard exists to catch. The phantom round it produces on the status
+# screen is identical whether this script did the stamping or found
+# the subject already marked, so the guard runs -- and refuses -- here
+# too, rather than passing a known-ambiguous subject through unchecked.
+rm -f -- "$capture_dir/argv"
+out_ver_marked_stray="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject '[PATCH v2 0/2] fix the v3 parser' 2>&1)"
+rc_ver_marked_stray=$?
+if (( rc_ver_marked_stray != 0 )); then
+    ok "an already-marked subject with a stray version token is refused"
+else
+    no "an already-marked subject with a stray version token is refused" "exit 0: $out_ver_marked_stray"
+fi
+contains "the already-marked-stray refusal names the subject's marker" "$out_ver_marked_stray" "v2"
+check "the already-marked-stray subject really parses as BOTH v2 and the stray prose v3" \
+    "$(printf '2\n3')" "$(fs_subject_versions '[PATCH v2 0/2] fix the v3 parser')"
+if [[ -f "$capture_dir/argv" ]]; then
+    no "the already-marked-stray refusal does not send" "argv capture file exists: $(cat "$capture_dir/argv")"
+else
+    ok "the already-marked-stray refusal does not send"
+fi
+
 # An already-marked subject whose own "i/N" disagrees with the range's
 # real patch count is refused rather than passed through: sending it
 # would leave the Subject claiming 5 patches while the body's
@@ -767,41 +796,129 @@ fi
 contains "the count-conflict refusal names the declared count" "$out_ver_count_conflict" "5"
 contains "the count-conflict refusal names the real count" "$out_ver_count_conflict" "2"
 
-# A bare "v2" in prose (no leading "[PATCH ...]" bracket) is not a
-# version marker: it is stamped over like any other unmarked subject,
-# and --version remains usable as an escape hatch for it (previously
-# the subject was left unstamped and --version was hard-refused, with
-# no way to get a correct stamp onto such a subject at all).
-rm -f -- "$capture_dir/argv"
-PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
-    "$kickoff" "$project_dir" "master...topic" \
-    --from '@author' --to '@lkml-panel' --subject 'fix the v2 parser' --send >/dev/null 2>&1
-rc_ver_bare=$?
-check "a subject with a bare v2 token exits 0" "0" "$rc_ver_bare"
-ver_bare_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
-contains "a bare v2 anywhere in the subject is prose, not a marker, and gets the default stamp" \
-    "$ver_bare_argv" "[PATCH v1 0/2] fix the v2 parser"
-# This detection is deliberately narrower than fs_subject_versions():
-# that parser matches "v<digits>" anywhere in a Subject, so the "v2" in
-# "fix the v2 parser" -- correctly left as prose above -- still reads as
-# a second, phantom version round once combined with the real "v1" this
-# script stamps. That divergence is a pre-existing limitation of
-# fs_subject_versions() (untouched by this script), not something
-# --version can close from here; this assertion pins the actual,
-# divergent round-trip result so the gap stays visible instead of
-# silently passing an untested case.
-check "the bare-v2 subject's real stamp round-trips as BOTH v1 and the phantom prose v2" \
-    "$(printf '1\n2')" "$(fs_subject_versions "$(ver_argv_subject "$ver_bare_argv")")"
+# A print-only refusal never reaches the "Note: temp files ... are left
+# under $tmpdir" line, so nothing tells the caller $tmpdir exists --
+# leaving it behind on a refusal (unlike the deliberate leak on the
+# print-only success path, above) is a silent leak, not a kept
+# artifact. Each refusal below runs with its own empty TMPDIR so the
+# directory is unambiguously this invocation's, not a leftover from
+# elsewhere in the suite or the host.
+leak_check_tmp="$(mktemp -d)"; tmpdirs+=("$leak_check_tmp")
+TMPDIR="$leak_check_tmp" PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject '[PATCH v2 0/5] a series' >/dev/null 2>&1
+leak_count_conflict="$(find "$leak_check_tmp" -mindepth 1 -maxdepth 1 | wc -l | tr -d '[:space:]')"
+check "the count-conflict refusal does not leak its tempdir" "0" "$leak_count_conflict"
 
+leak_check_tmp2="$(mktemp -d)"; tmpdirs+=("$leak_check_tmp2")
+TMPDIR="$leak_check_tmp2" PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject '[PATCH v2 0/2] fix the v3 parser' >/dev/null 2>&1
+leak_multi_version="$(find "$leak_check_tmp2" -mindepth 1 -maxdepth 1 | wc -l | tr -d '[:space:]')"
+check "the multi-version refusal does not leak its tempdir" "0" "$leak_multi_version"
+
+# A bare "v2" in prose (no leading "[PATCH ...]" bracket) is not a
+# version marker on its own, so it is stamped over like any other
+# unmarked subject -- but the stamp this script adds would then make
+# lkml-fleet-status.sh's Versions section (which matches "v<digits>"
+# anywhere in a Subject) read the resulting thread as BOTH v1 and a
+# phantom v2 that never existed. This script's own stamp creates that
+# ambiguity, so it is refused rather than sent -- the same
+# "two contradictory statements about the field that identifies the
+# series" reasoning as the marker-conflict refusal above, arriving by
+# a different route.
+out_ver_bare="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'fix the v2 parser' 2>&1)"
+rc_ver_bare=$?
+if (( rc_ver_bare != 0 )); then
+    ok "a bare v2 in prose that would stamp as a second version is refused"
+else
+    no "a bare v2 in prose that would stamp as a second version is refused" "exit 0: $out_ver_bare"
+fi
+contains "the phantom-version refusal names the stamped subject" \
+    "$out_ver_bare" "[PATCH v1 0/2] fix the v2 parser"
+check "the phantom-version refusal's subject really parses as BOTH v1 and the phantom prose v2" \
+    "$(printf '1\n2')" "$(fs_subject_versions "$(refusal_stamped_subject "$out_ver_bare")")"
+
+# --version does not rescue this: overriding to a number DIFFERENT from
+# the stray prose token still leaves that token in place, so the
+# stamped subject still parses as two distinct versions and is still
+# refused.
+out_ver_bare_override="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'fix the v2 parser' --version 3 2>&1)"
+rc_ver_bare_override=$?
+if (( rc_ver_bare_override != 0 )); then
+    ok "--version to a number other than the stray prose token is still refused"
+else
+    no "--version to a number other than the stray prose token is still refused" "exit 0: $out_ver_bare_override"
+fi
+check "the override refusal's subject really parses as BOTH v3 and the phantom prose v2" \
+    "$(printf '2\n3')" "$(fs_subject_versions "$(refusal_stamped_subject "$out_ver_bare_override")")"
+
+# The one case where a stray prose token is harmless: --version given
+# the SAME number the prose already contains stamps to a subject with
+# only ONE distinct version, so it is allowed. This is the boundary a
+# careless "refuse if any other v<digits> token exists" implementation
+# gets wrong -- the rule keys on distinct version COUNT, not on whether
+# a second token merely exists.
 rm -f -- "$capture_dir/argv"
 PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
     "$kickoff" "$project_dir" "master...topic" \
-    --from '@author' --to '@lkml-panel' --subject 'fix the v2 parser' --version 3 --send >/dev/null 2>&1
-rc_ver_bare_override=$?
-check "--version still overrides a bare v2 in prose (the escape hatch works)" "0" "$rc_ver_bare_override"
-ver_bare_override_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
-contains "the override stamps the given version, prose v2 untouched" \
-    "$ver_bare_override_argv" "[PATCH v3 0/2] fix the v2 parser"
+    --from '@author' --to '@lkml-panel' --subject 'the v2 rewrite' --version 2 --send >/dev/null 2>&1
+rc_ver_bare_matching=$?
+check "--version matching the stray prose token exits 0" "0" "$rc_ver_bare_matching"
+ver_bare_matching_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
+contains "the stamp matches the stray token" \
+    "$ver_bare_matching_argv" "[PATCH v2 0/2] the v2 rewrite"
+check "the matching-token subject round-trips as exactly one version" \
+    "2" "$(fs_subject_versions "$(ver_argv_subject "$ver_bare_matching_argv")")"
+
+# --allow-ambiguous-version is the escape hatch for a stray token that
+# cannot be reworded away because it names something else entirely (a
+# subsystem, an upstream tag) -- proven here with a prose token whose
+# number differs from the stamped version, the exact case that has no
+# other way through. It downgrades the refusal to a Warning and lets
+# the send proceed with the known-ambiguous subject intact.
+rm -f -- "$capture_dir/argv"
+out_ver_allow_ambiguous="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'media: v4l2: fix capture' \
+    --allow-ambiguous-version --send 2>&1)"
+rc_ver_allow_ambiguous=$?
+check "--allow-ambiguous-version on a non-rewordable subsystem token exits 0" "0" "$rc_ver_allow_ambiguous"
+contains "--allow-ambiguous-version prints a Warning, not an Error" \
+    "$out_ver_allow_ambiguous" "Warning:"
+ver_allow_ambiguous_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
+contains "--allow-ambiguous-version still stamps the real version" \
+    "$ver_allow_ambiguous_argv" "[PATCH v1 0/2] media: v4l2: fix capture"
+check "the allowed subject really parses as two distinct versions (the ambiguity is real, not sidestepped)" \
+    "$(printf '1\n4')" "$(fs_subject_versions "$(ver_argv_subject "$ver_allow_ambiguous_argv")")"
+
+# The same escape hatch on an already-marked subject: the Warning wording
+# differs (no stamping happened this run) but the send still proceeds.
+rm -f -- "$capture_dir/argv"
+out_ver_allow_ambiguous_marked="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject '[PATCH v2 0/2] fix the v3 parser' \
+    --allow-ambiguous-version --send 2>&1)"
+rc_ver_allow_ambiguous_marked=$?
+check "--allow-ambiguous-version on an already-marked subject exits 0" "0" "$rc_ver_allow_ambiguous_marked"
+contains "--allow-ambiguous-version on an already-marked subject prints a Warning, not an Error" \
+    "$out_ver_allow_ambiguous_marked" "Warning:"
+ver_allow_ambiguous_marked_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
+contains "--allow-ambiguous-version passes the already-marked subject through byte-identical" \
+    "$ver_allow_ambiguous_marked_argv" "[PATCH v2 0/2] fix the v3 parser"
+
+# Without the flag, the same subjects are still refused -- the escape
+# hatch is opt-in, not a loosening of the default.
+out_ver_ambiguous_no_flag="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'media: v4l2: fix capture' 2>&1)"
+rc_ver_ambiguous_no_flag=$?
+if (( rc_ver_ambiguous_no_flag != 0 )); then
+    ok "a non-rewordable subsystem token is still refused without --allow-ambiguous-version"
+else
+    no "a non-rewordable subsystem token is still refused without --allow-ambiguous-version" "exit 0: $out_ver_ambiguous_no_flag"
+fi
+contains "the refusal without the flag mentions --allow-ambiguous-version" \
+    "$out_ver_ambiguous_no_flag" "--allow-ambiguous-version"
 
 # An already-bracketed but unversioned subject (single-patch.md's
 # documented ${SUBJECT} form) must not be double-stamped: the old

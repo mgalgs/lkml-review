@@ -5,7 +5,8 @@
 # Usage: lkml-fleet-kickoff.sh <repo> <range> --from <addr> --to <addr>
 #            [--cc <addr>] --subject <subject> [--summary <text>]
 #            [--focus <text>] [--template <file>] [--hops <n>]
-#            [--ci-first <ci-addr>] [--version <n>] [--attach] [--send]
+#            [--ci-first <ci-addr>] [--version <n>]
+#            [--allow-ambiguous-version] [--attach] [--send]
 #
 # <repo>       path to a local git repository.
 # <range>      a revision range passed straight to `git format-patch`
@@ -77,20 +78,45 @@
 #              own "i/N" names a patch count that disagrees with the
 #              range's real count, the same kind of contradiction. Must
 #              be a positive integer; v0 is not a thing on a mailing
-#              list. A template containing ${FOCUS} is a reply, by
-#              construction round two or later, so its
-#              subject is refused rather than silently defaulted to v1
-#              unless --version is given or the subject is already
-#              marked. This detection is intentionally narrower than
+#              list. This detection is intentionally narrower than
 #              the Versions section on lkml-fleet-status.sh: that parser
 #              matches "v<digits>" anywhere in a Subject, by design, to
 #              stay robust across however panel replies and other tools
 #              format theirs. A subject with a stray "v<digits>" outside
-#              this leading bracket (e.g. "fix the v2 parser") still
-#              gets stamped correctly here, but will still read as an
-#              extra, phantom version round on that report -- a
-#              pre-existing limitation of that parser, not something
-#              this flag can fix from here.
+#              this leading bracket (e.g. "fix the v2 parser") is still
+#              stamped correctly here, but the final subject -- whether
+#              just stamped or already marked -- is then re-parsed with
+#              that same status-screen pipeline: if it would read as
+#              more than one version -- a stray token and the marker
+#              landing on distinct numbers -- the whole kickoff is
+#              refused rather than sent, since a reply inherits the
+#              Subject verbatim and the Versions section cannot tell a
+#              real second round from a phantom one. This applies to an
+#              already-marked subject too: the ambiguity may predate
+#              this script, but the phantom round it produces on the
+#              status screen is identical either way, so it is caught
+#              here rather than left for the status screen to discover.
+#              A stray token that happens to already match the marker's
+#              version is not ambiguous and is let through. The stray
+#              token is not always a rewording problem: a subsystem name
+#              ("v4l2", "v9fs") or an upstream tag ("v6.12") in the
+#              subject is not a word the operator can drop without
+#              changing what the series is about. Pass
+#              --allow-ambiguous-version to send anyway; the phantom
+#              round this produces is display-only (see
+#              --allow-ambiguous-version below) and refusing outright
+#              left no way to run a truthful round on such a subject at
+#              all.
+# --allow-ambiguous-version
+#              proceed with a subject the multi-version re-parse guard
+#              (above) would otherwise refuse, printing a Warning
+#              instead of an Error. Only reaches for this when the extra
+#              "v<digits>" token lkml-fleet-status.sh's Versions section
+#              will read is known not to be a real version: nothing else
+#              consumes a subject-borne version -- lkml-mailbox.sh keys
+#              off the X-Version header, not the Subject -- so the only
+#              cost of proceeding is a phantom extra row on that one
+#              status screen for this thread.
 # --attach     format the range with `git format-patch` and attach each
 #              produced patch file to the mail. Without this flag, the
 #              mail carries only the branch name for reviewers to check
@@ -133,6 +159,7 @@ hops=""
 ci_first=""
 version=""
 version_given=0
+allow_ambiguous_version=0
 
 while (( $# > 0 )); do
     case "$1" in
@@ -151,6 +178,7 @@ while (( $# > 0 )); do
         --hops) hops="$2"; shift 2 ;;
         --ci-first) ci_first="$2"; shift 2 ;;
         --version) version="$2"; version_given=1; shift 2 ;;
+        --allow-ambiguous-version) allow_ambiguous_version=1; shift ;;
         --attach) attach=1; shift ;;
         --send) send=1; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -293,10 +321,15 @@ fi
 # alone missed both, letting them fall through as unmarked and get a
 # second, contradictory version stamped in front. A bare "v<n>" outside
 # this leading bracket is prose, not a marker, and treating it as one
-# (an earlier behaviour) both silently suppressed the default v1 stamp
-# for a subject like "fix the v2 scheduler entry" and made --version
-# unable to override it -- there was no way to get a correct stamp onto
-# such a subject at all. leading_patch_prefix is the whole bracket,
+# (an earlier behaviour) silently suppressed the default v1 stamp for a
+# subject like "fix the v2 scheduler entry" and blocked --version from
+# reaching it at all, since the marker-conflict refusal above fired on
+# the misdetected marker regardless of the flag's value. Not treating
+# it as a marker lets --version reach the stamp again, but the
+# multi-version re-parse guard further down can still refuse the
+# result: only a --version equal to the stray prose token stamps
+# cleanly, since any other value leaves two distinct "v<digits>" tokens
+# in the final subject. leading_patch_prefix is the whole bracket,
 # versioned or not, so an already-bracketed but unversioned subject
 # (e.g. "[PATCH] fix the thing", the form single-patch.md documents for
 # ${SUBJECT}) gets that bracket replaced below instead of a second one
@@ -317,24 +350,20 @@ if (( version_given )) && [[ -n "$existing_display" ]]; then
     echo "Error: --version $version was given but subject '$subject' already carries a version marker ('$existing_display'); refusing to stamp a second, possibly contradictory, version onto the field that identifies the series." >&2
     exit 1
 fi
-# shellcheck disable=SC2016  # ${FOCUS} is the literal placeholder text
-# being searched for in the stripped body, not a variable to expand.
-# A ${FOCUS} template is a reply, by construction round two or later
-# (see the --focus header comment): its subject cannot default to v1
-# the way a new thread's can, so an unmarked subject here must be told
-# its version explicitly rather than silently guessing "1".
-if [[ -z "$existing_display" && "$body" == *'${FOCUS}'* ]] && (( ! version_given )); then
-    echo "Error: template '$template' contains \${FOCUS}: a focused round is a reply, by construction round two or later, so its subject cannot silently default to v1. Pass --version <n> naming the round this reply belongs to, or a subject that already carries the right marker." >&2
-    exit 1
-fi
 effective_version="${existing_display#v}"
 effective_version="${effective_version:-${version:-1}}"
 
 tmpdir="$(mktemp -d)"
-# Only clean up once actually sent: in print-only mode the printed command
-# names files under $tmpdir, and a caller pasting it later needs them to
-# still exist.
-cleanup() { if (( send )); then rm -rf -- "$tmpdir"; fi; }
+# Cleaned up unless something downstream tells the caller where to find
+# it: print-only mode's success path prints a command whose --body and
+# --attach arguments name files under $tmpdir and a trailing Note
+# pointing at the directory, for a caller to paste later, so it sets
+# tmpdir_kept and cleanup leaves the directory alone. Every other exit
+# -- every refusal above and below included -- never prints anything
+# pointing at $tmpdir, so leaving it behind there would be a silent
+# leak rather than a kept artifact.
+tmpdir_kept=0
+cleanup() { if (( ! tmpdir_kept )); then rm -rf -- "$tmpdir"; fi; }
 trap cleanup EXIT
 
 # -n forces numbering even for a single-patch range: git format-patch
@@ -393,6 +422,58 @@ if [[ -z "$existing_display" ]]; then
         subject="[${rebuilt_words[*]} 0/${patch_count}] ${subject}"
     else
         subject="[PATCH v${effective_version} 0/${patch_count}] ${subject}"
+    fi
+fi
+
+# The final subject -- whether just stamped or already marked -- is
+# re-parsed with the exact pipeline lkml-fleet-status.sh's
+# fs_subject_versions() uses -- not because this script needs the
+# numbers for anything else, but because that is the parser that will
+# read this Subject once it is sent, and every reply in the thread
+# inherits it verbatim ("Re: ..."). A subject with any other
+# "v<digits>" token besides the marker (e.g. "fix the v2 parser"
+# stamped to "[PATCH v1 0/2] fix the v2 parser", or an already-marked
+# "[PATCH v2 0/2] fix the v3 parser" passed through as-is) parses here
+# as more than one distinct version, and the == Versions == section
+# would then report a second round for this thread that never
+# happened, silently. Refuse rather than guess which token was meant;
+# a stray token that happens to already equal the marker's version
+# parses as one version and is not ambiguous.
+#
+# Run whether this script stamped the subject or found it already
+# marked: the phantom round this produces on the status screen reads
+# identically either way, so letting an already-marked subject through
+# unchecked would be the same silent misreport this guard exists to
+# close. Only the wording of the refusal differs below, since an
+# already-marked subject was never stamped by this run.
+#
+# "Reword the subject" is not always possible: the extra token can be a
+# subsystem name ("v4l2", "v9fs") or an upstream tag ("v6.12") that is
+# part of what the series is about, not a word the operator chose.
+# --allow-ambiguous-version is the escape hatch for that case: it turns
+# this refusal into a Warning and lets the send proceed. That is safe
+# to offer because the phantom round it produces is display-only --
+# V_COUNT feeds nothing but this one printf in
+# lkml-fleet-status.sh's == Versions == section, and lkml-mailbox.sh
+# resolves a thread's version from the X-Version header, never from the
+# Subject -- so the only cost of proceeding is a wrong extra row on
+# that one status screen for this thread.
+subject_versions="$(printf '%s\n' "$subject" | grep -oE '(^|[^[:alnum:]])v[0-9]+' | sed 's/^.*v//' | sort -un)"
+if [[ "$(wc -l <<<"$subject_versions")" -gt 1 ]]; then
+    subject_versions_list="$(paste -sd' ' - <<<"$subject_versions")"
+    if (( allow_ambiguous_version )); then
+        if [[ -z "$existing_display" ]]; then
+            echo "Warning: stamping v${effective_version} produces subject '$subject', which lkml-fleet-status.sh's == Versions == section parses as $subject_versions_list -- more than one version for what is a single series. Sending anyway because --allow-ambiguous-version was given; the status screen will show a phantom extra version for this thread." >&2
+        else
+            echo "Warning: subject '$subject' already carries version marker '$existing_display', but lkml-fleet-status.sh's == Versions == section parses it as $subject_versions_list -- more than one version for what is a single series. Sending anyway because --allow-ambiguous-version was given; the status screen will show a phantom extra version for this thread." >&2
+        fi
+    else
+        if [[ -z "$existing_display" ]]; then
+            echo "Error: stamping v${effective_version} produces subject '$subject', which lkml-fleet-status.sh's == Versions == section parses as $subject_versions_list -- more than one version for what is a single series. Reword the subject so it carries no other \"v<digits>\" token, or pass --allow-ambiguous-version if the token names something else (a subsystem, an upstream tag) and cannot be reworded away; the status screen reads that token anywhere in the subject as a version of the series." >&2
+        else
+            echo "Error: subject '$subject' already carries version marker '$existing_display', but lkml-fleet-status.sh's == Versions == section parses it as $subject_versions_list -- more than one version for what is a single series. Reword the subject so it carries no other \"v<digits>\" token besides the marker, or pass --allow-ambiguous-version if it cannot be reworded away; the status screen reads that token anywhere in the subject as a version of the series." >&2
+        fi
+        exit 1
     fi
 fi
 
@@ -558,4 +639,5 @@ else
     printf '%q ' "${cmd[@]}"
     printf '\n'
     printf 'Note: temp files for this command are left under %s -- nothing removes them; delete it yourself once done.\n' "$tmpdir" >&2
+    tmpdir_kept=1
 fi
