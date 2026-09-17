@@ -45,6 +45,19 @@ the old layout) or a fork-sandbox agent-mail thread dir,
 fleet-store layout); build() tells the two apart by the presence of
 cur/. Reads only; never runs git.
 
+--assume-root-version N applies to the fleet layout only. A thread
+kicked off before lkml-fleet-kickoff.sh stamped a version marker has a
+root whose Subject carries no '[PATCH vN 0/M]' bracket, so it opens no
+version and its whole subtree renders under none -- which
+require_full_coverage refuses outright, leaving the thread unrenderable
+however many marked versions are posted into it later. The flag says
+which version that root opened and is read as the missing marker,
+nothing else: version boundaries, tallies and chips all flow through
+the usual logic. A root that does carry a marker keeps it and the flag
+is ignored. Without the flag the render is byte-identical, refusal
+included, and the flag never disarms require_full_coverage -- a genuine
+cycle or orphan still fails loudly.
+
 SOURCE_DATE_EPOCH, when set, pins the 'rendered' stamp to that epoch (UTC)
 so repeated HTML renders are reproducible; without it the stamp is the
 local wall clock. It affects only the HTML backend; --text is
@@ -236,12 +249,15 @@ def is_cover_subject(subject):
     return bool(mm and re.search(r"\bPATCH\b", mm.group(1)))
 
 
-def fleet_version(subject):
+def fleet_version(subject, default=1):
     """The version marker from a fleet message's own subject (stripped
     of any Re: layers): the v<N> token inside a leading bracket that
-    carries the word PATCH, or 1 when the bracket carries no such token
-    or no PATCH word at all -- fleet messages carry no X-Version header,
-    unlike the old layout. NOT the same parse as lkml-fleet-status.sh's
+    carries the word PATCH, or `default` when the bracket carries no
+    such token or no PATCH word at all -- fleet messages carry no
+    X-Version header, unlike the old layout. Every caller but one takes
+    the default of 1; build_fleet_layout's --assume-root-version check
+    passes None, to tell an unmarked subject apart from one that really
+    says v1. NOT the same parse as lkml-fleet-status.sh's
     fs_subject_versions(): that one greps v[0-9]+ across the WHOLE
     subject and returns every match it finds, where this one looks only
     inside the leading bracket and returns a single value. The narrower
@@ -259,9 +275,9 @@ def fleet_version(subject):
         subj = subj[4:]
     mm = COVER_BRACKET_RE.match(subj)
     if not mm or not re.search(r"\bPATCH\b", mm.group(1)):
-        return 1
+        return default
     vm = re.search(r"(?:^|[^A-Za-z0-9])v(\d+)", mm.group(1))
-    return int(vm.group(1)) if vm else 1
+    return int(vm.group(1)) if vm else default
 
 
 def esc(s):
@@ -532,7 +548,7 @@ def read_fleet_msg(path, seq, attachment_root):
     }
 
 
-def build_fleet_layout(series_dir):
+def build_fleet_layout(series_dir, assume_root_version=None):
     name = os.path.basename(series_dir.rstrip("/"))
     attachment_root = os.path.join(series_dir, "attachments")
     msgs = {}
@@ -553,6 +569,18 @@ def build_fleet_layout(series_dir):
             roots.append(m)
     for m in msgs.values():
         m["children"].sort(key=lambda x: (x["seq"], x["date"] or datetime.min))
+
+    # An unmarked root opens no version, so its whole subtree renders
+    # under none; --assume-root-version supplies the missing marker (a
+    # real one wins). THE root only -- an orphan whose In-Reply-To did
+    # not resolve is a root here too, and must still fail the coverage
+    # guard rather than be read as a cover.
+    if assume_root_version is not None:
+        for r in roots:
+            if r["parent"] or fleet_version(r["subject"], default=None) is not None:
+                continue
+            r["version"] = assume_root_version
+            r["assumed_cover"] = True
 
     # A message whose OWN subject is a fresh [PATCH ...] cover starts a
     # new version's thread section even when it is structurally a reply
@@ -595,12 +623,14 @@ def build_fleet_layout(series_dir):
     return name, msgs, roots, version_roots
 
 
-def build(series_dir):
+def build(series_dir, assume_root_version=None):
+    # assume_root_version is a fleet-path escape hatch; the old layout
+    # has a real X-Version header, so it ignores the flag, not errors.
     if os.path.isdir(os.path.join(series_dir, "cur")):
         return build_old_layout(series_dir)
     if os.path.isdir(series_dir) and any(
             FLEET_MSG_RE.match(fn) for fn in os.listdir(series_dir)):
-        return build_fleet_layout(series_dir)
+        return build_fleet_layout(series_dir, assume_root_version)
     return build_old_layout(series_dir)
 
 
@@ -1161,8 +1191,8 @@ def render_trace(m, depth=0, series_name="", stop_ids=frozenset()):
     return "\n".join(out)
 
 
-def render_series(series_dir):
-    name, msgs, roots, all_version_roots = build(series_dir)
+def render_series(series_dir, assume_root_version=None):
+    name, msgs, roots, all_version_roots = build(series_dir, assume_root_version)
     id_map = id_prefix_map(msgs)
     # all_version_roots is roots widened, for a fleet thread, to every
     # nested reply that itself opens a new version (build_fleet_layout
@@ -1170,7 +1200,8 @@ def render_series(series_dir):
     # thread id is fixed to the root message, so v2 and later are
     # always replies there, never roots); for the old layout it is
     # exactly `roots`.
-    covers = [m for m in all_version_roots if is_cover_subject(m["subject"])]
+    covers = [m for m in all_version_roots
+              if is_cover_subject(m["subject"]) or m.get("assumed_cover")]
     require_fleet_covers(series_dir, msgs, covers)
     fleet_cover_ids = {c["id"] for c in covers if c.get("fleet")}
     versions = sorted({c["version"] for c in covers})
@@ -1906,10 +1937,10 @@ def render_text_reviewers(out, name, series_dir, reviewer_entries):
             out.append(f"    brief: {name}/personas/{r['persona']}.md")
 
 
-def render_text_series(series_dir):
+def render_text_series(series_dir, assume_root_version=None):
     """One series dir as plain text: a header with the same counts the
     HTML header shows, then every message in thread order."""
-    name, msgs, roots, all_version_roots = build(series_dir)
+    name, msgs, roots, all_version_roots = build(series_dir, assume_root_version)
     sections = []
     rendered_ids = set()
     # The whole-series results file, if any: a 'series-summary' block
@@ -1929,7 +1960,8 @@ def render_text_series(series_dir):
             lines.append("# Details")
             lines.extend("  " + ln for ln in series_res[1].split("\n"))
         sections.append("\n".join(lines))
-    covers = [m for m in all_version_roots if is_cover_subject(m["subject"])]
+    covers = [m for m in all_version_roots
+              if is_cover_subject(m["subject"]) or m.get("assumed_cover")]
     require_fleet_covers(series_dir, msgs, covers)
     fleet_cover_ids = {c["id"] for c in covers if c.get("fleet")}
     # One section per DISTINCT version, the same dedup render_series
@@ -2018,6 +2050,12 @@ def main(argv=None):
                         help="document title and masthead (default: %(default)s)")
     parser.add_argument("-o", "--output", metavar="FILE",
                         help="write HTML to FILE instead of stdout")
+    parser.add_argument("--assume-root-version", type=int, metavar="N",
+                        help="fleet threads only: when the thread's root message "
+                             "carries no [PATCH vN ...] version marker, read it as "
+                             "the cover that opened version N (a thread kicked off "
+                             "before the marker was stamped); a root that does "
+                             "carry a marker keeps it")
     parser.add_argument("--text", action="store_true",
                         help="render the threads as plain text to stdout "
                              "(for agents; bodies indented under their headers, and "
@@ -2031,7 +2069,8 @@ def main(argv=None):
         if args.output:
             parser.error("--text renders to stdout and cannot be combined with -o/--output")
         sys.stdout.reconfigure(encoding="utf-8")
-        parts = [render_text_series(d).rstrip("\n") for d in args.series_dirs]
+        parts = [render_text_series(d, args.assume_root_version).rstrip("\n")
+                 for d in args.series_dirs]
         # A blank line between series, like the one between version
         # sections within a series, so two series do not run together.
         sys.stdout.write("\n\n".join(parts) + ("\n" if parts else ""))
@@ -2039,7 +2078,7 @@ def main(argv=None):
     series = []
     footers = []
     for d in args.series_dirs:
-        name, sec, _id_map, footer = render_series(d)
+        name, sec, _id_map, footer = render_series(d, args.assume_root_version)
         series.append((name, sec))
         footers.append(footer)
     # SOURCE_DATE_EPOCH pins the stamp (UTC) so renders are reproducible.

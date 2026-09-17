@@ -2393,5 +2393,184 @@ else
     no "the missing-Message-ID failure explains itself on stderr"
 fi
 
+printf '\n== fleet-store thread: --assume-root-version rescues an unmarked root ==\n'
+# A thread kicked off before lkml-fleet-kickoff.sh stamped the version
+# marker has a root Subject with no [PATCH vN 0/M] bracket: it opens no
+# version, so it and everything under it render under none and
+# require_full_coverage refuses the whole thread -- observed on a real
+# 59-message thread that kept taking new versions while staying
+# unrenderable. --assume-root-version says which version that root
+# opened; every later, marked version still opens its own section.
+unmarked="$work/fleet-mail/threads/unmarked-thread"
+mkdir -p "$unmarked"
+um_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+um_reply="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+um_v2_cover="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+um_v2_reply="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+printf '%s\n' \
+    "Message-ID: ${um_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+    'Subject: unmarked kickoff, no version bracket' \
+    '' \
+    'kickoff body before markers existed' \
+    > "$unmarked/001-${um_root}.msg"
+printf '%s\n' \
+    "Message-ID: ${um_reply}" \
+    "In-Reply-To: ${um_root}" \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: unmarked kickoff, no version bracket' \
+    '' \
+    'Reviewed-by: core' \
+    > "$unmarked/002-${um_reply}.msg"
+printf '%s\n' \
+    "Message-ID: ${um_v2_cover}" \
+    "In-Reply-To: ${um_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Date: Wed, 17 Sep 2025 02:00:00 +0000' \
+    'Subject: [PATCH v2 0/1] unmarked root demo' \
+    '' \
+    'v2 posting body' \
+    > "$unmarked/003-${um_v2_cover}.msg"
+printf '%s\n' \
+    "Message-ID: ${um_v2_reply}" \
+    "In-Reply-To: ${um_v2_cover}" \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 03:00:00 +0000' \
+    'Subject: Re: [PATCH v2 0/1] unmarked root demo' \
+    '' \
+    'NAK' \
+    > "$unmarked/004-${um_v2_reply}.msg"
+
+if python3 "$renderer" --text "$unmarked" >/dev/null 2>"$work/unmarked.err"; then
+    no "without the flag an unmarked-root thread still fails loudly"
+else
+    ok "without the flag an unmarked-root thread still fails loudly"
+fi
+contains "the unmarked-root refusal names the root itself" \
+    "$(cat "$work/unmarked.err")" "${um_root:0:7}"
+
+if um_text="$(python3 "$renderer" --text --assume-root-version 1 "$unmarked" 2>"$work/unmarked2.err")"; then
+    ok "--assume-root-version renders the unmarked-root thread"
+else
+    no "--assume-root-version renders the unmarked-root thread" "$(cat "$work/unmarked2.err")"
+    um_text=""
+fi
+contains "assumed root opens v1's own section" "$um_text" "$(basename "$unmarked") v1"
+contains "the marked v2 reply still opens v2's own section" "$um_text" "$(basename "$unmarked") v2"
+# The boundary: v1 holds the root and its one reply, v2 the cover and
+# its one reply -- neither section swallows the other's two messages.
+um_name="$(basename "$unmarked")"
+um_v1="${um_text%%"$um_name v2"*}"
+um_v2="${um_text#*"$um_name v2"}"
+contains "v1 section holds the assumed cover's body" "$um_v1" 'kickoff body before markers existed'
+contains "v1 section holds its own reply" "$um_v1" 'Reviewed-by: core'
+case "$um_v1" in
+    *'v2 posting body'*|*NAK*) no "v1 section stops before the v2 cover" ;;
+    *) ok "v1 section stops before the v2 cover" ;;
+esac
+contains "v2 section holds the v2 cover's body" "$um_v2" 'v2 posting body'
+contains "v2 section holds the v2 reply" "$um_v2" 'NAK'
+contains "v1 reports its own 1 reply, not the whole thread's 3" \
+    "$um_v1" '0 patches · 1 replies · 1 reviewers'
+um_html="$work/unmarked.html"
+python3 "$renderer" --assume-root-version 1 "$unmarked" -o "$um_html"
+if [[ "$(grep -o '<section class="section"' "$um_html" | wc -l)" -eq 2 ]]; then
+    ok "unmarked-root thread renders two version sections, not one"
+else
+    no "unmarked-root thread renders two version sections, not one"
+fi
+if [[ "$(grep -o '<details class="msg"' "$um_html" | wc -l)" -eq 4 ]]; then
+    ok "unmarked-root thread renders all 4 messages exactly once"
+else
+    no "unmarked-root thread renders all 4 messages exactly once"
+fi
+
+printf '\n== fleet-store thread: a marked root ignores --assume-root-version ==\n'
+# The marker wins and says so by producing the same bytes: the flag is
+# a stand-in for a missing marker, never an override of a present one.
+marked="$work/fleet-mail/threads/marked-thread"
+mkdir -p "$marked"
+mk_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+mk_reply="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+printf '%s\n' \
+    "Message-ID: ${mk_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+    'Subject: [PATCH v4 0/1] marked root demo' \
+    '' \
+    'kickoff v4' \
+    > "$marked/001-${mk_root}.msg"
+printf '%s\n' \
+    "Message-ID: ${mk_reply}" \
+    "In-Reply-To: ${mk_root}" \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: [PATCH v4 0/1] marked root demo' \
+    '' \
+    'Reviewed-by: core' \
+    > "$marked/002-${mk_reply}.msg"
+python3 "$renderer" --text "$marked" > "$work/marked-plain.txt"
+python3 "$renderer" --text --assume-root-version 1 "$marked" > "$work/marked-flag.txt"
+if cmp -s "$work/marked-plain.txt" "$work/marked-flag.txt"; then
+    ok "marked root: --text output is byte-identical with and without the flag"
+else
+    no "marked root: --text output is byte-identical with and without the flag"
+fi
+python3 "$renderer" "$marked" -o "$work/marked-plain.html"
+python3 "$renderer" --assume-root-version 1 "$marked" -o "$work/marked-flag.html"
+if cmp -s "$work/marked-plain.html" "$work/marked-flag.html"; then
+    ok "marked root: HTML output is byte-identical with and without the flag"
+else
+    no "marked root: HTML output is byte-identical with and without the flag"
+fi
+contains "marked root keeps its own v4, not the assumed v1" \
+    "$(<"$work/marked-flag.txt")" "$(basename "$marked") v4"
+
+printf '\n== fleet-store thread: --assume-root-version leaves the coverage guard armed ==\n'
+# The flag stands in for one missing marker; it must not turn into a
+# blanket "render whatever parsed". An orphan whose In-Reply-To
+# resolves to nothing is a root too, and is unmarked here just like the
+# real root -- but it is not THE root (it has a parent header), so it
+# is never read as a cover. Its version falls back to 1, the assumed
+# root opened 3, no cover matches, and require_full_coverage refuses.
+armed="$work/fleet-mail/threads/armed-thread"
+mkdir -p "$armed"
+ar_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+ar_orphan="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+printf '%s\n' \
+    "Message-ID: ${ar_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+    'Subject: unmarked kickoff with an orphan under it' \
+    '' \
+    'kickoff body' \
+    > "$armed/001-${ar_root}.msg"
+printf '%s\n' \
+    "Message-ID: ${ar_orphan}" \
+    'In-Reply-To: 00000000-0000-0000-0000-000000000000' \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: a standing objection' \
+    '' \
+    'NAK' \
+    > "$armed/002-${ar_orphan}.msg"
+if python3 "$renderer" --text --assume-root-version 3 "$armed" >/dev/null 2>"$work/armed.err"; then
+    no "with the flag a genuine orphan still fails loudly"
+else
+    ok "with the flag a genuine orphan still fails loudly"
+fi
+contains "the armed-guard failure names the orphan, not the root" \
+    "$(cat "$work/armed.err")" "${ar_orphan:0:7}"
+
 printf '%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))
