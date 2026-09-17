@@ -1705,8 +1705,13 @@ fi
 
 printf '\n== fleet-store thread: auto-detect and header mapping ==\n'
 fleet="$work/fleet-mail/threads/demo-thread"
-mkdir -p "$fleet/attachments" "$fleet/.postmaster"
-printf '{"state":"ignored"}\n' > "$fleet/.postmaster/state.json"
+mkdir -p "$fleet/attachments"
+# A real thread dir never holds .postmaster/ (that router state lives at
+# $FORK_SANDBOX_MAIL_ROOT/.postmaster/, one level up from threads/
+# entirely) -- what it DOES hold besides messages is a stale NNN.seq
+# sequence-number reservation dir, which fork-sandbox-mail.sh's
+# mail_place_message() mkdir's and never removes.
+mkdir -p "$fleet/005.seq"
 
 root_uuid="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 core_uuid="$(python3 -c 'import uuid; print(uuid.uuid4())')"
@@ -1725,6 +1730,7 @@ printf '%s\n' \
     'Subject: [PATCH v1 0/2] fleet demo series' \
     'X-Attachment: attachments/design-notes.txt' \
     'X-Attachment: attachments/interdiff.patch' \
+    'X-Attachment: attachments/gone.patch' \
     '' \
     'Kickoff body for the fleet demo series.' \
     > "$fleet/001-${root_uuid}.msg"
@@ -1824,13 +1830,14 @@ fi
 contains "root's first attachment basename is listed" "$fhtml" 'design-notes.txt'
 contains "root's second attachment basename is listed" "$fhtml" 'interdiff.patch'
 case "$fhtml" in *'attachments/design-notes.txt'*) no "fleet attachment line strips the attachments/ prefix" ;; *) ok "fleet attachment line strips the attachments/ prefix" ;; esac
-case "$fhtml" in *'<a download'*) no "fleet attachments render no download links" ;; *) ok "fleet attachments render no download links" ;; esac
+contains "present fleet attachments render a download link" "$fhtml" '<a download'
+contains "the missing fleet attachment is marked unavailable, not linked" "$fhtml" 'gone.patch <span class="attachment-missing">(unavailable)</span>'
 case "$fhtml" in *'model unknown'*) no "fleet messages suppress the model-unknown chip (uniform, not an anomaly)" ;; *) ok "fleet messages suppress the model-unknown chip (uniform, not an anomaly)" ;; esac
 
 if [[ "$(grep -o '<details class="msg"' "$fleet_html" | wc -l)" -eq 4 ]]; then
-    ok "exactly 4 messages rendered; .postmaster/ produced no phantom 5th"
+    ok "exactly 4 messages rendered; attachments/ and 005.seq/ produced no phantom 5th"
 else
-    no "exactly 4 messages rendered; .postmaster/ produced no phantom 5th"
+    no "exactly 4 messages rendered; attachments/ and 005.seq/ produced no phantom 5th"
 fi
 
 if python3 -c '
@@ -1841,10 +1848,99 @@ spec.loader.exec_module(mod)
 assert mod.fleet_body_tags("Reviewed-by: core\n") == ["Reviewed-by"]
 assert mod.fleet_body_tags("> quoted junk\nChanges-requested: x\n") == ["Changes-requested"]
 assert mod.fleet_body_tags("no trailer here\n") == []
-print("ok")' "$renderer"; then
+' "$renderer"; then
     ok "fleet_body_tags: trailer and verdict detection, quoted-line skip"
 else
     no "fleet_body_tags: trailer and verdict detection, quoted-line skip"
+fi
+
+printf '\n== fleet-store thread: qualified cover subjects (RFC / net-next) ==\n'
+# lkml-fleet-kickoff.sh preserves a leading bracket's own qualifier words
+# verbatim around PATCH/vN instead of replacing the whole bracket -- a
+# subject already marked "[RFC PATCH ...]" or "[PATCH net-next ...]"
+# stays that way, not "[PATCH ...]". The renderer's cover/version
+# detection has to accept those forms, not just the literal "[PATCH v".
+rfc="$work/fleet-mail/threads/rfc-thread"
+mkdir -p "$rfc"
+rfc_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+printf '%s\n' \
+    "Message-ID: ${rfc_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+    'Subject: [RFC PATCH v3 0/2] retry cap' \
+    '' \
+    'Kickoff body.' \
+    > "$rfc/001-${rfc_root}.msg"
+rfc_reply="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+printf '%s\n' \
+    "Message-ID: ${rfc_reply}" \
+    "In-Reply-To: ${rfc_root}" \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: [RFC PATCH v3 0/2] retry cap' \
+    '' \
+    'Reviewed-by: core' \
+    > "$rfc/002-${rfc_reply}.msg"
+rfc_html="$work/rfc.html"
+python3 "$renderer" "$rfc" -o "$rfc_html"
+rfchtml="$(<"$rfc_html")"
+if [[ "$(grep -o '<details class="msg"' "$rfc_html" | wc -l)" -eq 2 ]]; then
+    ok "'[RFC PATCH v3 ...]' cover: both messages render (not the false-empty page)"
+else
+    no "'[RFC PATCH v3 ...]' cover: both messages render (not the false-empty page)"
+fi
+contains "'[RFC PATCH v3 ...]' cover: masthead reports v3, not v1" "$rfchtml" '<b>v3</b>'
+contains "'[RFC PATCH v3 ...]' cover: masthead title strips the whole qualified bracket" "$rfchtml" '<h1>retry cap</h1>'
+rfc_text="$(python3 "$renderer" --text "$rfc")"
+contains "'[RFC PATCH v3 ...]' cover: --text is non-empty" "$rfc_text" 'retry cap'
+
+netnext="$work/fleet-mail/threads/netnext-thread"
+mkdir -p "$netnext"
+nn_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+printf '%s\n' \
+    "Message-ID: ${nn_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+    'Subject: [PATCH net-next v2 0/2] retry cap' \
+    '' \
+    'Kickoff body.' \
+    > "$netnext/001-${nn_root}.msg"
+nn_html="$work/netnext.html"
+python3 "$renderer" "$netnext" -o "$nn_html"
+nnhtml="$(<"$nn_html")"
+contains "'[PATCH net-next v2 ...]' cover: masthead reports v2, not v1" "$nnhtml" '<b>v2</b>'
+
+printf '\n== fleet-store thread: no PATCH cover at all fails loudly ==\n'
+# Before fleet-thread support, feeding lkml-render.py a dir with no
+# cur/ crashed with FileNotFoundError -- loud, not a silent empty page.
+# A fleet thread dir parses fine now, but if none of its roots carry a
+# [PATCH ...] cover, that must still surface as a hard failure: --text
+# is the interface lkml-round.sh and lkml-summarize.sh consume, and an
+# empty render is indistinguishable from a quiet round to them.
+nonseries="$work/fleet-mail/threads/nonseries-thread"
+mkdir -p "$nonseries"
+ns_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+printf '%s\n' \
+    "Message-ID: ${ns_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+    'Subject: review the retry cap' \
+    '' \
+    'Not a series -- just a question.' \
+    > "$nonseries/001-${ns_root}.msg"
+if python3 "$renderer" --text "$nonseries" >/dev/null 2>"$work/nonseries.err"; then
+    no "a fleet thread with no [PATCH ...] cover fails loudly, not exit 0"
+else
+    ok "a fleet thread with no [PATCH ...] cover fails loudly, not exit 0"
+fi
+if [[ -s "$work/nonseries.err" ]]; then
+    ok "the loud failure explains itself on stderr"
+else
+    no "the loud failure explains itself on stderr"
 fi
 
 printf '%d passed, %d failed\n' "$pass" "$fail"

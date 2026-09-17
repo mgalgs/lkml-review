@@ -26,7 +26,9 @@ solid green Reviewed-by, the same hue hollow for the weaker Acked-by,
 amber for Changes-requested, hollow amber for a Question, and a solid
 red NAK. The blue accent is structural chrome only, never a verdict.
 An unrecorded model is stamped 'model unknown' in the warning colour on
-purpose -- surfacing a real defect, not hiding it.
+purpose -- surfacing a real defect, not hiding it. Fleet-store messages
+carry no model header at all (that format never stamps one), so their
+model chip is omitted instead: uniform absence is not an anomaly.
 
 --text is the agent view and a stable interface consumed by
 lkml-round.sh and lkml-summarize.sh: the same thread selection and
@@ -37,8 +39,11 @@ message and diffstat stay and the diff goes (it lives in the series
 branch). The HTML path may be redesigned freely; --text must not
 change out from under the panel scripts.
 
-A series dir is $LKML_MAILBOX_ROOT/<series> (it holds cur/*.msg). Reads
-only; never runs git.
+A series dir is either $LKML_MAILBOX_ROOT/<series> (it holds cur/*.msg,
+the old layout) or a fork-sandbox agent-mail thread dir,
+<mail-root>/threads/<thread-id> (it holds NNN-<uuid>.msg directly, the
+fleet-store layout); build() tells the two apart by the presence of
+cur/. Reads only; never runs git.
 
 SOURCE_DATE_EPOCH, when set, pins the 'rendered' stamp to that epoch (UTC)
 so repeated HTML renders are reproducible; without it the stamp is the
@@ -112,6 +117,27 @@ MONOGRAM_PALETTE = [
 ]
 
 
+def inline_attachment(ref, attachment_root):
+    """Resolve an X-Attachment value (e.g. 'attachments/foo.patch')
+    against ATTACHMENT_ROOT into a data: URI, containment-checked with
+    realpath so a hand-written or stale reference cannot escape the
+    dir. Returns (href, mime); href is None when the reference does not
+    resolve to a real file inside attachment_root -- the caller renders
+    that as present/missing, not as a link either way."""
+    rel = ref.removeprefix("attachments/") if ref.startswith("attachments/") else ""
+    candidate = os.path.normpath(os.path.join(attachment_root, rel)) if rel else ""
+    root_real = os.path.realpath(attachment_root)
+    candidate_real = os.path.realpath(candidate) if candidate else ""
+    inside = candidate and os.path.commonpath((candidate_real, root_real)) == root_real
+    mime = "application/octet-stream"
+    if inside and os.path.isfile(candidate_real):
+        with open(candidate_real, "rb") as f:
+            data = f.read()
+        mime = mimetypes.guess_type(candidate_real)[0] or mime
+        return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}", mime
+    return None, mime
+
+
 def read_msg(path, attachment_root):
     with open(path, encoding="utf-8", errors="replace") as f:
         raw = f.read()
@@ -135,22 +161,12 @@ def read_msg(path, attachment_root):
     except Exception:
         date = None
     tags = [t.strip() for t in hdr.get("X-Tags", "").split(",") if t.strip()]
+    # The mailbox writes attachments/<basename>. inline_attachment is
+    # defensive in case a hand-written message contains an unsafe or
+    # stale reference.
     rendered_attachments = []
     for ref in attachments:
-        # The mailbox writes attachments/<basename>. Keep this defensive in
-        # case a hand-written message contains an unsafe or stale reference.
-        rel = ref.removeprefix("attachments/") if ref.startswith("attachments/") else ""
-        candidate = os.path.normpath(os.path.join(attachment_root, rel)) if rel else ""
-        root_real = os.path.realpath(attachment_root)
-        candidate_real = os.path.realpath(candidate) if candidate else ""
-        inside = candidate and os.path.commonpath((candidate_real, root_real)) == root_real
-        href = None
-        mime = "application/octet-stream"
-        if inside and os.path.isfile(candidate_real):
-            with open(candidate_real, "rb") as f:
-                data = f.read()
-            mime = mimetypes.guess_type(candidate_real)[0] or mime
-            href = f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+        href, mime = inline_attachment(ref, attachment_root)
         rendered_attachments.append({"ref": ref, "href": href, "mime": mime})
     return {
         "id": mid, "parent": parent, "seq": seq, "date": date,
@@ -196,15 +212,41 @@ def fleet_body_tags(body):
     return seen
 
 
+COVER_BRACKET_RE = re.compile(r"^\[([^\]]*)\]")
+
+
+def is_cover_subject(subject):
+    """True when SUBJECT's leading bracket carries the word PATCH --
+    '[PATCH ...]', but also qualified forms real list traffic (and
+    lkml-fleet-kickoff.sh's own subject pass-through, see its --version
+    header comment) uses verbatim: '[RFC PATCH v3 0/2]', '[PATCH
+    net-next v2 0/2]'. Anchored on the word, not a literal '[PATCH '
+    prefix, so a qualifier before or after PATCH does not drop a real
+    series cover out of the render."""
+    mm = COVER_BRACKET_RE.match(subject)
+    return bool(mm and re.search(r"\bPATCH\b", mm.group(1)))
+
+
 def fleet_version(subject):
-    """The version marker from a fleet message's own [PATCH vN ...]
-    subject (stripped of any Re: layers), or 1 when absent -- fleet
-    messages carry no X-Version header, unlike the old layout."""
+    """The version marker from a fleet message's own subject (stripped
+    of any Re: layers): the v<N> token inside a leading bracket that
+    carries the word PATCH, or 1 when the bracket carries no such token
+    or no PATCH word at all -- fleet messages carry no X-Version header,
+    unlike the old layout. Mirrors lkml-fleet-status.sh's
+    fs_subject_versions(): a qualifier before or after PATCH ('[RFC
+    PATCH v3 0/2]', '[PATCH net-next v2 0/2]') must not make the parse
+    fall back to 1, the same reason is_cover_subject does not require a
+    literal '[PATCH ' prefix. The leading non-alphanumeric guard on 'v'
+    keeps a token like 'v4' inside a word (e.g. an 'IPv4' mention) from
+    being mistaken for a version marker."""
     subj = subject
     while subj.startswith("Re: "):
         subj = subj[4:]
-    mm = re.match(r"^\[PATCH v(\d+) ", subj)
-    return int(mm.group(1)) if mm else 1
+    mm = COVER_BRACKET_RE.match(subj)
+    if not mm or not re.search(r"\bPATCH\b", mm.group(1)):
+        return 1
+    vm = re.search(r"(?:^|[^A-Za-z0-9])v(\d+)", mm.group(1))
+    return int(vm.group(1)) if vm else 1
 
 
 def esc(s):
@@ -402,13 +444,16 @@ def fleet_msg_paths(thread_dir):
     """.msg files directly in a fleet thread dir, sorted by the NNN-
     arrival prefix: Date has only 1s resolution and two replies can
     land in the same second, so the filename, not Date, is the
-    authoritative sibling order. A dot-directory (router state, e.g.
-    .postmaster/) never matches and is silently skipped, the same way
-    lkml-fleet-status.sh skips it."""
+    authoritative sibling order. The other entries a real thread dir
+    holds -- attachments/ and the NNN.seq sequence-number reservation
+    dirs mail_place_message() mkdir's and never removes -- never match
+    FLEET_MSG_RE and are silently skipped. (Router state lives at
+    $FORK_SANDBOX_MAIL_ROOT/.postmaster/, one level up from the threads/
+    dir entirely, never inside a thread dir.)"""
     return sorted(fn for fn in os.listdir(thread_dir) if FLEET_MSG_RE.match(fn))
 
 
-def read_fleet_msg(path, seq):
+def read_fleet_msg(path, seq, attachment_root):
     """One fleet-store message: <mail-root>/threads/<tid>/NNN-<uuid>.msg,
     RFC-5322-shaped. Message-ID/In-Reply-To are bare uuids (opaque,
     compared as-is -- no angle brackets to strip). From is '@name'; the
@@ -419,7 +464,12 @@ def read_fleet_msg(path, seq):
     X-Tags does not exist either -- tags come from the body via
     fleet_body_tags, the same trailers lkml-fleet-status.sh reads.
     depth and version are filled in by build_fleet_layout (depth needs
-    the whole tree; version reads the subject via fleet_version)."""
+    the whole tree; version reads the subject via fleet_version).
+    Attachments live at <tid>/attachments/<basename>, the same
+    attachments/<basename> shape the old layout uses, just rooted at
+    the thread dir instead of the series dir -- inline_attachment
+    resolves them the same way in both layouts; only the displayed
+    label differs (the bare basename here, ref elsewhere)."""
     with open(path, encoding="utf-8", errors="replace") as f:
         raw = f.read()
     head, _, body = raw.partition("\n\n")
@@ -430,7 +480,8 @@ def read_fleet_msg(path, seq):
         if k == "X-Attachment":
             v = v.strip()
             ref = v.removeprefix("attachments/") if v.startswith("attachments/") else v
-            attachments.append({"ref": ref, "href": None, "mime": None})
+            href, mime = inline_attachment(v, attachment_root)
+            attachments.append({"ref": ref, "href": href, "mime": mime})
         else:
             hdr[k] = v
     who = hdr.get("From", "").strip().removeprefix("@")
@@ -453,9 +504,10 @@ def read_fleet_msg(path, seq):
 
 def build_fleet_layout(series_dir):
     name = os.path.basename(series_dir.rstrip("/"))
+    attachment_root = os.path.join(series_dir, "attachments")
     msgs = {}
     for fn in fleet_msg_paths(series_dir):
-        m = read_fleet_msg(os.path.join(series_dir, fn), int(fn[:3]))
+        m = read_fleet_msg(os.path.join(series_dir, fn), int(fn[:3]), attachment_root)
         msgs[m["id"]] = m
     roots = []
     for m in msgs.values():
@@ -484,6 +536,28 @@ def build(series_dir):
             FLEET_MSG_RE.match(fn) for fn in os.listdir(series_dir)):
         return build_fleet_layout(series_dir)
     return build_old_layout(series_dir)
+
+
+def require_fleet_covers(series_dir, msgs, covers):
+    """A fleet thread that parsed real messages but found no [PATCH ...]
+    cover among its roots is not a render bug to paper over -- it is
+    either a genuine non-series discussion or a cover subject this
+    render mis-parsed, and either way a silent zero-message page is the
+    false green CLAUDE.md warns about: --text is the interface
+    lkml-round.sh and lkml-summarize.sh consume, and an empty render is
+    indistinguishable from a quiet round to them. The old layout raises
+    the same way it always has (FileNotFoundError on a missing cur/),
+    so this only adds a diagnostic where fleet parsing used to have
+    none at all."""
+    if covers or not msgs:
+        return
+    if not any(m.get("fleet") for m in msgs.values()):
+        return
+    raise ValueError(
+        f"{series_dir}: fleet thread has {len(msgs)} message(s) but no "
+        "[PATCH ...] cover letter at the root; not a series lkml-render "
+        "can show"
+    )
 
 
 def subtree(m):
@@ -940,24 +1014,19 @@ def render_message(m, depth=0, series_name=""):
                      f'<code class="inline">lkml-mailbox.sh show {esc(series_name)} {esc(m["id"])}</code></p>')
     attachment_html = ""
     if m["attachments"]:
-        if m.get("fleet"):
-            names = ", ".join(esc(a["ref"]) for a in m["attachments"])
-            attachment_html = (f'<div class="attachments">'
-                               f'<span class="attachment-label">attachments</span> {names}</div>')
-        else:
-            items = []
-            for attachment in m["attachments"]:
-                label = esc(attachment["ref"])
-                if attachment["href"]:
-                    link = (f'<a download href="{esc(attachment["href"])}">{label}</a>'
-                            f' <span class="attachment-type">({esc(attachment["mime"])})</span>')
-                    if attachment["mime"].startswith("image/") and attachment["mime"] != "image/svg+xml":
-                        link += f'<br><img class="attachment-preview" src="{esc(attachment["href"])}" alt="{label}">'
-                else:
-                    link = f"{label} <span class=\"attachment-missing\">(unavailable)</span>"
-                items.append(f"<li>{link}</li>")
-            attachment_html = ('<div class="attachments"><span class="attachment-label">attachments</span><ul>'
-                               + "".join(items) + "</ul></div>")
+        items = []
+        for attachment in m["attachments"]:
+            label = esc(attachment["ref"])
+            if attachment["href"]:
+                link = (f'<a download href="{esc(attachment["href"])}">{label}</a>'
+                        f' <span class="attachment-type">({esc(attachment["mime"])})</span>')
+                if attachment["mime"].startswith("image/") and attachment["mime"] != "image/svg+xml":
+                    link += f'<br><img class="attachment-preview" src="{esc(attachment["href"])}" alt="{label}">'
+            else:
+                link = f"{label} <span class=\"attachment-missing\">(unavailable)</span>"
+            items.append(f"<li>{link}</li>")
+        attachment_html = ('<div class="attachments"><span class="attachment-label">attachments</span><ul>'
+                           + "".join(items) + "</ul></div>")
     return (
         f'<details class="msg" data-depth="{depth}" id="m-{esc(m["id"])}">\n'
         f'  <summary>\n'
@@ -988,7 +1057,8 @@ def render_series(series_dir):
     name, msgs, roots = build(series_dir)
     id_map = id_prefix_map(msgs)
     root_ids = {r["id"] for r in roots}
-    covers = [r for r in roots if r["depth"] == 0 and r["subject"].startswith("[PATCH")]
+    covers = [r for r in roots if r["depth"] == 0 and is_cover_subject(r["subject"])]
+    require_fleet_covers(series_dir, msgs, covers)
     versions = sorted({c["version"] for c in covers})
     current = versions[-1] if versions else 1
     # The current version's state drives the rail, the banner and the
@@ -1065,12 +1135,14 @@ def render_series(series_dir):
                      if cur else 0)
     n_msgs_cur = len(cur["version_msgs"]) if cur else 0
 
-    # Masthead: the series' own cover subject (its [PATCH vN 0/M] prefix
-    # is the numbering, not the title).
+    # Masthead: the series' own cover subject (its leading bracket --
+    # '[PATCH vN 0/M]', or a qualified form like '[RFC PATCH v3 0/2]'
+    # -- is the numbering, not the title). covers is already filtered
+    # to is_cover_subject, so any leading bracket here is a PATCH one.
     series_title = name
     if covers:
         cover_subj = covers[0]["subject"]
-        mm = re.match(r"^\[PATCH v\d+ \d+/\d+\]\s*(.*)$", cover_subj)
+        mm = re.match(r"^\[[^\]]*\]\s*(.*)$", cover_subj)
         if mm and mm.group(1).strip():
             series_title = mm.group(1).strip()
     state = ""
@@ -1718,7 +1790,8 @@ def render_text_series(series_dir):
             lines.append("# Details")
             lines.extend("  " + ln for ln in series_res[1].split("\n"))
         sections.append("\n".join(lines))
-    covers = [r for r in roots if r["depth"] == 0 and r["subject"].startswith("[PATCH")]
+    covers = [r for r in roots if r["depth"] == 0 and is_cover_subject(r["subject"])]
+    require_fleet_covers(series_dir, msgs, covers)
     for cover in covers:
         v = cover["version"]
         version_roots = [r for r in roots if r["version"] == v]
