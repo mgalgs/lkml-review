@@ -80,6 +80,9 @@ adjacent_ownline_same() {
             if (n !~ /^[A-Za-z0-9_]+$/) return ""
             return n
         }
+        # Reset per file: fill() runs per template, so a pair split across
+        # two files is not the shape, and awk state would bridge them.
+        FNR == 1 { prevn = ""; prevpn = ""; prevblank = 0 }
         {
             n = ownname($0)
             if (n != "" && prevn == n)
@@ -203,6 +206,12 @@ far_apart="$lint_dir/far-apart.md"
 printf '%s\n' 'Before' '${FOO}' 'a real line' 'another real line' '${FOO}' 'After' > "$far_apart"
 check "same-name own-line placeholders far apart are not reported" "" \
     "$(adjacent_ownline_same "$far_apart")"
+span_a="$lint_dir/span-a.md"
+printf 'Before\n${FOO}\n' > "$span_a"
+span_b="$lint_dir/span-b.md"
+printf '${FOO}\nAfter\n' > "$span_b"
+check "a same-name pair split across two files is not reported" "" \
+    "$(adjacent_ownline_same "$span_a" "$span_b")"
 ws_padded="$lint_dir/whitespace-padded.md"
 printf 'Before\n  ${FOO}\n${FOO}  \nAfter\n' > "$ws_padded"
 contains "an own-line placeholder padded with whitespace still counts as own-line" \
