@@ -34,7 +34,9 @@
 #              throws the earlier round away. --send is refused for
 #              such a template; print-only mode warns and leaves the
 #              body file for a manual `fork-sandbox mail reply
-#              --reply-to <message-id>`.
+#              --reply-to <message-id>`. See --version below for the
+#              related refusal when such a template's subject carries
+#              no determinable version.
 # --template   kickoff template to fill; defaults to this repo's own
 #              fleet/kickoffs/series-review.md.
 # --hops       non-negative mail reply-hop budget. Omit it to retain the
@@ -58,7 +60,12 @@
 #              forms real list traffic uses -- is stamped v1 by default
 #              even without this flag -- an unmarked kickoff is the
 #              defect this flag exists to fix, so stamping is not
-#              opt-in. A bare "v<digits>" in prose, or an unversioned
+#              opt-in. That v1 default does not apply to a focused
+#              template (one containing ${FOCUS}): such a round is a
+#              reply into an existing thread that already has versions
+#              on the wire, so a subject with no determinable version
+#              and no --version is refused instead, naming --version
+#              <n> as the fix. A bare "v<digits>" in prose, or an unversioned
 #              leading PATCH bracket, is not a marker: the former is
 #              stamped over (the leading bracket added in front, prose
 #              left alone), the latter has the version and patch count
@@ -348,6 +355,19 @@ if [[ "$subject" =~ ^(\[([^]]*)\]) ]]; then
 fi
 if (( version_given )) && [[ -n "$existing_display" ]]; then
     echo "Error: --version $version was given but subject '$subject' already carries a version marker ('$existing_display'); refusing to stamp a second, possibly contradictory, version onto the field that identifies the series." >&2
+    exit 1
+fi
+# A focused round (template carries ${FOCUS}) is by definition a reply
+# into a thread that already has versions on the wire, unlike a
+# new-thread round for which the v1 default below is correct. If the
+# subject carries no determinable version and the operator did not say
+# --version, silently stamping v1 would mislabel the round, so refuse
+# instead of defaulting. Scope is focused templates only -- a
+# non-focused template keeps the v1 default untouched.
+# shellcheck disable=SC2016  # ${FOCUS} is the literal placeholder text
+# being searched for in the stripped body, not a variable to expand.
+if [[ "$body" == *'${FOCUS}'* ]] && [[ -z "$existing_display" ]] && (( ! version_given )); then
+    echo "Error: template '$template' contains \${FOCUS} and subject '$subject' carries no determinable version (no leading '[PATCH v<n> ...]' marker); a focused round replies into an existing thread that already has versions on the wire, so defaulting to v1 would mislabel it. Pass --version <n> to state the version explicitly." >&2
     exit 1
 fi
 effective_version="${existing_display#v}"

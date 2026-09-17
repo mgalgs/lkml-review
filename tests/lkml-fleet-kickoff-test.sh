@@ -657,16 +657,57 @@ rc_focus_missing=$?
 if (( rc_focus_missing != 0 )); then ok "a focused template without --focus refuses"; else no "a focused template without --focus refuses" "exit 0: $out_focus_missing"; fi
 contains "the missing-focus refusal names --focus" "$out_focus_missing" "--focus"
 
-# A focused template takes the default v1 stamp like any other. Whether
-# a focused round -- a reply, so round two or later -- should instead be
-# made to name its version is an open question with the review panel.
+# Settled by the review panel (thread f71756f3, msgs 055/058; v3 cover's
+# item 6): a focused round is a reply into an existing thread that
+# already has versions on the wire, so silently stamping v1 the way a
+# new-thread round does would mislabel it. A versionless subject and no
+# --version is refused instead, naming --version <n> as the fix -- not
+# --allow-ambiguous-version, which guards a different failure entirely.
 out_focus_noversion="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
     --from '@author' --to '@lkml-panel' --subject 'sched: tidy the thing' \
     --focus 'patch 2 only' --template "$focused_template" 2>&1)"
 rc_focus_noversion=$?
-check "a focused template without --version composes" "0" "$rc_focus_noversion"
-contains "a focused template without --version takes the default v1 stamp" \
-    "$out_focus_noversion" 'PATCH\ v1\ 0/'
+if (( rc_focus_noversion != 0 )); then ok "a focused template with a versionless subject and no --version refuses"; else no "a focused template with a versionless subject and no --version refuses" "exit 0: $out_focus_noversion"; fi
+contains "the no-determinable-version refusal names --version" "$out_focus_noversion" "--version"
+contains "the no-determinable-version refusal states the reason" "$out_focus_noversion" "no determinable version"
+case "$out_focus_noversion" in
+    *'--allow-ambiguous-version'*) no "the no-determinable-version refusal does not point at --allow-ambiguous-version" "$out_focus_noversion" ;;
+    *) ok "the no-determinable-version refusal does not point at --allow-ambiguous-version" ;;
+esac
+
+# The detection anchors on a LEADING "[PATCH", so a reply-shaped subject
+# has no determinable version even though a version token is visible in
+# it -- this must be the same no-determinable-version refusal, not the
+# multi-version re-parse guard (which only fires once a stamp has
+# actually happened and re-parses to more than one version).
+out_focus_reply="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'Re: [PATCH v3 0/2] improve the thing' \
+    --focus 'patch 2 only' --template "$focused_template" 2>&1)"
+rc_focus_reply=$?
+if (( rc_focus_reply != 0 )); then ok "a reply-shaped subject with a non-leading version token still refuses"; else no "a reply-shaped subject with a non-leading version token still refuses" "exit 0: $out_focus_reply"; fi
+contains "the reply-shaped refusal names --version" "$out_focus_reply" "--version"
+contains "the reply-shaped refusal states the no-determinable-version reason" "$out_focus_reply" "no determinable version"
+case "$out_focus_reply" in
+    *'lkml-fleet-status.sh'*) no "the reply-shaped refusal is not the multi-version re-parse guard" "$out_focus_reply" ;;
+    *) ok "the reply-shaped refusal is not the multi-version re-parse guard" ;;
+esac
+case "$out_focus_reply" in
+    *'--allow-ambiguous-version'*) no "the reply-shaped refusal does not point at --allow-ambiguous-version" "$out_focus_reply" ;;
+    *) ok "the reply-shaped refusal does not point at --allow-ambiguous-version" ;;
+esac
+
+# The acceptance direction that separates "refuse when no determinable
+# version" from the over-refusing "focused requires --version": a
+# leading, versioned bracket IS a determinable version, so this must
+# compose without --version, stamped with the version already on the
+# subject.
+out_focus_leading="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject '[PATCH v3 0/2] improve the thing' \
+    --focus 'patch 2 only' --template "$focused_template" 2>&1)"
+rc_focus_leading=$?
+check "a focused subject with a leading version marker composes without --version" "0" "$rc_focus_leading"
+contains "the leading-marker subject is passed through stamped v3" \
+    "$out_focus_leading" '\[PATCH\ v3\ 0/2\]\ improve\ the\ thing'
 
 out_focus_version="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
     --from '@author' --to '@lkml-panel' --subject 'sched: tidy the thing' \
