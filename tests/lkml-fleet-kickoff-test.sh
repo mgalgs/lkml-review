@@ -657,11 +657,10 @@ rc_focus_missing=$?
 if (( rc_focus_missing != 0 )); then ok "a focused template without --focus refuses"; else no "a focused template without --focus refuses" "exit 0: $out_focus_missing"; fi
 contains "the missing-focus refusal names --focus" "$out_focus_missing" "--focus"
 
-# Settled by the review panel (thread f71756f3, msgs 055/058; v3 cover's
-# item 6): a focused round is a reply into an existing thread that
-# already has versions on the wire, so silently stamping v1 the way a
-# new-thread round does would mislabel it. A versionless subject and no
-# --version is refused instead, naming --version <n> as the fix -- not
+# A focused round is a reply into an existing thread that already has
+# versions on the wire, so silently stamping v1 the way a new-thread
+# round does would mislabel it. A versionless subject and no --version
+# is refused instead, naming --version <n> as the fix -- not
 # --allow-ambiguous-version, which guards a different failure entirely.
 out_focus_noversion="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
     --from '@author' --to '@lkml-panel' --subject 'sched: tidy the thing' \
@@ -719,7 +718,11 @@ out_focus_reply_version="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "mas
 rc_focus_reply_version=$?
 if (( rc_focus_reply_version != 0 )); then ok "a reply-shaped subject still refuses when --version matches the embedded marker"; else no "a reply-shaped subject still refuses when --version matches the embedded marker" "exit 0: $out_focus_reply_version"; fi
 case "$out_focus_reply_version" in
-    *'Re: [PATCH v3 0/2] Re: [PATCH v3 0/2]'*) no "the double-stamped subject never appears in the output" "$out_focus_reply_version" ;;
+    # The composed command is printed via `printf '%q '`, so a literal
+    # space or bracket in the subject is backslash-escaped in the
+    # output -- this must match the escaped form, not the raw subject
+    # text, or it can never fail regardless of what the script prints.
+    *'\[PATCH\ v3\ 0/2\]\ Re:\ \[PATCH\ v3\ 0/2\]'*) no "the double-stamped subject never appears in the output" "$out_focus_reply_version" ;;
     *) ok "the double-stamped subject never appears in the output" ;;
 esac
 
@@ -743,6 +746,51 @@ rc_focus_version=$?
 check "a focused template with --version composes" "0" "$rc_focus_version"
 contains "a focused template with --version stamps the given version" \
     "$out_focus_version" "PATCH\\ v2\\ 0/2\\]\\ sched:\\ tidy\\ the\\ thing"
+
+# A leading but UNVERSIONED PATCH bracket is not a reply-shaped subject
+# -- it is the qualifier-preserving stamp case the header documents
+# ("[RFC PATCH 0/5]" keeps its qualifier). The non-leading-marker guard
+# above must not fire on this leading bracket just because its own
+# unanchored first-bracket scan would otherwise see it too.
+out_focus_leading_unversioned="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject '[PATCH 0/2] improve the thing' \
+    --focus 'patch 2 only' --version 3 --template "$focused_template" 2>&1)"
+rc_focus_leading_unversioned=$?
+check "a focused subject with a leading unversioned PATCH bracket composes with --version" "0" "$rc_focus_leading_unversioned"
+contains "the leading unversioned bracket is stamped v3 in place, not refused" \
+    "$out_focus_leading_unversioned" '\[PATCH\ v3\ 0/2\]\ improve\ the\ thing'
+
+out_focus_leading_rfc="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject '[RFC PATCH] improve the thing' \
+    --focus 'patch 2 only' --version 3 --template "$focused_template" 2>&1)"
+rc_focus_leading_rfc=$?
+check "a focused subject with a leading unversioned qualified bracket composes with --version" "0" "$rc_focus_leading_rfc"
+contains "the leading RFC bracket is stamped v3 with its qualifier kept" \
+    "$out_focus_leading_rfc" '\[RFC\ PATCH\ v3\ 0/2\]\ improve\ the\ thing'
+
+# A non-PATCH bracket ahead of the real, non-leading marker (e.g. a
+# subsystem tag before a "Re: " reply prefix) must not hide that marker
+# from the guard: the unanchored scan has to walk every bracket, not
+# just the leftmost one.
+out_focus_bracket_before_reply="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject '[net-next] Re: [PATCH v3 0/2] improve the thing' \
+    --focus 'patch 2 only' --version 3 --template "$focused_template" 2>&1)"
+rc_focus_bracket_before_reply=$?
+if (( rc_focus_bracket_before_reply != 0 )); then ok "a non-PATCH bracket ahead of a non-leading marker still refuses"; else no "a non-PATCH bracket ahead of a non-leading marker still refuses" "exit 0: $out_focus_bracket_before_reply"; fi
+case "$out_focus_bracket_before_reply" in
+    *'\[PATCH\ v3\ 0/2\]\ \[net-next\]'*) no "the bracket-then-reply subject is not double-stamped in the output" "$out_focus_bracket_before_reply" ;;
+    *) ok "the bracket-then-reply subject is not double-stamped in the output" ;;
+esac
+
+# The reply-shaped-marker corruption is not focus-specific: a plain
+# template with no ${FOCUS} placeholder hits the same v1-default/stamp
+# path and must refuse too, not just warn or silently double-stamp.
+out_plain_reply="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'Re: [PATCH v3 0/2] improve the thing' --version 3 \
+    --template "$repo_dir/fleet/kickoffs/series-review.md" 2>&1)"
+rc_plain_reply=$?
+if (( rc_plain_reply != 0 )); then ok "a reply-shaped subject on a non-focused template still refuses"; else no "a reply-shaped subject on a non-focused template still refuses" "exit 0: $out_plain_reply"; fi
+contains "the non-focused reply-shaped refusal names rewording" "$out_plain_reply" "Reword the subject"
 
 out_nofocus_plain="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
     --from '@author' --to '@lkml-panel' --subject 'subj' --summary 'does a thing' \
