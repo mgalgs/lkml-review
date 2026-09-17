@@ -1,15 +1,17 @@
-# Fold cost accumulation into the per-run Python classifier
+# Fold cost accumulation into the batched Python classifier
 
 Answers the `TODO(cost-accum)` in `tests/lkml-fleet-status-test.sh`.
 
 ## The gap
 
 `lkml-fleet-status.sh` and `lkml-status.sh` classify each run's
-`summary.json` with a per-run `python3` invocation (parsing the cost,
+`summary.json` with one batched `python3` invocation per screen (the v2
+batching: one interpreter for the whole ledger — parsing the cost,
 formatting it to `.10f`, and deciding which of the four states it falls
-into), then shell back out to a **separate** `awk` invocation to add that
-formatted value into the running total — one `awk` fork per run record,
-on top of the one `python3` fork already spent classifying it.
+into), then shell back out to a **separate** `awk` invocation to add
+each formatted value into the running total — one `awk` fork per costed
+run record in `lkml-fleet-status.sh`, two in `lkml-status.sh` (the
+per-persona and grand-total accumulators).
 
 That split is why the accumulator's floor sits at 5e-11 per addend: the
 value crosses a text boundary (`python3`'s `.10f` output, re-parsed by
@@ -18,7 +20,7 @@ formatting rounds to `0.0000000000` is a real zero by the time `awk` ever
 sees it. Folding accumulation into the same Python invocation that
 already reads and classifies each run would sum at whatever precision
 Python's own floats hold, not at a 10-decimal text round-trip, and would
-remove the per-run `awk` fork entirely.
+remove the per-run-record `awk` forks entirely.
 
 ## Why it is not done yet
 
@@ -31,8 +33,15 @@ alongside a display-precision correction.
 
 ## What it would buy
 
-- Removes one `awk` fork per run record in both screens' cost tally.
+- Removes the per-run-record `awk` forks — one in
+  `lkml-fleet-status.sh`, two in `lkml-status.sh` (the per-persona and
+  grand-total accumulators).
 - Removes the 5e-11-per-addend floor documented in both scripts' `--help`
   text, letting `tests/lkml-fleet-status-test.sh`'s tiny-aggregate fixture
   use its originally-intended 10000-run form cheaply instead of the
   100-run stand-in it uses today.
+
+The sites that go stale together when this lands, so the landing commit
+takes them in one pass: this doc, the `TODO(cost-accum)` in
+`tests/lkml-fleet-status-test.sh`, the accumulator legs in both scripts,
+and the floor sentences in both `--help` headers.
