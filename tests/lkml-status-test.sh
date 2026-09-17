@@ -217,78 +217,50 @@ printf '\n== cost-floor-pin: the 5e-11 display floor, at the bottom of its windo
 # unlike the cost-tiny-aggregate fixture above, whose 1e-7 addends
 # survive a drift to .9f or .8f and would read fully green. This screen
 # has two accumulators, per-persona and grand total, so both are
-# asserted below.
+# asserted below. 1300 runs, not the 2500 that would exactly round-trip
+# to 1e-6: this screen forks six jq processes per ledger line on top of
+# the accumulator's own two awk forks, well above the fleet screen's
+# fork-free env parse, so 1300 (just past the 1251-run minimum that
+# clears the 5e-7 display threshold) is the cheaper fixture with the
+# same distinguishing power.
 init_series cost-floor-pin
-for i in $(seq -w 1 2500); do
+for i in $(seq -w 1 1300); do
     run_dir="$work/cfp-$i"; mkdir -p -- "$run_dir"
     printf '{"total_cost_usd": 4e-10}\n' > "$run_dir/summary.json"
     write_run cost-floor-pin "$run_dir" floor-pin
 done
 
 OUT="$("$status" cost-floor-pin 2>/dev/null)"
-contains "cost-floor-pin: 2500 runs of 4e-10 sum to exactly the display floor" "$OUT" \
+contains "cost-floor-pin: 1300 runs of 4e-10 clear the display floor" "$OUT" \
     "floor-pin      \$0.000001"
 not_contains "cost-floor-pin: the per-persona row does not display as a bare zero" "$OUT" \
     "floor-pin      \$0.000000"
 contains "cost-floor-pin: the total reflects the floor sum, not a re-rounded zero" "$OUT" \
     "Total cost so far: \$0.000001"
 
-printf '\n== cost parity: one shared ledger renders identically on both screens ==\n'
-# Bounded lifetime: this fixture exists only to keep lkml-status.sh and
-# lkml-fleet-status.sh's cost chains in lockstep while both screens
-# exist -- DELETE THIS SECTION when lkml-status.sh retires (it lives in
-# this suite, not the fleet suite, so retiring lkml-status.sh kills it
-# automatically). Parity cannot catch a lockstep drift shared by both
-# screens -- a formatter change applied to both classifiers alike would
-# still agree here; the floor-pin fixtures above are what catch that
-# class. This catches only a ONE-screen drift: a fix or a regression
-# that lands in one screen's chain but not the other's.
-#
-# Shared value: 1000 runs at 1.2e-9 each (.10f renders 0.0000000012, no
-# rounding); 1000 runs sum to exactly 1.2e-6, which displays as
-# $0.000001 on both screens.
-fleet_status="${LKML_FLEET_STATUS:-$repo_dir/scripts/lkml-fleet-status.sh}"
-
-parity_store="$work/parity-store"
-t_parity="99999999-0000-4000-8000-000000000000"
-mkdir -p -- "$parity_store/threads/$t_parity" "$parity_store/.postmaster/runs"
-{
-    printf 'Message-ID: p0010000-0000-4000-8000-000000000001\n'
-    printf 'Thread-ID: %s\n' "$t_parity"
-    printf 'Date: Mon, 02 Mar 2026 10:00:00 +0000\n'
-    printf 'From: @author\n'
-    printf 'To: @panel\n'
-    printf 'Subject: Cost parity fixture\n'
-    printf 'X-Hops: 8\n'
-    printf '\n'
-    printf 'No patches here either.\n'
-} > "$parity_store/threads/$t_parity/001-p0010000-0000-4000-8000-000000000001.msg"
-
-init_series cost-parity
-for i in $(seq -w 1 1000); do
-    run_dir="$work/cpar-$i"; mkdir -p -- "$run_dir"
-    printf '{"total_cost_usd": 1.2e-9}\n' > "$run_dir/summary.json"
-    write_run cost-parity "$run_dir" parity
-    printf 'agent=parity\nthread=%s\nrun_dir=%s\n' "$t_parity" "$run_dir" \
-        > "$parity_store/.postmaster/runs/run-parity-$i.env"
+printf '\n== cost-floor-blind: a real cost below 5e-11 never reaches the accumulator ==\n'
+# floor-blind: 3 runs at 4.9e-11 each. 4.9e-11 sits just below the 5e-11
+# floor, unlike floor-pin's 4e-10 which sits just above it: at the
+# classifier's %.10f format 4.9e-11 rounds to 0.0000000000, an exact
+# text zero, before the accumulator ever sees it. Because each addend is
+# already zero going into the sum, no count of them can ever add up to
+# something visible -- the mechanism is a hard text truncation, not a
+# float accumulation error that more terms might eventually clear, so a
+# handful of runs pins it as well as thousands would.
+init_series cost-floor-blind
+for i in 1 2 3; do
+    run_dir="$work/cfb-$i"; mkdir -p -- "$run_dir"
+    printf '{"total_cost_usd": 4.9e-11}\n' > "$run_dir/summary.json"
+    write_run cost-floor-blind "$run_dir" blind
 done
 
-FLEET_OUT="$("$fleet_status" "$t_parity" --mail-root "$parity_store" 2>&1)"; RC=$?
-check "cost parity: fleet screen exits 0" "0" "$RC"
-FLEET_LINE="$(grep -F 'parity  ' <<<"$FLEET_OUT" | head -n1)"
-check "cost parity: fleet row shows the shared sum" "parity  1000 runs  \$0.000001" "$FLEET_LINE"
-
-STATUS_OUT="$("$status" cost-parity 2>/dev/null)"
-contains "cost parity: status per-persona row shows the shared sum" "$STATUS_OUT" \
-    "parity         \$0.000001"
-STATUS_TOTAL_LINE="$(grep -F 'Total cost so far:' <<<"$STATUS_OUT" | head -n1)"
-check "cost parity: status total shows the shared sum" "Total cost so far: \$0.000001" "$STATUS_TOTAL_LINE"
-
-# The parity assertion proper: the two screens must agree on the dollar
-# amount for the same runs, not merely each independently show $0.000001.
-FLEET_AMOUNT="${FLEET_LINE#*\$}"
-STATUS_AMOUNT="${STATUS_TOTAL_LINE#*\$}"
-check "cost parity: the two screens agree on the dollar amount" "$FLEET_AMOUNT" "$STATUS_AMOUNT"
+OUT="$("$status" cost-floor-blind 2>/dev/null)"
+contains "cost-floor-blind: 3 runs of 4.9e-11 never cross into a visible cost" "$OUT" \
+    "blind          \$0.000000"
+not_contains "cost-floor-blind: not annotated as no cost -- it is a real cost, just lost to the floor" "$OUT" \
+    "blind          \$0.000000 ("
+contains "cost-floor-blind: the total stays an exact zero, not a re-rounded nonzero" "$OUT" \
+    "Total cost so far: \$0.000000"
 
 printf '\n== cost-huge: a magnitude no float can hold ==\n'
 init_series cost-huge

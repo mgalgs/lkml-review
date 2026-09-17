@@ -44,4 +44,7 @@ alongside a display-precision correction.
 The sites that go stale together when this lands, so the landing commit
 takes them in one pass: this doc, the `TODO(cost-accum)` in
 `tests/lkml-fleet-status-test.sh`, the accumulator legs in both scripts,
-and the floor sentences in both `--help` headers.
+the floor sentences in both `--help` headers, and the cost-floor-pin /
+cost-floor-blind fixture comments in both `tests/lkml-status-test.sh`
+and `tests/lkml-fleet-status-test.sh` (they describe the same awk-fork
+cost class and 5e-11 floor as live facts).
