@@ -1147,10 +1147,9 @@ eval "$(sed -n '/^fs_body_tags() {/,/^}/p' "$repo_dir/scripts/lkml-fleet-status.
 # the body. A minimal fixture skips the header entirely -- the leading
 # blank line alone is what flips awk's `body` flag.
 body_tag_dir="$(mktemp -d)"; tmpdirs+=("$body_tag_dir")
-body_tag_n=0
 body_tag_file() {
-    body_tag_n=$(( body_tag_n + 1 ))
-    local f="$body_tag_dir/msg-$body_tag_n"
+    local f
+    f="$(mktemp "$body_tag_dir/msg-XXXXXX")"
     printf '\n%s\n' "$1" > "$f"
     printf '%s' "$f"
 }
@@ -1205,6 +1204,28 @@ extract_signoff_block() {
 so_series="$(extract_signoff_block "$repo_dir/fleet/kickoffs/series-review.md")"
 so_single="$(extract_signoff_block "$repo_dir/fleet/kickoffs/single-patch.md")"
 so_focused="$(extract_signoff_block "$repo_dir/fleet/kickoffs/focused-review.md")"
+
+# The byte-identical comparisons below pass on three empty strings just
+# as readily as on three matching blocks -- guard non-emptiness (so a
+# renamed or deleted "## Sign-off convention" heading fails loudly) and
+# pin the tag-form paragraph's normative sentences by name (so deleting
+# the paragraph itself, leaving the heading and bullets intact, fails
+# too).
+for pair in "series-review:$so_series" "single-patch:$so_single" "focused-review:$so_focused"; do
+    so_name="${pair%%:*}" so_val="${pair#*:}"
+    if [[ -n "$so_val" ]]; then
+        ok "$so_name's Sign-off convention block is non-empty"
+    else
+        no "$so_name's Sign-off convention block is non-empty" "no '## Sign-off convention' heading found"
+    fi
+done
+contains "the Sign-off convention block states the colon requirement on -by trailers" \
+    "$so_series" "The colon after the three"
+contains "the Sign-off convention block states the left-margin requirement for trailers" \
+    "$so_series" "left margin, with no leading whitespace"
+contains "the Sign-off convention block states the first-or-last-line rule for bare verdicts" \
+    "$so_series" "first or last non-empty, non-quoted line"
+
 if [[ "$so_series" == "$so_single" ]]; then
     ok "series-review and single-patch Sign-off convention blocks are byte-identical"
 else

@@ -56,6 +56,7 @@ your next version summary should pre-answer it.
 - Summarize the thread's opinions. You summarize the CODE; the thread
   speaks for itself.
 - Guess. A claim you cannot cite is a claim you do not make.
+
 ## Triage the wake first
 
 You were woken because a message was delivered to your seat. Before

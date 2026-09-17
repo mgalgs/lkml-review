@@ -164,15 +164,6 @@ extract_triage() {
          f { print }' "$1"
 }
 
-for f in "$personas_dir"/*.md; do
-    name="$(basename "$f" .md)"
-    if grep -qF '## Triage the wake first' "$f"; then
-        ok "$name carries the Triage the wake first heading"
-    else
-        no "$name carries the Triage the wake first heading" "no '## Triage the wake first' heading"
-    fi
-done
-
 triage_baseline=""
 triage_baseline_name=""
 triage_baseline_set=0
@@ -196,6 +187,15 @@ for f in "$personas_dir"/*.md; do
         no "$name's Triage the wake first section matches $triage_baseline_name's" "section text diverges or missing"
     fi
 done
+
+# The shared Triage the wake first section's negative list names "a
+# tag-only reply" without excluding blocking tags, so a bare NAK or
+# Changes-requested addressed to the author would otherwise read as a
+# no-reply wake. author.md's carve-out bullet is the fix, and it lives
+# outside the byte-identical-pinned section above (in its own Rules
+# list), so nothing else here would catch its removal.
+has "$personas_dir/author.md" 'Your lane is the whole series' \
+    "author.md's Rules list carries the whole-series carve-out"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))
