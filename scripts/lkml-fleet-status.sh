@@ -68,7 +68,17 @@
 #              is not a cost); and "unreadable" is a different kind of
 #              not knowing (the summary could not be read at all) --
 #              collapsing any of them into another would misreport
-#              which.
+#              which. Each cost is parsed to 10 decimal places before it
+#              is summed, and the running total carries that same
+#              precision through every addition; only the screen display
+#              rounds to 6 places, at the print site. A real, nonzero
+#              cost below 5e-11 still formats as an exact zero before it
+#              ever reaches the accumulator, and is summed as one -- no
+#              number of such runs can ever add up to a visible total.
+#              Above that floor, though, the accumulator's extra digits
+#              mean an aggregate that clears 5e-7 is shown in full even
+#              when every individual addend, alone, would round to a
+#              displayed $0.000000.
 #   unanswered see the design decision below.
 #
 # Design decision -- tags: Reviewed-by, Acked-by, Tested-by,
@@ -350,7 +360,7 @@ fs_cost_annotation() {
 print_cost_per_agent() {
     local pm="$MAIL_ROOT/.postmaster" env line key value agent thread run_dir
     local prev total_runs=0 missing_summary=0 no_cost=0 invalid=0 unreadable=0
-    local have_python=1 run_word
+    local have_python=1 run_word display_cost
     declare -A RUN_COUNT=() MISSING_COUNT=() NO_COST_COUNT=() INVALID_COUNT=() UNREADABLE_COUNT=() COST_BY_AGENT=()
     local parse_agents=() parse_paths=()
 
@@ -436,7 +446,7 @@ for path in sys.argv[1:]:
                 finite = math.isfinite(value)
             except OverflowError:
                 # An int too large to convert to float at all --
-                # math.isfinite() and format(value, "f") both raise
+                # math.isfinite() and format(value, ".10f") both raise
                 # OverflowError for it. It cannot be represented, so it
                 # is invalid rather than a real-but-ugly number.
                 finite = False
@@ -451,6 +461,18 @@ for path in sys.argv[1:]:
                 # value is still a real number, just an ugly one) -- it
                 # only tells a real number apart from the sentinels
                 # above and from a magnitude no float can hold at all.
+                # The precision is .10f, not the bare "f" (== .6f) this
+                # used to be: a single run under 5e-7 rounds to
+                # 0.000000 at 6 places and passes as a silent zero --
+                # invisible on its own row and, worse, invisible inside
+                # the accumulator below, which used to re-round to 6
+                # places after every addition, so no number of such runs
+                # could ever sum to something visible. .10f pushes that
+                # blind spot down to 5e-11; below that a cost still
+                # formats as all zeros and is summed as an exact zero.
+                # The accumulator now carries the same .10f precision so
+                # the sum it holds is real; only the screen display still
+                # rounds to 6 places, at the print site.
                 # Negative zero is not less than zero, so it reaches
                 # here, but format(-0.0, f) prints a leading minus sign
                 # that the plain-digit gate below rejects, relabeling a
@@ -458,7 +480,7 @@ for path in sys.argv[1:]:
                 # first: -0.0 equals 0.0 in Python.
                 if value == 0:
                     value = 0.0
-                result = format(value, "f")
+                result = format(value, ".10f")
             break
     except Exception:
         pass
@@ -492,7 +514,14 @@ for path in sys.argv[1:]:
                     INVALID_COUNT[$agent]=$(( ${INVALID_COUNT[$agent]:-0} + 1 ))
                 elif [[ "$res" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
                     prev="${COST_BY_AGENT[$agent]:-0}"
-                    COST_BY_AGENT[$agent]="$(awk -v a="$prev" -v b="$res" 'BEGIN { printf "%.6f", a + b }')"
+                    # Carry the parser's own .10f precision across every
+                    # addition. Re-rounding to 6 places here, the way this
+                    # used to work, would erase a sub-5e-7 addend on the
+                    # very addition that receives it -- no number of such
+                    # runs could ever sum to something visible. The
+                    # 6-decimal convention is a display concern; it is
+                    # applied once, at the print site below, not here.
+                    COST_BY_AGENT[$agent]="$(awk -v a="$prev" -v b="$res" 'BEGIN { printf "%.10f", a + b }')"
                 else
                     no_cost=$(( no_cost + 1 ))
                     NO_COST_COUNT[$agent]=$(( ${NO_COST_COUNT[$agent]:-0} + 1 ))
@@ -519,7 +548,12 @@ for path in sys.argv[1:]:
         [[ -n "$agent" ]] || continue
         run_word=runs
         (( RUN_COUNT[$agent] == 1 )) && run_word=run
-        printf '%s  %s %s  $%s%s\n' "$agent" "${RUN_COUNT[$agent]}" "$run_word" "${COST_BY_AGENT[$agent]:-0.000000}" \
+        # The accumulator carries .10f precision; round to the screen's
+        # 6-decimal convention here, at the print site, so a real sub-5e-7
+        # sum is visible without changing the format every existing
+        # fixture pins.
+        display_cost="$(awk -v c="${COST_BY_AGENT[$agent]:-0}" 'BEGIN { printf "%.6f", c }')"
+        printf '%s  %s %s  $%s%s\n' "$agent" "${RUN_COUNT[$agent]}" "$run_word" "$display_cost" \
             "$(fs_cost_annotation "${MISSING_COUNT[$agent]:-0}" "${NO_COST_COUNT[$agent]:-0}" "${INVALID_COUNT[$agent]:-0}" "${UNREADABLE_COUNT[$agent]:-0}")"
     done < <(printf '%s\n' "${!RUN_COUNT[@]}" | sort)
 }

@@ -215,8 +215,8 @@ printf '{"total_cost_usd": 1.5}\n' > "$run_parser_sum_a/summary.json"
 printf '{"cost_usd": 2.25}\n' > "$run_parser_sum_b/summary.json"
 # The expected digits pinned at the assertion below are not 10^30 --
 # they are its float64 round-trip. json.load() gives this literal as a
-# Python int, but format(value, "f") converts it to float first, the
-# same way format(2**60+1, "f") prints ...846976 where str() of the
+# Python int, but format(value, ".10f") converts it to float first, the
+# same way format(2**60+1, ".10f") prints ...846976 where str() of the
 # same int gives the exact ...846977. Do not "correct" those digits to
 # the exact value; the display path cannot produce it. The rounding is
 # on that display path, inside the parser, so it survives unchanged
@@ -225,7 +225,7 @@ printf '{"cost_usd": 2.25}\n' > "$run_parser_sum_b/summary.json"
 # would change it, and nobody has proposed that.
 printf '{"total_cost_usd": 1000000000000000000000000000000}\n' > "$run_parser_huge/summary.json"
 # A magnitude beyond a double's range (~1.8e308): math.isfinite() and
-# format(value, "f") both raise OverflowError converting it to float, so
+# format(value, ".10f") both raise OverflowError converting it to float, so
 # it must classify as invalid rather than silently falling back to
 # "no cost" (see scripts/lkml-fleet-status.sh's OverflowError handling).
 printf '{"total_cost_usd": %s}\n' "$(printf '1%.0s' $(seq 1 400))" > "$run_parser_overflow/summary.json"
@@ -233,7 +233,7 @@ printf '{"total_cost_usd": %s}\n' "$(printf '1%.0s' $(seq 1 400))" > "$run_parse
 # plain-digit gate rejects, so a known, tiny, real cost would report as
 # unknown and the agent's total would be understated -- the inverse of
 # the doctrine the rest of the cost column is built on. format(value,
-# "f") is what keeps it fixed-point; this fixture is what stops a
+# ".10f") is what keeps it fixed-point; this fixture is what stops a
 # future change from quietly going back to repr().
 run_parser_tiny="$work/run-parser-tiny"; mkdir -p -- "$run_parser_tiny"
 printf '{"total_cost_usd": 0.000012}\n' > "$run_parser_tiny/summary.json"
@@ -357,6 +357,17 @@ run_no_agent="$work/run-no-agent"; mkdir -p -- "$run_no_agent"
 printf '{"total_cost_usd": 6.0}\n' > "$run_no_agent/summary.json"
 printf 'thread=%s\nrun_dir=%s\n' "$t7" "$run_no_agent" > "$pm/runs/run-noagent.env"
 
+# thread t8: dedicated fixture for the sub-5e-7 aggregate test far below.
+# Created here, alongside t1..t7, rather than at its point of use, so the
+# --list count check right after this block counts every fixture thread
+# the store will ever hold, not just the ones created before it happened
+# to run.
+t8="88888888-0000-4000-8000-000000000000"
+mkdir -p -- "$root/threads/$t8"
+write_msg "$root" "$t8" 001 j0010000-0000-4000-8000-000000000001 "$(D 28)" \
+    '@author' '@panel' '' 'Sub-5e-7 aggregate fixture' 8 '' \
+    'No patches here either.'
+
 # Stub fork-sandbox: only the one call the script is allowed to make.
 stub_bin="$work/stub"; mkdir -p -- "$stub_bin"
 cat > "$stub_bin/fork-sandbox" <<'STUB'
@@ -408,7 +419,7 @@ contains "missing mail root names the path it wanted" "$OUT" "$work/no-such-root
 printf '\n== --list: one line per thread ==\n'
 OUT="$(PATH="$STUB_PATH" "$status" --list --mail-root "$root" 2>&1)"; RC=$?
 check "--list exits 0" "0" "$RC"
-check "--list prints one line per thread" "6" "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')"
+check "--list prints one line per thread" "7" "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')"
 contains "--list shows t1's short id" "$OUT" "1111111"
 contains "--list shows t2's root Subject" "$OUT" "Unrelated thread"
 contains "--list shows t1's root Subject" "$OUT" "[PATCH v1 0/2] Improve the thing"
@@ -671,6 +682,44 @@ contains "missing agent key is still counted in the run total" "$OUT" "runs: 1"
 contains "missing agent key falls back to the sentinel, on one whole row" "$OUT" \
     "unknown agent  1 run  \$6.000000"
 not_contains "the sentinel is never split into two bogus rows" "$OUT" $'unknown  1 run'
+
+printf '\n== cost per agent: a sub-5e-7 aggregate is not silently zeroed ==\n'
+# t8 itself is created earlier, alongside t1..t7, so the --list count
+# check counts it too -- see the comment there.
+
+# tiny-aggregate: 100 runs at 1e-7 each, true sum 1e-5. Each addend alone
+# rounds to 0.000000 at the screen's 6-decimal convention, so only the
+# aggregate crossing 1e-6 tells a sum carried at full precision apart
+# from one that gets re-rounded away after every addition. 100 runs, not
+# the 10000 that would exactly match a per-run exposure bound: the
+# accumulator forks one awk process per run record, so 10000 runs costs
+# tens of seconds of suite time for no extra distinguishing power once
+# the true sum clears 1e-6.
+#
+# TODO(cost-accum): moving summation into the single Python invocation
+# that already classifies each run would make the 10000-run form cheap
+# again. See docs/cost-accum-follow-up.md.
+for i in $(seq -w 1 100); do
+    run_dir="$work/run-tiny-agg-$i"; mkdir -p -- "$run_dir"
+    printf '{"total_cost_usd": 1e-7}\n' > "$run_dir/summary.json"
+    printf 'agent=tiny-aggregate\nthread=%s\nrun_dir=%s\n' "$t8" "$run_dir" > "$pm/runs/run-tiny-agg-$i.env"
+done
+
+# A single run at 1e-7 stays under the screen's 6-decimal display cap --
+# accepted, documented behavior, not a bug: telling it apart from a real
+# zero would need a 7th displayed digit nobody has asked the screen for.
+run_tiny_lone="$work/run-tiny-lone"; mkdir -p -- "$run_tiny_lone"
+printf '{"total_cost_usd": 1e-7}\n' > "$run_tiny_lone/summary.json"
+printf 'agent=tiny-lone\nthread=%s\nrun_dir=%s\n' "$t8" "$run_tiny_lone" > "$pm/runs/run-tiny-lone.env"
+
+OUT="$(PATH="$STUB_PATH" "$status" "$t8" --mail-root "$root" 2>&1)"; RC=$?
+check "sub-5e-7 aggregate fixture screen exits 0" "0" "$RC"
+LINE="$(grep -F 'tiny-aggregate ' <<<"$OUT" | head -n1)"
+check "100 runs of 1e-7 sum to a visible cost, not a silent zero" "tiny-aggregate  100 runs  \$0.000010" "$LINE"
+not_contains "the aggregate is not annotated as no cost" "$LINE" "no cost"
+not_contains "the aggregate does not display as a bare zero" "$OUT" "tiny-aggregate  100 runs  \$0.000000"
+LINE="$(grep -F 'tiny-lone ' <<<"$OUT" | head -n1)"
+check "a single sub-5e-7 run stays under the display cap, unannotated" "tiny-lone  1 run  \$0.000000" "$LINE"
 
 printf '\n== prefix resolution ==\n'
 OUT="$(PATH="$STUB_PATH" "$status" "${t1:0:12}" --mail-root "$root" 2>&1)"; RC=$?
