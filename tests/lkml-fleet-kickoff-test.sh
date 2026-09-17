@@ -676,17 +676,28 @@ case "$out_focus_noversion" in
 esac
 
 # The detection anchors on a LEADING "[PATCH", so a reply-shaped subject
-# has no determinable version even though a version token is visible in
-# it -- this must be the same no-determinable-version refusal, not the
-# multi-version re-parse guard (which only fires once a stamp has
-# actually happened and re-parses to more than one version).
+# carries a version token that is not leading -- that is not the same
+# as "no version anywhere in the subject": the marker is right there,
+# just after a "Re: " prefix. Stamping over it (whether the v1 default
+# or an operator-given --version) would prepend a second bracket in
+# front of the one already there instead of replacing it, so this must
+# refuse -- naming a reword, not --version, as the fix -- regardless of
+# whether --version was given. It is not the multi-version re-parse
+# guard either: per this script's own header, that guard fires on an
+# already-marked subject too, but only once it re-parses to more than
+# one *distinct* version, and a double-stamped subject whose given
+# --version happens to equal the embedded marker's version re-parses as
+# exactly one -- so that guard cannot be relied on to catch this case.
 out_focus_reply="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
     --from '@author' --to '@lkml-panel' --subject 'Re: [PATCH v3 0/2] improve the thing' \
     --focus 'patch 2 only' --template "$focused_template" 2>&1)"
 rc_focus_reply=$?
 if (( rc_focus_reply != 0 )); then ok "a reply-shaped subject with a non-leading version token still refuses"; else no "a reply-shaped subject with a non-leading version token still refuses" "exit 0: $out_focus_reply"; fi
-contains "the reply-shaped refusal names --version" "$out_focus_reply" "--version"
-contains "the reply-shaped refusal states the no-determinable-version reason" "$out_focus_reply" "no determinable version"
+contains "the reply-shaped refusal names rewording" "$out_focus_reply" "Reword the subject"
+case "$out_focus_reply" in
+    *'Pass --version'*) no "the reply-shaped refusal does not tell the operator to pass --version" "$out_focus_reply" ;;
+    *) ok "the reply-shaped refusal does not tell the operator to pass --version" ;;
+esac
 case "$out_focus_reply" in
     *'lkml-fleet-status.sh'*) no "the reply-shaped refusal is not the multi-version re-parse guard" "$out_focus_reply" ;;
     *) ok "the reply-shaped refusal is not the multi-version re-parse guard" ;;
@@ -694,6 +705,22 @@ esac
 case "$out_focus_reply" in
     *'--allow-ambiguous-version'*) no "the reply-shaped refusal does not point at --allow-ambiguous-version" "$out_focus_reply" ;;
     *) ok "the reply-shaped refusal does not point at --allow-ambiguous-version" ;;
+esac
+
+# The above refusal must fire even when --version IS given and equals
+# the embedded marker's version -- otherwise an operator who followed
+# the (wrong) "Pass --version <n>" advice would compose a silently
+# double-stamped subject ('[PATCH v3 0/2] Re: [PATCH v3 0/2] improve the
+# thing') whose two identical version tokens dedup to one in the
+# re-parse guard, so nothing downstream would catch it either.
+out_focus_reply_version="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'Re: [PATCH v3 0/2] improve the thing' \
+    --focus 'patch 2 only' --version 3 --template "$focused_template" 2>&1)"
+rc_focus_reply_version=$?
+if (( rc_focus_reply_version != 0 )); then ok "a reply-shaped subject still refuses when --version matches the embedded marker"; else no "a reply-shaped subject still refuses when --version matches the embedded marker" "exit 0: $out_focus_reply_version"; fi
+case "$out_focus_reply_version" in
+    *'Re: [PATCH v3 0/2] Re: [PATCH v3 0/2]'*) no "the double-stamped subject never appears in the output" "$out_focus_reply_version" ;;
+    *) ok "the double-stamped subject never appears in the output" ;;
 esac
 
 # The acceptance direction that separates "refuse when no determinable

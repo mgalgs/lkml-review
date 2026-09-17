@@ -364,11 +364,32 @@ fi
 # --version, silently stamping v1 would mislabel the round, so refuse
 # instead of defaulting. Scope is focused templates only -- a
 # non-focused template keeps the v1 default untouched.
+#
+# "No determinable version" is not the same as "no version anywhere in
+# the subject": a reply-shaped subject like "Re: [PATCH v3 0/2] ..."
+# carries one, just not leading (the leading-bracket regex above does
+# not match past "Re: "). Stamping onto that subject -- whether the v1
+# default or an operator-given --version -- would prepend a second,
+# whole bracket in front of the one already there instead of replacing
+# it, and if the given --version happens to equal the embedded marker's
+# version, the multi-version re-parse guard further down dedups the two
+# identical tokens down to one and lets the double-stamped subject
+# through with no warning at all. So this case is refused
+# unconditionally, not only when --version is missing, and the fix
+# named is to reword the subject (drop the stale marker/reply prefix),
+# not to pass --version -- which cannot fix a bracket that is already
+# there.
 # shellcheck disable=SC2016  # ${FOCUS} is the literal placeholder text
 # being searched for in the stripped body, not a variable to expand.
-if [[ "$body" == *'${FOCUS}'* ]] && [[ -z "$existing_display" ]] && (( ! version_given )); then
-    echo "Error: template '$template' contains \${FOCUS} and subject '$subject' carries no determinable version (no leading '[PATCH v<n> ...]' marker); a focused round replies into an existing thread that already has versions on the wire, so defaulting to v1 would mislabel it. Pass --version <n> to state the version explicitly." >&2
-    exit 1
+if [[ "$body" == *'${FOCUS}'* ]] && [[ -z "$existing_display" ]]; then
+    if [[ "$subject" =~ \[([^]]*)\] ]] && [[ "${BASH_REMATCH[1]}" =~ (^|[^[:alnum:]])PATCH($|[^[:alnum:]]) ]]; then
+        echo "Error: template '$template' contains \${FOCUS} and subject '$subject' carries a version marker that is not leading (it follows a reply prefix such as 'Re: '); stamping would prepend a second bracket in front of the existing one instead of replacing it, corrupting the subject. Reword the subject to drop the stale marker/reply prefix -- passing --version cannot fix this, since the bracket it would stamp is already there." >&2
+        exit 1
+    fi
+    if (( ! version_given )); then
+        echo "Error: template '$template' contains \${FOCUS} and subject '$subject' carries no determinable version (no leading '[PATCH v<n> ...]' marker); a focused round replies into an existing thread that already has versions on the wire, so defaulting to v1 would mislabel it. Pass --version <n> to state the version explicitly." >&2
+        exit 1
+    fi
 fi
 effective_version="${existing_display#v}"
 effective_version="${effective_version:-${version:-1}}"
