@@ -206,6 +206,33 @@ not_contains "cost-tiny-aggregate: the single sub-5e-7 run is not annotated as n
 contains "cost-tiny-aggregate: the total reflects the full-precision sum, not a re-rounded one" "$OUT" \
     "Total cost so far: \$0.000010"
 
+printf '\n== cost-floor-pin: the 5e-11 display floor, at the bottom of its window ==\n'
+# Mirrors tests/lkml-fleet-status-test.sh's floor-pin fixture: this
+# script's classifier and accumulator must match that one's exactly
+# (see the "One interpreter for the whole ledger" comment in
+# lkml-status.sh), so the same floor blind spot pinned there must be
+# pinned here too. 4e-10 sits in [5e-11, 5e-10): its only nonzero digit
+# at .10f is the 10th decimal place, so ANY drift to fewer displayed
+# digits in the classifier/accumulator chain zeroes every addend --
+# unlike the cost-tiny-aggregate fixture above, whose 1e-7 addends
+# survive a drift to .9f or .8f and would read fully green. This screen
+# has two accumulators, per-persona and grand total, so both are
+# asserted below.
+init_series cost-floor-pin
+for i in $(seq -w 1 2500); do
+    run_dir="$work/cfp-$i"; mkdir -p -- "$run_dir"
+    printf '{"total_cost_usd": 4e-10}\n' > "$run_dir/summary.json"
+    write_run cost-floor-pin "$run_dir" floor-pin
+done
+
+OUT="$("$status" cost-floor-pin 2>/dev/null)"
+contains "cost-floor-pin: 2500 runs of 4e-10 sum to exactly the display floor" "$OUT" \
+    "floor-pin      \$0.000001"
+not_contains "cost-floor-pin: the per-persona row does not display as a bare zero" "$OUT" \
+    "floor-pin      \$0.000000"
+contains "cost-floor-pin: the total reflects the floor sum, not a re-rounded zero" "$OUT" \
+    "Total cost so far: \$0.000001"
+
 printf '\n== cost-huge: a magnitude no float can hold ==\n'
 init_series cost-huge
 mkdir -p "$work/ch-huge"

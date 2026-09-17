@@ -721,6 +721,35 @@ not_contains "the aggregate does not display as a bare zero" "$OUT" "tiny-aggreg
 LINE="$(grep -F 'tiny-lone ' <<<"$OUT" | head -n1)"
 check "a single sub-5e-7 run stays under the display cap, unannotated" "tiny-lone  1 run  \$0.000000" "$LINE"
 
+printf '\n== cost per agent: the 5e-11 display floor, at the bottom of its window ==\n'
+# floor-pin: 2500 runs at 4e-10 each, reusing t8 above. 4e-10 sits in
+# [5e-11, 5e-10): at the classifier's %.10f format its only nonzero
+# digit is the 10th decimal place (0.0000000004), so ANY drift to fewer
+# displayed digits anywhere in the classifier/accumulator chain zeroes
+# every single addend before summation, collapsing the true sum from
+# $0.000001 to $0.000000. That is the --help floor sentence itself (a
+# real, nonzero cost below 5e-11 formats as an exact zero) -- distinct
+# from the sub-5e-7 aggregate above, which pins the DISPLAY threshold
+# and cannot catch this: its 1e-7 addends still round nonzero at .9f or
+# .8f, so a precision drift there reads fully green. 2500 runs of 4e-10
+# sum to exactly 1e-6 (well past the 1251-run minimum that clears the
+# 5e-7 display threshold), which displays as $0.000001. The ~2500 awk
+# forks are the few-seconds cost class recorded in
+# docs/cost-accum-follow-up.md.
+for i in $(seq -w 1 2500); do
+    run_dir="$work/run-floor-pin-$i"; mkdir -p -- "$run_dir"
+    printf '{"total_cost_usd": 4e-10}\n' > "$run_dir/summary.json"
+    printf 'agent=floor-pin\nthread=%s\nrun_dir=%s\n' "$t8" "$run_dir" > "$pm/runs/run-floor-pin-$i.env"
+done
+
+OUT="$(PATH="$STUB_PATH" "$status" "$t8" --mail-root "$root" 2>&1)"; RC=$?
+check "floor-pin fixture screen exits 0" "0" "$RC"
+LINE="$(grep -F 'floor-pin ' <<<"$OUT" | head -n1)"
+check "2500 runs of 4e-10 sum to exactly the display floor, not a silent zero" \
+    "floor-pin  2500 runs  \$0.000001" "$LINE"
+not_contains "the floor-pin aggregate does not display as a bare zero" "$OUT" "floor-pin  2500 runs  \$0.000000"
+not_contains "the floor-pin aggregate is not annotated as no cost" "$LINE" "no cost"
+
 printf '\n== prefix resolution ==\n'
 OUT="$(PATH="$STUB_PATH" "$status" "${t1:0:12}" --mail-root "$root" 2>&1)"; RC=$?
 check "unambiguous prefix resolves" "0" "$RC"
