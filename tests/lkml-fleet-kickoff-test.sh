@@ -60,6 +60,38 @@ blank_run_before() {
         }
     ' "$file"
 }
+# Lints kickoff templates for the shape fill()'s two fixed-point
+# loops exist to absorb: two own-line occurrences of the SAME
+# placeholder name separated by zero or one blank line. Prints one
+# "file:line: NAME" line per offending pair, the line being the second
+# occurrence; empty output means clean. Leading/trailing whitespace
+# around an own-line placeholder is ignored, mirroring how a template
+# author reads it; a separating line must be a genuinely empty one,
+# matching the "\n\n" in fill()'s pattern and blank_run_before above.
+adjacent_ownline_same() {
+    awk '
+        function ownname(line,    n) {
+            n = line
+            gsub(/^[ \t]+/, "", n)
+            gsub(/[ \t]+$/, "", n)
+            if (length(n) < 4) return ""
+            if (substr(n, 1, 2) != "${" || substr(n, length(n), 1) != "}") return ""
+            n = substr(n, 3, length(n) - 3)
+            if (n !~ /^[A-Za-z0-9_]+$/) return ""
+            return n
+        }
+        {
+            n = ownname($0)
+            if (n != "" && prevn == n)
+                print FILENAME ":" FNR ": " n
+            if (n != "" && prevblank && prevpn == n)
+                print FILENAME ":" FNR ": " n
+            prevpn = prevn
+            prevn = n
+            prevblank = ($0 == "")
+        }
+    ' "$@"
+}
 
 printf '\n== fill(): literal ${PLACEHOLDER} substitution, in isolation ==\n'
 # Pull lkml-fleet-kickoff.sh's own fill() definition out of the script
@@ -131,6 +163,50 @@ sample_repeat_adjacent_noblank=$'prev\n${A}\n${A}\nnext'
 fill sample_repeat_adjacent_noblank A ""
 check "two adjacent own-line empty placeholders with the SAME name, no blank line between them, both fully removed" \
     $'prev\nnext' "$sample_repeat_adjacent_noblank"
+
+printf '\n== kickoff templates avoid the adjacent same-name own-line placeholder shape ==\n'
+# fill() handles the shape the comment above its fixed-point loops
+# describes, but a template growing it would trade an explicit, linted
+# choice for relying on loop behaviour -- so the shape is refused at
+# the template layer rather than the filling layer.
+shopt -s nullglob
+shipped_templates=("$repo_dir"/fleet/kickoffs/*.md)
+shopt -u nullglob
+if (( ${#shipped_templates[@]} > 0 )); then
+    ok "the shipped kickoff templates are present to lint"
+    lint_out="$(adjacent_ownline_same "${shipped_templates[@]}")"
+    check "the shipped kickoff templates carry no adjacent same-name own-line placeholder" "" "$lint_out"
+else
+    no "the shipped kickoff templates are present to lint" "no fleet/kickoffs/*.md under $repo_dir"
+fi
+
+lint_dir="$(mktemp -d)"; tmpdirs+=("$lint_dir")
+adj_fixture="$lint_dir/adjacent-noblank.md"
+printf '%s\n' 'Before' '${FOO}' '${FOO}' 'After' > "$adj_fixture"
+contains "adjacent same-name own-line placeholders with no blank line are reported" \
+    "$(adjacent_ownline_same "$adj_fixture")" "adjacent-noblank.md:3: FOO"
+blank_fixture="$lint_dir/adjacent-one-blank.md"
+printf '%s\n' 'Before' '${FOO}' '' '${FOO}' 'After' > "$blank_fixture"
+contains "same-name own-line placeholders a blank line apart are reported" \
+    "$(adjacent_ownline_same "$blank_fixture")" "adjacent-one-blank.md:4: FOO"
+diff_noblank="$lint_dir/different-noblank.md"
+printf '%s\n' 'Before' '${HANDOFF}' '${SUMMARY}' 'After' > "$diff_noblank"
+diff_blank="$lint_dir/different-one-blank.md"
+printf '%s\n' 'Before' '${HANDOFF}' '' '${SUMMARY}' 'After' > "$diff_blank"
+check "adjacent own-line placeholders with different names are not reported" "" \
+    "$(adjacent_ownline_same "$diff_noblank" "$diff_blank")"
+not_ownline="$lint_dir/not-own-line.md"
+printf '%s\n' 'Before' 'text ${FOO}' '${FOO} text' 'After' > "$not_ownline"
+check "same-name placeholders that share their line with text are not reported" "" \
+    "$(adjacent_ownline_same "$not_ownline")"
+far_apart="$lint_dir/far-apart.md"
+printf '%s\n' 'Before' '${FOO}' 'a real line' 'another real line' '${FOO}' 'After' > "$far_apart"
+check "same-name own-line placeholders far apart are not reported" "" \
+    "$(adjacent_ownline_same "$far_apart")"
+ws_padded="$lint_dir/whitespace-padded.md"
+printf 'Before\n  ${FOO}\n${FOO}  \nAfter\n' > "$ws_padded"
+contains "an own-line placeholder padded with whitespace still counts as own-line" \
+    "$(adjacent_ownline_same "$ws_padded")" "whitespace-padded.md:3: FOO"
 
 work="$(mktemp -d)"; tmpdirs+=("$work")
 project_dir="$work/project"; mkdir -p -- "$project_dir"
