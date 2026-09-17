@@ -65,7 +65,7 @@ import os
 import re
 import sys
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 TAG_ORDER = ["Reviewed-by", "Acked-by", "Tested-by", "Changes-requested", "Question", "NAK"]
@@ -1677,7 +1677,12 @@ def main(argv=None):
         name, sec, _id_map, footer = render_series(d)
         series.append((name, sec))
         footers.append(footer)
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    # SOURCE_DATE_EPOCH pins the stamp (UTC) so renders are reproducible.
+    sde = os.environ.get("SOURCE_DATE_EPOCH")
+    if sde:
+        now = datetime.fromtimestamp(int(sde), timezone.utc).strftime("%Y-%m-%d %H:%M")
+    else:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
     if len(series) == 1:
         # The single series' own masthead IS the page masthead; a second
         # generic header would only duplicate it.

@@ -37,6 +37,10 @@ check() {
     if [[ "$expected" == "$actual" ]]; then ok "$label"; else no "$label" "expected '$expected', got '$actual'"; fi
 }
 
+# The HTML footer stamps the wall clock at minute resolution; pinning
+# it keeps the byte-identical checks from losing to a ticked minute.
+export SOURCE_DATE_EPOCH=0
+
 work="$(mktemp -d)"
 tmpdirs+=("$work")
 export LKML_MAILBOX_ROOT="$work/mailbox"
@@ -1648,6 +1652,9 @@ contains "page masthead h1 is the page title, escaped" "$m2" '<h1>Two Series</h1
 contains "the TOC links down to each series" "$m2" '<a href="#ser-card">ser-card</a>'
 contains "the TOC carries the second series too" "$m2" '<a href="#ser-card-b">ser-card-b</a>'
 contains "the page masthead carries a rendered stamp" "$m2" '<span class="eyebrow">rendered</span>'
+contains "the masthead stamp is the pinned, well-formed minute" "$m2" \
+    '<div class="fact"><span class="eyebrow">rendered</span><b>1970-01-01 00:00</b></div>'
+contains "the footer stamp is the pinned minute" "$m2" ' · rendered 1970-01-01 00:00</footer>'
 if [[ "$(grep -o '<div class="series"' "$multi2" | wc -l)" -eq 2 ]]; then ok "one series wrapper per dir"; else no "one series wrapper per dir"; fi
 contains "the footer carries one line per series (current-version reply counts)" "$m2" 'ser-card · v2 · 0 replies  ·  ser-card-b · v1 · 0 replies'
 
