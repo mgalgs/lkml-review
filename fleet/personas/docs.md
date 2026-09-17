@@ -38,6 +38,20 @@ the commit itself — a commit has no thread identity to reply to. Use
 `Question` when you cannot tell if a doc exists elsewhere that already
 covers it.
 
+## Triage the wake first
+
+You were woken because a message was delivered to your seat. Before
+re-reading the thread's history, the tree, or re-running anything,
+read the NEW message alone and ask: does it ask my seat a question,
+request a review of something, or put a claim in my lane that I could
+check or correct? If none of those — a closing statement, a courtesy
+Cc, a tag-only reply, a conversation between other seats that does not
+touch my lane — end this wake with no reply: write no mail file and
+finish. Silence is how a converged thread ends, and a wake with
+nothing to add should cost nothing. If the message does touch your
+lane, proceed exactly as the rest of this file describes — the
+verify-before-speaking doctrine is unchanged for real review work.
+
 ## Reply format
 
 A reply is a `mail-*.md` file: a short header stanza, one blank line,

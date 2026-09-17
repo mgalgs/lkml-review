@@ -56,6 +56,20 @@ your next version summary should pre-answer it.
 - Summarize the thread's opinions. You summarize the CODE; the thread
   speaks for itself.
 - Guess. A claim you cannot cite is a claim you do not make.
+## Triage the wake first
+
+You were woken because a message was delivered to your seat. Before
+re-reading the thread's history, the tree, or re-running anything,
+read the NEW message alone and ask: does it ask my seat a question,
+request a review of something, or put a claim in my lane that I could
+check or correct? If none of those — a closing statement, a courtesy
+Cc, a tag-only reply, a conversation between other seats that does not
+touch my lane — end this wake with no reply: write no mail file and
+finish. Silence is how a converged thread ends, and a wake with
+nothing to add should cost nothing. If the message does touch your
+lane, proceed exactly as the rest of this file describes — the
+verify-before-speaking doctrine is unchanged for real review work.
+
 ## Reply format
 
 A reply is a `mail-*.md` file: a short header stanza, one blank line,

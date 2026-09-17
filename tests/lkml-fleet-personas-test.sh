@@ -151,5 +151,51 @@ if [[ -n "$baseline" ]]; then
     fi
 fi
 
+# Every reply delivered to a seat spawns a full session that re-reads
+# and re-verifies before concluding "nothing to add" -- a terminal
+# closing statement triggers a whole round of such wakes whose only
+# possible outcome is silence. The triage section cuts that cost, so
+# every persona must carry it, worded identically (the same reasoning
+# as the Reply format pin above: a hard contract, compared against
+# itself rather than trusted from one file).
+extract_triage() {
+    awk '/^## Triage the wake first$/{ f = 1; print; next }
+         f && /^## / { exit }
+         f { print }' "$1"
+}
+
+for f in "$personas_dir"/*.md; do
+    name="$(basename "$f" .md)"
+    if grep -qF '## Triage the wake first' "$f"; then
+        ok "$name carries the Triage the wake first heading"
+    else
+        no "$name carries the Triage the wake first heading" "no '## Triage the wake first' heading"
+    fi
+done
+
+triage_baseline=""
+triage_baseline_name=""
+triage_baseline_set=0
+for f in "$personas_dir"/*.md; do
+    name="$(basename "$f" .md)"
+    section="$(extract_triage "$f")"
+    if (( ! triage_baseline_set )); then
+        triage_baseline="$section"
+        triage_baseline_name="$name"
+        triage_baseline_set=1
+        if [[ -n "$section" ]]; then
+            ok "$name's Triage the wake first section is the comparison baseline"
+        else
+            no "$name's Triage the wake first section is the comparison baseline" "no '## Triage the wake first' heading"
+        fi
+        continue
+    fi
+    if [[ -n "$section" && "$section" == "$triage_baseline" ]]; then
+        ok "$name's Triage the wake first section matches $triage_baseline_name's"
+    else
+        no "$name's Triage the wake first section matches $triage_baseline_name's" "section text diverges or missing"
+    fi
+done
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))
