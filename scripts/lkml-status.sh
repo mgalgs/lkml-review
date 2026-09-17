@@ -18,6 +18,17 @@
 # large), or "unreadable" (the file, or its ledger line, could not be
 # read at all). None of the three unusable states is ever summed as if
 # it were a real zero.
+#
+# Each cost is parsed to 10 decimal places before it is summed, and the
+# running total carries that same precision through every addition;
+# only the screen display rounds to 6 places, at the print site. A
+# real, nonzero cost below 5e-11 still formats as an exact zero before
+# it ever reaches the accumulator, and is summed as one -- no number of
+# such runs can ever add up to a visible total. Above that floor,
+# though, the accumulator's extra digits mean an aggregate that clears
+# 5e-7 is shown in full even when every individual addend, alone, would
+# round to a displayed $0.000000. See scripts/lkml-fleet-status.sh's
+# --help for the identical wording; the two must not drift.
 
 set -uo pipefail
 
@@ -177,9 +188,13 @@ for path in sys.argv[1:]:
             if not finite or value < 0:
                 result = "INVALID"
             else:
+                # .10f, not the bare "f" (== .6f): see the identical
+                # parser in lkml-fleet-status.sh for why -- this
+                # classifier must match it exactly, per the comment
+                # above.
                 if value == 0:
                     value = 0.0
-                result = format(value, "f")
+                result = format(value, ".10f")
             break
     except Exception:
         pass
@@ -208,8 +223,14 @@ for path in sys.argv[1:]:
                 INVALID_COUNT[$persona]=$(( ${INVALID_COUNT[$persona]:-0} + 1 ))
             elif [[ "$res" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
                 prev="${COST_BY_PERSONA[$persona]:-0}"
-                COST_BY_PERSONA[$persona]="$(awk -v a="$prev" -v b="$res" 'BEGIN { printf "%.6f", a + b }')"
-                total_cost="$(awk -v a="$total_cost" -v b="$res" 'BEGIN { printf "%.6f", a + b }')"
+                # .10f here too, carrying the parser's precision across
+                # every addition -- re-rounding to 6 places per addition
+                # would erase a sub-5e-7 addend on arrival, the same bug
+                # lkml-fleet-status.sh was fixed for. The 6-decimal
+                # convention is applied once, at the print site below,
+                # not here.
+                COST_BY_PERSONA[$persona]="$(awk -v a="$prev" -v b="$res" 'BEGIN { printf "%.10f", a + b }')"
+                total_cost="$(awk -v a="$total_cost" -v b="$res" 'BEGIN { printf "%.10f", a + b }')"
             else
                 no_cost=$(( no_cost + 1 ))
                 NO_COST_COUNT[$persona]=$(( ${NO_COST_COUNT[$persona]:-0} + 1 ))
@@ -234,12 +255,16 @@ if (( unreadable - unreadable_ledger > 0 )); then
     fi
 fi
 printf 'Runs launched: %s%s\n' "$total_runs" "$(cost_annotation "$missing_summary" "$no_cost" "$invalid" "$unreadable")"
-printf 'Total cost so far: $%s\n' "$total_cost"
+# The accumulator carries .10f precision; round to the screen's 6-decimal
+# convention here, at the print site, so a real sub-5e-7 sum is visible
+# without changing the format every existing fixture pins.
+printf 'Total cost so far: $%s\n' "$(awk -v c="$total_cost" 'BEGIN { printf "%.6f", c }')"
 # A `for persona in $(...)` here would word-split "unknown persona" (the
 # sentinel for a malformed ledger line, itself containing a space) into
 # two bogus rows -- read whole lines instead.
 while IFS= read -r persona; do
     [[ -n "$persona" ]] || continue
-    printf '  %-14s $%s%s\n' "$persona" "${COST_BY_PERSONA[$persona]:-0.000000}" \
+    display_cost="$(awk -v c="${COST_BY_PERSONA[$persona]:-0}" 'BEGIN { printf "%.6f", c }')"
+    printf '  %-14s $%s%s\n' "$persona" "$display_cost" \
         "$(cost_annotation "${MISSING_COUNT[$persona]:-0}" "${NO_COST_COUNT[$persona]:-0}" "${INVALID_COUNT[$persona]:-0}" "${UNREADABLE_COUNT[$persona]:-0}")"
 done < <(printf '%s\n' "${!RUN_COUNT[@]}" | sort)

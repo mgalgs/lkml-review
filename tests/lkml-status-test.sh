@@ -177,6 +177,35 @@ contains "cost-sum: negative zero sums as a real zero" "$OUT" "negzero        \$
 not_contains "cost-sum: negative zero is not reported as no cost" "$OUT" "negzero        \$0.000000 ("
 contains "cost-sum: aggregate is the sum of all four" "$OUT" "Total cost so far: \$3.750012"
 
+printf '\n== cost-tiny-aggregate: a sub-5e-7 aggregate is not silently zeroed ==\n'
+# Mirrors tests/lkml-fleet-status-test.sh's identical fixture: this
+# script's classifier and accumulator must match that one's exactly (see
+# the "One interpreter for the whole ledger" comment in lkml-status.sh),
+# so the same sub-5e-7 blind spot the fleet screen was fixed for must be
+# fixed here too, or the two screens would print different costs for the
+# same runs.
+init_series cost-tiny-aggregate
+for i in $(seq -w 1 100); do
+    run_dir="$work/cta-agg-$i"; mkdir -p -- "$run_dir"
+    printf '{"total_cost_usd": 1e-7}\n' > "$run_dir/summary.json"
+    write_run cost-tiny-aggregate "$run_dir" tiny-aggregate
+done
+mkdir -p -- "$work/cta-lone"
+printf '{"total_cost_usd": 1e-7}\n' > "$work/cta-lone/summary.json"
+write_run cost-tiny-aggregate "$work/cta-lone" tiny-lone
+
+OUT="$("$status" cost-tiny-aggregate 2>/dev/null)"
+contains "cost-tiny-aggregate: 100 runs of 1e-7 sum to a visible cost, not a silent zero" "$OUT" \
+    "tiny-aggregate \$0.000010"
+not_contains "cost-tiny-aggregate: the aggregate does not display as a bare zero" "$OUT" \
+    "tiny-aggregate \$0.000000"
+contains "cost-tiny-aggregate: a single sub-5e-7 run stays under the display cap, unannotated" "$OUT" \
+    "tiny-lone      \$0.000000"
+not_contains "cost-tiny-aggregate: the single sub-5e-7 run is not annotated as no cost" "$OUT" \
+    "tiny-lone      \$0.000000 ("
+contains "cost-tiny-aggregate: the total reflects the full-precision sum, not a re-rounded one" "$OUT" \
+    "Total cost so far: \$0.000010"
+
 printf '\n== cost-huge: a magnitude no float can hold ==\n'
 init_series cost-huge
 mkdir -p "$work/ch-huge"
@@ -190,7 +219,7 @@ contains "cost-huge: runs launched is 1" "$OUT" "Runs launched: 1 (1 invalid)"
 # in the python3 classifier and is invalid, not summed into +inf.
 contains "cost-huge: an unrepresentable magnitude is invalid" "$OUT" "huge           \$0.000000 (1 invalid)"
 not_contains "cost-huge: the aggregate is never +inf" "$OUT" "+inf"
-contains "cost-huge: the aggregate stays a real zero" "$OUT" "Total cost so far: \$0"
+contains "cost-huge: the aggregate stays a real zero" "$OUT" "Total cost so far: \$0.000000"
 
 printf '\n== cost-malformed: a ledger line that is not valid JSON at all ==\n'
 init_series cost-malformed
