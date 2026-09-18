@@ -289,6 +289,27 @@ if [[ -n "$addressing_baseline" ]]; then
     else
         no "Addressing the distiller section tells seats to subtract from reply-all, not rebuild it"
     fi
+    # The subtraction base must be each persona's OWN addressing rules,
+    # not a hardcoded "the reply-all set": ci.md's Wave one section and
+    # secretary.md's Addressing your reply section both already name a
+    # To: that is not reply-all, and a rule that overrides either with
+    # a reply-all-derived address silently defeats it (ci: the panel
+    # never wakes; secretary: a one-reader summary wakes the whole
+    # panel). See docs/ci-first-ordering.md for the wave-one contract.
+    if grep -qF 'already have you addressing' <<<"$addressing_baseline"; then
+        ok "Addressing the distiller section subtracts from each persona's own addressing, not a hardcoded reply-all"
+    else
+        no "Addressing the distiller section subtracts from each persona's own addressing, not a hardcoded reply-all"
+    fi
+    # The kickoff Cc'ing @distiller is a site convention (the template's
+    # ${CC} is documented as "optional observers", fleet/kickoffs/*.md
+    # never sets it), not a repo-wide guarantee -- so the fold-in clause
+    # must be conditional on it, not asserted as always true.
+    if grep -qF "If the cover Cc'd" <<<"$addressing_baseline"; then
+        ok "Addressing the distiller section hedges the kickoff-Cc'd-distiller fold-in as conditional"
+    else
+        no "Addressing the distiller section hedges the kickoff-Cc'd-distiller fold-in as conditional"
+    fi
 fi
 
 # distiller.md's own outbound rule: summaries and maps go To:
