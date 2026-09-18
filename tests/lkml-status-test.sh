@@ -213,16 +213,15 @@ printf '\n== cost-floor-pin: the 5e-11 display floor, at the bottom of its windo
 # lkml-status.sh), so the same floor blind spot pinned there must be
 # pinned here too. 4e-10 sits in [5e-11, 5e-10): its only nonzero digit
 # at .10f is the 10th decimal place, so ANY drift to fewer displayed
-# digits in the classifier/accumulator chain zeroes every addend --
+# digits anywhere between parse and display zeroes every addend --
 # unlike the cost-tiny-aggregate fixture above, whose 1e-7 addends
 # survive a drift to .9f or .8f and would read fully green. This screen
-# has two accumulators, per-persona and grand total, so both are
+# emits both a per-persona total and a grand total, so both are
 # asserted below. 1300 runs, not the 2500 that would exactly round-trip
-# to 1e-6: this screen forks three jq processes per ledger line on top of
-# the accumulator's own two awk forks, well above the fleet screen's
-# fork-free env parse, so 1300 (just past the 1251-run minimum that
-# clears the 5e-7 display threshold) is the cheaper fixture with the
-# same distinguishing power.
+# to 1e-6: this screen still forks three jq processes per ledger line,
+# well above the fleet screen's fork-free env parse, so 1300 (just past
+# the 1251-run minimum that clears the 5e-7 display threshold) is the
+# cheaper fixture with the same distinguishing power.
 init_series cost-floor-pin
 for i in $(seq -w 1 1300); do
     run_dir="$work/cfp-$i"; mkdir -p -- "$run_dir"

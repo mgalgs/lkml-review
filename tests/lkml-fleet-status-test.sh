@@ -696,10 +696,6 @@ printf '\n== cost per agent: a sub-5e-7 aggregate is not silently zeroed ==\n'
 # accumulator forks one awk process per run record, so 10000 runs costs
 # tens of seconds of suite time for no extra distinguishing power once
 # the true sum clears 1e-6.
-#
-# TODO(cost-accum): moving summation into the single Python invocation
-# that already classifies each run would make the 10000-run form cheap
-# again. See docs/cost-accum-follow-up.md.
 for i in $(seq -w 1 100); do
     run_dir="$work/run-tiny-agg-$i"; mkdir -p -- "$run_dir"
     printf '{"total_cost_usd": 1e-7}\n' > "$run_dir/summary.json"
@@ -726,19 +722,16 @@ printf '\n== cost per agent: the 5e-11 display floor, at the bottom of its windo
 # floor-pin: 2500 runs at 4e-10 each, reusing t8 above. 4e-10 sits in
 # [5e-11, 5e-10): at the classifier's %.10f format its only nonzero
 # digit is the 10th decimal place (0.0000000004), so ANY drift to fewer
-# displayed digits anywhere in the classifier/accumulator chain zeroes
-# every single addend before summation, collapsing the true sum from
-# $0.000001 to $0.000000. That is the --help floor sentence itself (a
-# real, nonzero cost below 5e-11 formats as an exact zero) -- distinct
-# from the sub-5e-7 aggregate above, which pins the DISPLAY threshold
-# and cannot catch this: its 1e-7 addends still round nonzero at .9f or
-# .8f, so a precision drift there reads fully green. 2500 runs of 4e-10
-# sum to exactly 1e-6 (well past the 1251-run minimum that clears the
-# 5e-7 display threshold), which displays as $0.000001. The ~2500 awk
-# forks are the per-costed-run cost documented in
-# docs/cost-accum-follow-up.md; for the timing that cost class implies,
-# see the tiny-aggregate comment above (10000 forks costs tens of
-# seconds).
+# displayed digits anywhere between parse and display -- classifier,
+# summation, or final rounding -- zeroes every single addend before
+# summation, collapsing the true sum from $0.000001 to $0.000000. That
+# is the end-to-end precision of the whole chain, pinned directly --
+# distinct from the sub-5e-7 aggregate above, which pins the DISPLAY
+# threshold and cannot catch this: its 1e-7 addends still round nonzero
+# at .9f or .8f, so a precision drift there reads fully green. 2500
+# runs of 4e-10 sum to exactly 1e-6 (well past the 1251-run minimum
+# that clears the 5e-7 display threshold), which displays as
+# $0.000001.
 for i in $(seq -w 1 2500); do
     run_dir="$work/run-floor-pin-$i"; mkdir -p -- "$run_dir"
     printf '{"total_cost_usd": 4e-10}\n' > "$run_dir/summary.json"

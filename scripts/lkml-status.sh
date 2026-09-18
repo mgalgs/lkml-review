@@ -19,15 +19,14 @@
 # read at all). None of the three unusable states is ever summed as if
 # it were a real zero.
 #
-# Each cost is parsed to 10 decimal places before it is summed, and the
-# running total carries that same precision through every addition;
-# only the screen display rounds to 6 places, at the print site. A
-# real, nonzero cost below 5e-11 still formats as an exact zero before
-# it ever reaches the accumulator, and is summed as one -- no number of
-# such runs can ever add up to a visible total. Above that floor,
-# though, the accumulator's extra digits mean an aggregate that clears
-# 5e-7 is shown in full even when every individual addend, alone, would
-# round to a displayed $0.000000. See scripts/lkml-fleet-status.sh's
+# Each cost is parsed and summed as a Python float inside the
+# classifier itself, per persona and as a grand total, before this
+# screen ever sees a number; only the screen display rounds that sum
+# to 6 places, at the print site. A single run under 5e-7 still
+# displays as $0.000000 -- a display choice, not a summation limit --
+# but an aggregate of many such runs is shown in full once it clears
+# that threshold, since the underlying sum carries full float
+# precision the whole way through. See scripts/lkml-fleet-status.sh's
 # --help for the identical wording; the two must not drift.
 
 set -uo pipefail
@@ -165,55 +164,124 @@ done < "$ledger"
 # the retirement map in docs/RETIRED.md with that one named as its
 # replacement, and a shared library would have to be unpicked at
 # retirement. Keep any change to the taxonomy in both places.
+#
+# The interpreter also receives each path's persona, one per line on
+# stdin in the same order as the paths on argv (a name like "unknown
+# persona" contains a space, so it cannot ride along on argv as a bare
+# extra word without a delimiter scheme). It sums each accepted cost
+# against that persona as it classifies, and once every result line is
+# printed, emits a fixed sentinel line, one tab-delimited total per
+# persona that received at least one addend, and finally a grand total
+# across every accepted addend regardless of persona -- see
+# lkml-fleet-status.sh for the per-persona half of this wire shape; the
+# grand-total line is this script's own addition, replacing the second
+# of its two former awk-fork accumulators.
 if (( ${#parse_paths[@]} > 0 )); then
-    results="$(python3 -c '
-import json, math, sys
+    out_lines=()
+    results="$(printf '%s\n' "${parse_personas[@]}" | python3 -c '
+import json, math, re, sys
 
-for path in sys.argv[1:]:
+DIGIT_RE = re.compile(r"\A[0-9]+([.][0-9]+)?\Z")
+
+paths = sys.argv[1:]
+personas = sys.stdin.read().splitlines()
+if len(personas) != len(paths):
+    sys.exit(1)
+
+totals = {}
+grand = 0.0
+for path, persona in zip(paths, personas):
     try:
         data = json.load(open(path))
     except Exception:
         print("UNREADABLE")
         continue
     result = "NOCOST"
+    candidate = None
     try:
         for key in ("total_cost_usd", "cost_usd"):
-            value = data.get(key)
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
+            candidate = data.get(key)
+            if isinstance(candidate, bool) or not isinstance(candidate, (int, float)):
+                candidate = None
                 continue
             try:
-                finite = math.isfinite(value)
+                finite = math.isfinite(candidate)
             except OverflowError:
                 finite = False
-            if not finite or value < 0:
+            if not finite or candidate < 0:
                 result = "INVALID"
+                candidate = None
             else:
                 # .10f, not the bare "f" (== .6f): see the identical
                 # parser in lkml-fleet-status.sh for why -- this
                 # classifier must match it exactly, per the comment
-                # above.
-                if value == 0:
-                    value = 0.0
-                result = format(value, ".10f")
+                # above. This text is only what gets printed and
+                # gated on per run below; the sum kept in totals and
+                # grand is carried on the float itself (candidate).
+                if candidate == 0:
+                    candidate = 0.0
+                result = format(candidate, ".10f")
             break
     except Exception:
-        pass
+        candidate = None
     print(result)
+    if candidate is not None and DIGIT_RE.match(result):
+        totals[persona] = totals.get(persona, 0.0) + candidate
+        grand += candidate
+
+print("@@TOTALS@@")
+for persona, total in totals.items():
+    print("TOTAL\t" + persona + "\t" + format(total, ".10f"))
+print("GRAND\t" + format(grand, ".10f"))
 ' "${parse_paths[@]}" 2>/dev/null)" && py_rc=0 || py_rc=$?
-    result_lines=()
     if [[ -n "$results" ]]; then
         while IFS= read -r res; do
-            result_lines+=("$res")
+            out_lines+=("$res")
         done <<< "$results"
     fi
-    if (( py_rc != 0 )) || (( ${#result_lines[@]} != ${#parse_paths[@]} )); then
+    n_paths=${#parse_paths[@]}
+    batch_ok=1
+    declare -A PY_TOTAL=()
+    grand_total=""
+    if (( py_rc != 0 )) || (( ${#out_lines[@]} <= n_paths )) \
+        || [[ "${out_lines[$n_paths]}" != "@@TOTALS@@" ]]; then
+        batch_ok=0
+    else
+        tail_lines=("${out_lines[@]:$((n_paths + 1))}")
+        if (( ${#tail_lines[@]} == 0 )); then
+            batch_ok=0
+        elif [[ "${tail_lines[-1]}" =~ ^GRAND$'\t'([0-9]+([.][0-9]+)?)$ ]]; then
+            grand_total="${BASH_REMATCH[1]}"
+            unset 'tail_lines[-1]'
+            for tline in "${tail_lines[@]}"; do
+                if [[ "$tline" =~ ^TOTAL$'\t'(.*)$'\t'([0-9]+([.][0-9]+)?)$ ]]; then
+                    PY_TOTAL["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+                else
+                    batch_ok=0
+                    break
+                fi
+            done
+        else
+            batch_ok=0
+        fi
+    fi
+    if (( ! batch_ok )); then
+        # python3 exited non-zero, produced too few lines, misplaced or
+        # lost the totals sentinel, lost or malformed the trailing
+        # GRAND line, or emitted a malformed per-persona total line:
+        # any of these breaks the positional zip between a result line
+        # and its path, or leaves a totals block that cannot be
+        # trusted -- so nothing in this batch is trusted as "no cost",
+        # and no partial or possibly-wrong sum is accepted. Every
+        # persona in it is unreadable, exactly as if python3 itself
+        # had crashed.
         for persona in "${parse_personas[@]}"; do
             unreadable=$(( unreadable + 1 ))
             UNREADABLE_COUNT[$persona]=$(( ${UNREADABLE_COUNT[$persona]:-0} + 1 ))
         done
     else
-        for i in "${!result_lines[@]}"; do
-            res="${result_lines[$i]}"
+        for i in "${!parse_paths[@]}"; do
+            res="${out_lines[$i]}"
             persona="${parse_personas[$i]}"
             if [[ "$res" == "UNREADABLE" ]]; then
                 unreadable=$(( unreadable + 1 ))
@@ -222,20 +290,18 @@ for path in sys.argv[1:]:
                 invalid=$(( invalid + 1 ))
                 INVALID_COUNT[$persona]=$(( ${INVALID_COUNT[$persona]:-0} + 1 ))
             elif [[ "$res" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-                prev="${COST_BY_PERSONA[$persona]:-0}"
-                # .10f here too, carrying the parser's precision across
-                # every addition -- re-rounding to 6 places per addition
-                # would erase a sub-5e-7 addend on arrival, the same bug
-                # lkml-fleet-status.sh was fixed for. The 6-decimal
-                # convention is applied once, at the print site below,
-                # not here.
-                COST_BY_PERSONA[$persona]="$(awk -v a="$prev" -v b="$res" 'BEGIN { printf "%.10f", a + b }')"
-                total_cost="$(awk -v a="$total_cost" -v b="$res" 'BEGIN { printf "%.10f", a + b }')"
+                : # already summed by python3 above; COST_BY_PERSONA and
+                  # total_cost are filled in from PY_TOTAL/grand_total
+                  # once this loop is done
             else
                 no_cost=$(( no_cost + 1 ))
                 NO_COST_COUNT[$persona]=$(( ${NO_COST_COUNT[$persona]:-0} + 1 ))
             fi
         done
+        for persona in "${!PY_TOTAL[@]}"; do
+            COST_BY_PERSONA[$persona]="${PY_TOTAL[$persona]}"
+        done
+        total_cost="$grand_total"
     fi
 fi
 
@@ -255,9 +321,10 @@ if (( unreadable - unreadable_ledger > 0 )); then
     fi
 fi
 printf 'Runs launched: %s%s\n' "$total_runs" "$(cost_annotation "$missing_summary" "$no_cost" "$invalid" "$unreadable")"
-# The accumulator carries .10f precision; round to the screen's 6-decimal
-# convention here, at the print site, so a real sub-5e-7 sum is visible
-# without changing the format every existing fixture pins.
+# python's summation above carries full float precision; round to the
+# screen's 6-decimal convention here, at the print site, so a real
+# sub-5e-7 sum is visible without changing the format every existing
+# fixture pins.
 printf 'Total cost so far: $%s\n' "$(awk -v c="$total_cost" 'BEGIN { printf "%.6f", c }')"
 # A `for persona in $(...)` here would word-split "unknown persona" (the
 # sentinel for a malformed ledger line, itself containing a space) into

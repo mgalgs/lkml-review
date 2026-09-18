@@ -68,17 +68,15 @@
 #              is not a cost); and "unreadable" is a different kind of
 #              not knowing (the summary could not be read at all) --
 #              collapsing any of them into another would misreport
-#              which. Each cost is parsed to 10 decimal places before it
-#              is summed, and the running total carries that same
-#              precision through every addition; only the screen display
-#              rounds to 6 places, at the print site. A real, nonzero
-#              cost below 5e-11 still formats as an exact zero before it
-#              ever reaches the accumulator, and is summed as one -- no
-#              number of such runs can ever add up to a visible total.
-#              Above that floor, though, the accumulator's extra digits
-#              mean an aggregate that clears 5e-7 is shown in full even
-#              when every individual addend, alone, would round to a
-#              displayed $0.000000.
+#              which. Each cost is parsed and summed as a Python float
+#              inside the classifier itself, per agent, before this
+#              screen ever sees a number; only the screen display rounds
+#              that sum to 6 places, at the print site. A single run
+#              under 5e-7 still displays as $0.000000 -- a display
+#              choice, not a summation limit -- but an aggregate of many
+#              such runs is shown in full once it clears that threshold,
+#              since the underlying sum carries full float precision the
+#              whole way through.
 #   unanswered see the design decision below.
 #
 # Design decision -- tags: Reviewed-by, Acked-by, Tested-by,
@@ -359,7 +357,7 @@ fs_cost_annotation() {
 # directly rather than sourcing them: router state is data, not shell code.
 print_cost_per_agent() {
     local pm="$MAIL_ROOT/.postmaster" env line key value agent thread run_dir
-    local prev total_runs=0 missing_summary=0 no_cost=0 invalid=0 unreadable=0
+    local total_runs=0 missing_summary=0 no_cost=0 invalid=0 unreadable=0
     local have_python=1 run_word display_cost
     declare -A RUN_COUNT=() MISSING_COUNT=() NO_COST_COUNT=() INVALID_COUNT=() UNREADABLE_COUNT=() COST_BY_AGENT=()
     local parse_agents=() parse_paths=()
@@ -415,11 +413,24 @@ print_cost_per_agent() {
     # confirmed intact: a python3 that fails to run, or dies partway
     # through, must not be allowed to desync that zip and silently
     # misattribute one run's fate to another's.
+    #
+    # The interpreter also receives each path's agent, one per line on
+    # stdin in the same order as the paths on argv (a name like "unknown
+    # agent" contains a space, so it cannot ride along on argv as a bare
+    # extra word without a delimiter scheme). It sums each accepted cost
+    # against that agent as it classifies, and once every result line is
+    # printed, emits a fixed sentinel line followed by one tab-delimited
+    # total per agent that received at least one addend. That trailing
+    # block is what used to be a separate awk fork per costed run
+    # record; folding it into this same invocation is what removes that
+    # per-run fork, and with it the text round-trip a formatted addend
+    # used to cross before being re-parsed and summed by awk -- see the
+    # totals block below for what replaced it.
     if (( ${#parse_paths[@]} > 0 )); then
-        local results py_rc res
-        local -a result_lines=()
-        results="$(python3 -c '
-import json, math, sys
+        local out py_rc res
+        local -a out_lines=()
+        out="$(printf '%s\n' "${parse_agents[@]}" | python3 -c '
+import json, math, re, sys
 
 # A routed continuation includes the prior context cost in total_cost_usd.
 # Older summaries have only cost_usd. A JSON bool is excluded explicitly:
@@ -430,28 +441,45 @@ import json, math, sys
 # accepts the non-standard NaN/Infinity/-Infinity tokens, so a number
 # that parses fine but is negative, NaN, or infinite is a third,
 # distinct case: not absent, but not a usable cost either.
-for path in sys.argv[1:]:
+
+DIGIT_RE = re.compile(r"\A[0-9]+([.][0-9]+)?\Z")
+
+paths = sys.argv[1:]
+agents = sys.stdin.read().splitlines()
+if len(agents) != len(paths):
+    # The caller zips this list onto argv 1:1; a mismatch is a contract
+    # violation between the shell and this interpreter, not a per-path
+    # question, so it is treated exactly like a crashed interpreter --
+    # the line-count guard in the shell below already turns any python3
+    # that exits non-zero into an all-unreadable batch.
+    sys.exit(1)
+
+totals = {}
+for path, agent in zip(paths, agents):
     try:
         data = json.load(open(path))
     except Exception:
         print("UNREADABLE")
         continue
     result = "NOCOST"
+    candidate = None
     try:
-        for key in ("total_cost_usd", "cost_usd"):
-            value = data.get(key)
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
+        for field in ("total_cost_usd", "cost_usd"):
+            candidate = data.get(field)
+            if isinstance(candidate, bool) or not isinstance(candidate, (int, float)):
+                candidate = None
                 continue
             try:
-                finite = math.isfinite(value)
+                finite = math.isfinite(candidate)
             except OverflowError:
                 # An int too large to convert to float at all --
-                # math.isfinite() and format(value, ".10f") both raise
-                # OverflowError for it. It cannot be represented, so it
-                # is invalid rather than a real-but-ugly number.
+                # math.isfinite() and format(candidate, ".10f") both
+                # raise OverflowError for it. It cannot be represented,
+                # so it is invalid rather than a real-but-ugly number.
                 finite = False
-            if not finite or value < 0:
+            if not finite or candidate < 0:
                 result = "INVALID"
+                candidate = None
             else:
                 # Fixed-point, never exponent notation: repr() switches
                 # to exponent form below 1e-4, which would fail the
@@ -463,48 +491,82 @@ for path in sys.argv[1:]:
                 # above and from a magnitude no float can hold at all.
                 # The precision is .10f, not the bare "f" (== .6f) this
                 # used to be: a single run under 5e-7 rounds to
-                # 0.000000 at 6 places and passes as a silent zero --
-                # invisible on its own row and, worse, invisible inside
-                # the accumulator below, which used to re-round to 6
-                # places after every addition, so no number of such runs
-                # could ever sum to something visible. .10f pushes that
-                # blind spot down to 5e-11; below that a cost still
-                # formats as all zeros and is summed as an exact zero.
-                # The accumulator now carries the same .10f precision so
-                # the sum it holds is real; only the screen display still
-                # rounds to 6 places, at the print site.
+                # 0.000000 at 6 places and passes as a silent zero on
+                # its own row -- accepted, documented display behavior.
+                # This .10f text is only what gets printed and gated on
+                # per run below; the sum kept in totals is carried on
+                # the float itself (candidate), never on this text, so
+                # it never crosses the text round-trip that used to
+                # floor a small enough addend to an exact zero before it
+                # reached the total.
                 # Negative zero is not less than zero, so it reaches
                 # here, but format(-0.0, f) prints a leading minus sign
                 # that the plain-digit gate below rejects, relabeling a
                 # real zero as no cost. Canonicalize the sign away
                 # first: -0.0 equals 0.0 in Python.
-                if value == 0:
-                    value = 0.0
-                result = format(value, ".10f")
+                if candidate == 0:
+                    candidate = 0.0
+                result = format(candidate, ".10f")
             break
     except Exception:
-        pass
+        candidate = None
     print(result)
+    # Re-apply the same plain-digit gate the shell uses, explicitly, even
+    # though the numeric branch above always produces a result string
+    # that matches it: this is the one point anything gets added, and
+    # nothing should reach it by any path other than the one the shell
+    # itself would have accumulated.
+    if candidate is not None and DIGIT_RE.match(result):
+        totals[agent] = totals.get(agent, 0.0) + candidate
+
+# One fixed sentinel, then one tab-delimited total per agent that
+# received at least one addend -- an agent with none is simply absent,
+# matching how the shell already defaults a missing key to 0 at display
+# time. Tab-delimited, not space, since an agent name can contain a
+# space ("unknown agent" is a real sentinel). The shell locates this
+# block by position (index len(paths) in its own line array), not by
+# scanning for the sentinel text, so correctness never depends on an
+# agent name coincidentally matching it.
+print("@@TOTALS@@")
+for agent, total in totals.items():
+    print("TOTAL\t" + agent + "\t" + format(total, ".10f"))
 ' "${parse_paths[@]}" 2>/dev/null)" && py_rc=0 || py_rc=$?
-        if [[ -n "$results" ]]; then
+        if [[ -n "$out" ]]; then
             while IFS= read -r res; do
-                result_lines+=("$res")
-            done <<< "$results"
+                out_lines+=("$res")
+            done <<< "$out"
         fi
-        if (( py_rc != 0 )) || (( ${#result_lines[@]} != ${#parse_paths[@]} )); then
-            # python3 exited non-zero, or produced a different number of
-            # result lines than paths given to it (a crash partway
-            # through, an OOM kill, a broken shim on PATH that runs but
-            # writes nothing): there is no reliable way to tell which
-            # line belonged to which path, so nothing in this batch is
-            # trusted as "no cost" -- every path in it is unreadable.
+        local n_paths=${#parse_paths[@]} batch_ok=1 tline
+        declare -A PY_TOTAL=()
+        if (( py_rc != 0 )) || (( ${#out_lines[@]} <= n_paths )) \
+            || [[ "${out_lines[$n_paths]}" != "@@TOTALS@@" ]]; then
+            batch_ok=0
+        else
+            for tline in "${out_lines[@]:$((n_paths + 1))}"; do
+                if [[ "$tline" =~ ^TOTAL$'\t'(.*)$'\t'([0-9]+([.][0-9]+)?)$ ]]; then
+                    PY_TOTAL["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+                else
+                    batch_ok=0
+                    break
+                fi
+            done
+        fi
+        if (( ! batch_ok )); then
+            # python3 exited non-zero, produced too few lines, misplaced
+            # or lost the totals sentinel, or emitted a malformed total
+            # line: any of these breaks the positional zip between a
+            # result line and its path, or leaves a totals block that
+            # cannot be trusted -- so nothing in this batch is trusted
+            # as "no cost", and no partial or possibly-wrong sum is
+            # accepted. Every path in it is unreadable, exactly as if
+            # python3 itself had crashed.
             for agent in "${parse_agents[@]}"; do
                 unreadable=$(( unreadable + 1 ))
                 UNREADABLE_COUNT[$agent]=$(( ${UNREADABLE_COUNT[$agent]:-0} + 1 ))
             done
         else
-            for i in "${!result_lines[@]}"; do
-                res="${result_lines[$i]}"
+            for i in "${!parse_paths[@]}"; do
+                res="${out_lines[$i]}"
                 agent="${parse_agents[$i]}"
                 if [[ "$res" == "UNREADABLE" ]]; then
                     unreadable=$(( unreadable + 1 ))
@@ -513,19 +575,15 @@ for path in sys.argv[1:]:
                     invalid=$(( invalid + 1 ))
                     INVALID_COUNT[$agent]=$(( ${INVALID_COUNT[$agent]:-0} + 1 ))
                 elif [[ "$res" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-                    prev="${COST_BY_AGENT[$agent]:-0}"
-                    # Carry the parser's own .10f precision across every
-                    # addition. Re-rounding to 6 places here, the way this
-                    # used to work, would erase a sub-5e-7 addend on the
-                    # very addition that receives it -- no number of such
-                    # runs could ever sum to something visible. The
-                    # 6-decimal convention is a display concern; it is
-                    # applied once, at the print site below, not here.
-                    COST_BY_AGENT[$agent]="$(awk -v a="$prev" -v b="$res" 'BEGIN { printf "%.10f", a + b }')"
+                    : # already summed by python3 above; COST_BY_AGENT is
+                      # filled in from PY_TOTAL once this loop is done
                 else
                     no_cost=$(( no_cost + 1 ))
                     NO_COST_COUNT[$agent]=$(( ${NO_COST_COUNT[$agent]:-0} + 1 ))
                 fi
+            done
+            for agent in "${!PY_TOTAL[@]}"; do
+                COST_BY_AGENT[$agent]="${PY_TOTAL[$agent]}"
             done
         fi
     fi
@@ -548,10 +606,10 @@ for path in sys.argv[1:]:
         [[ -n "$agent" ]] || continue
         run_word=runs
         (( RUN_COUNT[$agent] == 1 )) && run_word=run
-        # The accumulator carries .10f precision; round to the screen's
-        # 6-decimal convention here, at the print site, so a real sub-5e-7
-        # sum is visible without changing the format every existing
-        # fixture pins.
+        # python's summation above carries full float precision; round to
+        # the screen's 6-decimal convention here, at the print site, so a
+        # real sub-5e-7 sum is visible without changing the format every
+        # existing fixture pins.
         display_cost="$(awk -v c="${COST_BY_AGENT[$agent]:-0}" 'BEGIN { printf "%.6f", c }')"
         printf '%s  %s %s  $%s%s\n' "$agent" "${RUN_COUNT[$agent]}" "$run_word" "$display_cost" \
             "$(fs_cost_annotation "${MISSING_COUNT[$agent]:-0}" "${NO_COST_COUNT[$agent]:-0}" "${INVALID_COUNT[$agent]:-0}" "${UNREADABLE_COUNT[$agent]:-0}")"
