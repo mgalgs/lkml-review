@@ -6,7 +6,7 @@
 #            [--cc <addr>] --subject <subject> [--summary <text>]
 #            [--focus <text>] [--template <file>] [--hops <n>]
 #            [--ci-first <ci-addr>] [--version <n>]
-#            [--allow-ambiguous-version] [--attach] [--send]
+#            [--allow-ambiguous-version] [--patches] [--send]
 #
 # <repo>       path to a local git repository.
 # <range>      a revision range passed straight to `git format-patch`
@@ -49,11 +49,11 @@
 #              suite can actually run in this repository.
 # --version    stamp the subject as a series version: "[PATCH v<n>
 #              0/<patch-count>] <subject>", and pass the same <n> to
-#              `git format-patch -v -n` so the attached patches' own
-#              Subject lines agree with the cover subject instead of
+#              `git format-patch -v -n` so the per-patch reply messages'
+#              own Subject lines agree with the cover subject instead of
 #              contradicting it -- -n so a single-patch range, numbered
-#              "0/1" on the cover, is numbered "1/1" on the one
-#              attachment too, since format-patch does not number a
+#              "0/1" on the cover, is numbered "1/1" on the one patch
+#              message too, since format-patch does not number a
 #              single-commit range on its own. A subject with no LEADING bracket
 #              containing the word "PATCH" -- "[PATCH ...]", but also
 #              "[RFC PATCH ...]", "[RESEND PATCH ...]" and other prefixed
@@ -134,10 +134,26 @@
 #              off the X-Version header, not the Subject -- so the only
 #              cost of proceeding is a phantom extra row on that one
 #              status screen for this thread.
-# --attach     format the range with `git format-patch` and attach each
-#              produced patch file to the mail. Without this flag, the
-#              mail carries only the branch name for reviewers to check
-#              out themselves.
+# --patches    format the range with `git format-patch`, post the cover
+#              via `fork-sandbox mail send`, then post one
+#              `fork-sandbox mail reply` per patch -- same sender, same
+#              Reply-To-Id (the cover's own message id), subject taken
+#              from the patch file's own Subject line (already numbered
+#              by `git format-patch -n -v`), `To: @operator` so a patch
+#              message never wakes anyone; it exists on the thread to be
+#              read, the way a patch on a mailing list is. Without this
+#              flag, the mail carries only the branch name for reviewers
+#              to check out themselves. In print-only mode, since nothing
+#              is actually sent, the cover's real message id does not
+#              exist yet: the printed sequence opens with a
+#              `cover_id=$(...)` shell assignment around the cover
+#              command, followed by one `mail reply --reply-to
+#              "$cover_id"` line per patch, so the whole sequence can be
+#              pasted into a shell and run as one paste.
+# --attach     deprecated alias for --patches; attachments are never
+#              posted by this script -- kept only so an existing caller
+#              spelling --attach still works, with a Warning pointing at
+#              --patches.
 # --send       actually run the composed `fork-sandbox mail send`
 #              command. Without it, the command is printed, shell-quoted,
 #              and nothing is sent.
@@ -170,7 +186,7 @@ subject=""
 summary=""
 focus=""
 template="$default_template"
-attach=0
+post_patches=0
 send=0
 hops=""
 ci_first=""
@@ -196,7 +212,8 @@ while (( $# > 0 )); do
         --ci-first) ci_first="$2"; shift 2 ;;
         --version) version="$2"; version_given=1; shift 2 ;;
         --allow-ambiguous-version) allow_ambiguous_version=1; shift ;;
-        --attach) attach=1; shift ;;
+        --patches) post_patches=1; shift ;;
+        --attach) post_patches=1; echo "Warning: --attach is a deprecated alias for --patches; attachments are never posted -- this now posts one mail reply per patch instead. Use --patches." >&2; shift ;;
         --send) send=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Error: unknown argument '$1'. See --help." >&2; exit 1 ;;
@@ -428,9 +445,10 @@ effective_version="${effective_version:-${version:-1}}"
 
 tmpdir="$(mktemp -d)"
 # Cleaned up unless something downstream tells the caller where to find
-# it: print-only mode's success path prints a command whose --body and
-# --attach arguments name files under $tmpdir and a trailing Note
-# pointing at the directory, for a caller to paste later, so it sets
+# it: print-only mode's success path prints a command sequence whose
+# --body arguments (cover and, with --patches, each patch reply) name
+# files under $tmpdir and a trailing Note pointing at the directory, for
+# a caller to paste later, so it sets
 # tmpdir_kept and cleanup leaves the directory alone. Every other exit
 # -- every refusal above and below included -- never prints anything
 # pointing at $tmpdir, so leaving it behind there would be a silent
@@ -557,13 +575,14 @@ base="${range%%..*}"
 branch="${range##*..}"
 
 # The template body tells reviewers to `git fetch origin $branch; git
-# checkout $branch` as a genuine alternative to the attached patches --
-# unconditionally, in both variants -- so $branch must actually be a
-# branch (or other symbolic ref) git can check out by that name in
-# EITHER mode, not just whatever string happened to be on the right of
-# "..", e.g. "HEAD" from a range like "HEAD~1..HEAD". A reviewer who
-# takes that fallback with an unresolvable name silently reviews the
-# wrong tree, so this check applies whether or not --attach was passed.
+# checkout $branch` as a genuine alternative to the per-patch reply
+# messages -- unconditionally, in both variants -- so $branch must
+# actually be a branch (or other symbolic ref) git can check out by
+# that name in EITHER mode, not just whatever string happened to be on
+# the right of "..", e.g. "HEAD" from a range like "HEAD~1..HEAD". A
+# reviewer who takes that fallback with an unresolvable name silently
+# reviews the wrong tree, so this check applies whether or not
+# --patches was passed.
 resolved_branch="$(git -C "$repo" rev-parse --abbrev-ref "$branch" 2>/dev/null || true)"
 if [[ "$resolved_branch" != "$branch" ]]; then
     echo "Error: range '$range' does not resolve to a checkout-able branch name on its right side ('$branch'); the kickoff template always offers reviewers a fetch/checkout fallback and needs a real branch for it. Pass a range like '<base>..<branch>'." >&2
@@ -650,7 +669,7 @@ if [[ "$body" == *'${FOCUS}'* ]]; then
         echo "Error: template '$template' contains \${FOCUS}: a focused round is a reply inside the thread it concentrates, but --send would run \`fork-sandbox mail send\`, which starts a new thread and throws away the earlier round. Compose without --send and send the leftover body file with \`fork-sandbox mail reply --reply-to <message-id>\`, or use a non-focused template for a new thread." >&2
         exit 1
     fi
-    echo "Warning: template '$template' contains \${FOCUS}: a focused round is a reply inside an existing thread, and the command below is \`fork-sandbox mail send\`, which starts a new thread and throws away the earlier round. To run this round, send the body file with \`fork-sandbox mail reply --reply-to <message-id>\` (add --attach files if the seats cannot check the branch out)." >&2
+    echo "Warning: template '$template' contains \${FOCUS}: a focused round is a reply inside an existing thread, and the command below is \`fork-sandbox mail send\`, which starts a new thread and throws away the earlier round. To run this round, send the body file with \`fork-sandbox mail reply --reply-to <message-id>\` (follow with one more \`mail reply\` per patch, same --reply-to, if the seats cannot check the branch out)." >&2
 fi
 # shellcheck disable=SC2016  # ${FOCUS} is the literal placeholder text
 # being searched for in the stripped body, not a variable to expand.
@@ -698,21 +717,54 @@ fi
 body_file="$tmpdir/body.txt"
 printf '%s\n' "$body" > "$body_file"
 
-cmd=(fork-sandbox mail send --from "$from" --to "$to")
-[[ -n "$cc" ]] && cmd+=(--cc "$cc")
-[[ -n "$hops" ]] && cmd+=(--hops "$hops")
-cmd+=(--subject "$subject" --body "$body_file")
-if (( attach )); then
-    for f in "${patches[@]}"; do
-        cmd+=(--attach "$f")
-    done
-fi
+# patch_subject() reads a produced patch file's own Subject: header --
+# already numbered "i/K" by `git format-patch -n -v` above -- so each
+# reply's subject is exactly what git chose, not retyped here.
+patch_subject() { grep -m1 '^Subject: ' "$1" | sed 's/^Subject: //'; }
+
+cover_cmd=(fork-sandbox mail send --from "$from" --to "$to")
+[[ -n "$cc" ]] && cover_cmd+=(--cc "$cc")
+[[ -n "$hops" ]] && cover_cmd+=(--hops "$hops")
+cover_cmd+=(--subject "$subject" --body "$body_file")
 
 if (( send )); then
-    "${cmd[@]}"
+    # Command substitution only captures stdout, so the transport's
+    # human-readable "sent ..." line on stderr still reaches the
+    # operator's terminal even though $cover_id is assigned here.
+    cover_id="$("${cover_cmd[@]}")"
+    [[ -n "$cover_id" ]] || { echo "Error: fork-sandbox mail send printed no message id on stdout; cannot post per-patch replies without one." >&2; exit 1; }
+    if (( post_patches )); then
+        for f in "${patches[@]}"; do
+            fork-sandbox mail reply --from "$from" --to @operator \
+                --reply-to "$cover_id" --subject "$(patch_subject "$f")" --body "$f"
+        done
+    fi
 else
-    printf '%q ' "${cmd[@]}"
-    printf '\n'
+    # Print-only mode never actually sends the cover, so its real
+    # message id does not exist yet. The printed sequence is a single
+    # paste-able shell snippet: a `cover_id=$(...)` assignment around
+    # the cover command, then one `mail reply --reply-to "$cover_id"`
+    # line per patch that expands against it when run. The
+    # `--reply-to "$cover_id"` token is written out raw, not through
+    # the `printf '%q '` loop used for every other argument, so the
+    # pasted line contains a literal, unescaped `"$cover_id"` that
+    # expands at paste time instead of an inert copy of those
+    # characters.
+    # shellcheck disable=SC2016  # single-quoted on purpose: these are
+    # the literal characters `cover_id=$(` and `"$cover_id" ` to appear
+    # in the printed shell snippet, not expansions to run now.
+    printf 'cover_id=$('
+    printf '%q ' "${cover_cmd[@]}"
+    printf ')\n'
+    if (( post_patches )); then
+        for f in "${patches[@]}"; do
+            printf '%q ' fork-sandbox mail reply --from "$from" --to @operator --reply-to
+            # shellcheck disable=SC2016
+            printf '"$cover_id" '
+            printf '%q ' --subject "$(patch_subject "$f")" --body "$f"
+            printf '\n'
+        done
+    fi
     printf 'Note: temp files for this command are left under %s -- nothing removes them; delete it yourself once done.\n' "$tmpdir" >&2
     tmpdir_kept=1
 fi
