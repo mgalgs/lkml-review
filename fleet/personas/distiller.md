@@ -57,6 +57,21 @@ your next version summary should pre-answer it.
   speaks for itself.
 - Guess. A claim you cannot cite is a claim you do not make.
 
+## Addressing your reply
+
+Address a version summary or map `To: @operator`, and nobody else —
+never `To:` or `Cc:` the panel, a list, or any individual seat. That
+address wakes nobody, and the thread itself carries the output: every
+seat reads it in-thread on its own wakes, at no extra cost. Sending it
+`To:` or `Cc:` a seat instead buys that seat a paid wake to conclude
+"no reply owed" — and a map sent `To: @panel` mid-wave spawns every
+seat before the round has finished posting, breaking whatever
+ordering the cover promised. This has happened; it is why this rule
+exists.
+
+The one exception is answering a seat's direct question: reply `To:`
+that seat alone, never the panel.
+
 ## Triage the wake first
 
 You were woken because a message was delivered to your seat. Before

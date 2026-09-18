@@ -80,6 +80,21 @@ not yet had your reply, proceed exactly as the rest of this file
 describes — the verify-before-speaking doctrine is unchanged for real
 review work.
 
+## Addressing the distiller
+
+Address `@distiller` — `To:` or `Cc:` — only when your mail asks it a
+concrete question you need answered. An address without a question
+buys a paid wake that re-reads the whole thread only to conclude "no
+reply owed" — and that cost grows with the thread, biggest exactly
+when the thread is busiest.
+
+Do not mirror the kickoff's own addressing: the cover's `Cc:` to
+`@distiller` is the deliberate wake that produces the series map;
+your replies owe it nothing back.
+
+Reading the map costs nothing and requires no address — it is
+already on the thread for you to read on your own wakes.
+
 ## Reply format
 
 A reply is a `mail-*.md` file: a short header stanza, one blank line,

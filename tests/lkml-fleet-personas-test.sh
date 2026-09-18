@@ -197,5 +197,69 @@ done
 has "$personas_dir/author.md" 'Your lane is the whole series' \
     "author.md's Rules list carries the whole-series carve-out"
 
+# Triage (above) cuts the cost of a no-op REPLY after a seat is woken;
+# it does nothing about the wake itself, which is the part that is
+# paid for. A v3 panel flight measured the gap directly: one
+# productive distiller wake next to three no-op wakes seats bought it
+# by mirroring the kickoff's own Cc, plus a map sent To: @panel that
+# spawned the whole panel before wave one's promised ordering had
+# played out. The Addressing the distiller section is the fix, pinned
+# the same way as Triage: present and byte-identical across the nine
+# non-distiller personas, and absent from distiller.md, which carries
+# the opposite-direction rule instead.
+extract_addressing_distiller() {
+    awk '/^## Addressing the distiller$/{ f = 1; print; next }
+         f && /^## / { exit }
+         f { print }' "$1"
+}
+
+addressing_baseline=""
+addressing_baseline_name=""
+addressing_baseline_set=0
+addressing_count=0
+for f in "$personas_dir"/*.md; do
+    name="$(basename "$f" .md)"
+    section="$(extract_addressing_distiller "$f")"
+    if [[ "$name" == "distiller" ]]; then
+        if [[ -z "$section" ]]; then
+            ok "distiller.md does not carry the Addressing the distiller section"
+        else
+            no "distiller.md does not carry the Addressing the distiller section" "found '## Addressing the distiller' heading"
+        fi
+        continue
+    fi
+    if [[ -z "$section" ]]; then
+        no "$name carries the Addressing the distiller section" "no '## Addressing the distiller' heading"
+        continue
+    fi
+    addressing_count=$(( addressing_count + 1 ))
+    if (( ! addressing_baseline_set )); then
+        addressing_baseline="$section"
+        addressing_baseline_name="$name"
+        addressing_baseline_set=1
+        ok "$name's Addressing the distiller section is the comparison baseline"
+        continue
+    fi
+    if [[ "$section" == "$addressing_baseline" ]]; then
+        ok "$name's Addressing the distiller section matches $addressing_baseline_name's"
+    else
+        no "$name's Addressing the distiller section matches $addressing_baseline_name's" "section text diverges"
+    fi
+done
+if (( addressing_count == 9 )); then
+    ok "Addressing the distiller section appears in exactly the nine non-distiller personas"
+else
+    no "Addressing the distiller section appears in exactly the nine non-distiller personas" "found in $addressing_count"
+fi
+
+# distiller.md's own outbound rule: summaries and maps go To:
+# @operator, never To:/Cc: the panel or a seat, except to answer a
+# seat's direct question -- pin its load-bearing strings the same way
+# ci.md's contract-path strings are pinned above.
+has "$personas_dir/distiller.md" 'To: @operator' \
+    "distiller.md's Addressing your reply section names To: @operator"
+has "$personas_dir/distiller.md" "seat's direct question" \
+    "distiller.md's Addressing your reply section carries the answer-the-asker-alone exception"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))
