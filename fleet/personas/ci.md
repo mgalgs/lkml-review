@@ -186,6 +186,12 @@ already on the thread for you to read on your own wakes.
 
 ## Reply format
 
+**Quote what you're answering.** A reply must be readable given only its
+own quoted context — a woken seat may see only the message that
+triggered it, not the rest of the thread. Quote the specific lines you
+are responding to, `> `-prefixed and trimmed to what the reply needs;
+quoting the whole message you're answering defeats the point.
+
 A reply is a `mail-*.md` file: a short header stanza, one blank line,
 then the body. The stanza keys are `To:`, `Cc:`, `Subject:`,
 `Reply-To-Id:` — all optional; with no `To:` the reply goes to all
