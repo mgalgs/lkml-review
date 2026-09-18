@@ -96,16 +96,43 @@ adjacent_ownline_same() {
     ' "$@"
 }
 
-# Pulls the Nth (1-indexed) printed `--body <file>` argument's own
-# Subject: header out of a composed --patches sequence -- the
-# --patches-mode replacement for the old `--attach [^ ]*` pattern, since
-# a patch is now named only in a `mail reply ... --body <file>` line,
-# not by an --attach flag. N=1 is always the cover's own body file; N=2
-# is the first patch reply, N=3 the second, and so on.
+# Pulls the value passed to the Nth (1-indexed) printed `--body <file>`
+# occurrence's own `--subject` argument out of a composed --patches
+# sequence -- i.e. what the script itself put on the command line, not
+# what `git format-patch` wrote into the fixture file. Reading the
+# fixture file instead (an earlier version of this helper did) tests
+# `patch_subject()` against itself: the fixture's Subject header is
+# produced by the exact same script under test, so a broken
+# `patch_subject()` and a broken assertion agree with each other and
+# the suite stays green. N=1 is always the cover line; N=2 is the
+# first patch reply, N=3 the second, and so on.
+#
+# Each candidate line is parsed by letting bash itself re-tokenize it,
+# not by a fixed-width text pattern: `printf '%q'` varies its quoting
+# style per token (backslash-escaped here, single-quoted there), and a
+# patch subject contains spaces, so no regex can reliably find where
+# the value ends. The cover line is additionally wrapped in a
+# `cover_id=$( ... )` assignment (print-only mode only), stripped
+# before parsing. A stray `"$cover_id"` token elsewhere on a patch
+# reply line is a literal piece of the pasteable text, not something to
+# actually run here -- cover_id is pre-declared empty so it expands to
+# nothing instead of tripping this file's `set -u`.
 patch_subject_at() {
-    local out="$1" nth="$2" f
-    f="$(grep -o -- '--body [^ ]*' <<<"$out" | sed -n "${nth}p" | awk '{print $2}')"
-    [[ -f "$f" ]] && grep -m1 '^Subject: ' "$f" | sed 's/^Subject: //'
+    # shellcheck disable=SC2034  # only read inside the `eval` below, via
+    # a literal "$cover_id" token in the parsed line's own text.
+    local out="$1" nth="$2" line cover_id=""
+    line="$(grep -n -- '--body ' <<<"$out" | sed -n "${nth}p" | cut -d: -f2-)"
+    [[ -n "$line" ]] || return 0
+    line="$(sed -E 's/^cover_id=\$\(//; s/ \)$//' <<<"$line")"
+    local -a words=()
+    eval "words=($line)" 2>/dev/null || return 0
+    local i
+    for (( i = 0; i < ${#words[@]}; i++ )); do
+        if [[ "${words[$i]}" == "--subject" ]]; then
+            printf '%s' "${words[$(( i + 1 ))]}"
+            return 0
+        fi
+    done
 }
 
 printf '\n== fill(): literal ${PLACEHOLDER} substitution, in isolation ==\n'

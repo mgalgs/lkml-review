@@ -719,8 +719,36 @@ printf '%s\n' "$body" > "$body_file"
 
 # patch_subject() reads a produced patch file's own Subject: header --
 # already numbered "i/K" by `git format-patch -n -v` above -- so each
-# reply's subject is exactly what git chose, not retyped here.
-patch_subject() { grep -m1 '^Subject: ' "$1" | sed 's/^Subject: //'; }
+# reply's subject is exactly what git chose, not retyped here. Two
+# things a single `grep -m1` misses: `git format-patch` folds a header
+# past 78 columns onto indented continuation lines (ordinary with the
+# "[PATCH vN i/K] " prefix added), and RFC-2047-encodes a non-ASCII
+# subject, sometimes as several adjacent encoded-words split across
+# folds. The awk pass below un-folds the header before it is read;
+# decoding the encoded-words needs an actual RFC 2047 decoder, which
+# this repo already reaches for python3 to get elsewhere (see
+# lkml-mailbox.sh, lkml-status.sh) with the same graceful-absence
+# fallback -- here, a subject left encoded rather than decoded, since a
+# folded-but-undecoded subject is still less wrong than one silently
+# truncated.
+patch_subject() {
+    local f="$1" raw
+    raw="$(awk '
+        /^Subject: / { sub(/^Subject: /, ""); buf = $0; insub = 1; next }
+        insub && /^[ \t]/ { sub(/^[ \t]+/, " "); buf = buf $0; next }
+        insub { exit }
+        END { print buf }
+    ' "$f")"
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c '
+import email.header, sys
+raw = sys.stdin.read().rstrip("\n")
+print(str(email.header.make_header(email.header.decode_header(raw))))
+' <<<"$raw" 2>/dev/null || printf '%s\n' "$raw"
+    else
+        printf '%s\n' "$raw"
+    fi
+}
 
 cover_cmd=(fork-sandbox mail send --from "$from" --to "$to")
 [[ -n "$cc" ]] && cover_cmd+=(--cc "$cc")
@@ -728,35 +756,42 @@ cover_cmd=(fork-sandbox mail send --from "$from" --to "$to")
 cover_cmd+=(--subject "$subject" --body "$body_file")
 
 if (( send )); then
-    # Command substitution only captures stdout, so the transport's
-    # human-readable "sent ..." line on stderr still reaches the
-    # operator's terminal even though $cover_id is assigned here.
-    cover_id="$("${cover_cmd[@]}")"
-    [[ -n "$cover_id" ]] || { echo "Error: fork-sandbox mail send printed no message id on stdout; cannot post per-patch replies without one." >&2; exit 1; }
     if (( post_patches )); then
+        # Command substitution only captures stdout, so the transport's
+        # human-readable "sent ..." line on stderr still reaches the
+        # operator's terminal even though $cover_id is assigned here.
+        # Only done in this branch: capturing it unconditionally would
+        # swallow `fork-sandbox mail send`'s printed message id even
+        # when no patches follow, breaking `id=$(lkml-fleet-kickoff.sh
+        # ... --send)` for the plain, no-`--patches` case that has no
+        # need of it.
+        cover_id="$("${cover_cmd[@]}")"
+        [[ -n "$cover_id" ]] || { echo "Error: fork-sandbox mail send printed no message id on stdout; cannot post per-patch replies without one." >&2; exit 1; }
         for f in "${patches[@]}"; do
             fork-sandbox mail reply --from "$from" --to @operator \
                 --reply-to "$cover_id" --subject "$(patch_subject "$f")" --body "$f"
         done
+    else
+        "${cover_cmd[@]}"
     fi
 else
-    # Print-only mode never actually sends the cover, so its real
-    # message id does not exist yet. The printed sequence is a single
-    # paste-able shell snippet: a `cover_id=$(...)` assignment around
-    # the cover command, then one `mail reply --reply-to "$cover_id"`
-    # line per patch that expands against it when run. The
-    # `--reply-to "$cover_id"` token is written out raw, not through
-    # the `printf '%q '` loop used for every other argument, so the
-    # pasted line contains a literal, unescaped `"$cover_id"` that
-    # expands at paste time instead of an inert copy of those
-    # characters.
-    # shellcheck disable=SC2016  # single-quoted on purpose: these are
-    # the literal characters `cover_id=$(` and `"$cover_id" ` to appear
-    # in the printed shell snippet, not expansions to run now.
-    printf 'cover_id=$('
-    printf '%q ' "${cover_cmd[@]}"
-    printf ')\n'
     if (( post_patches )); then
+        # Print-only mode never actually sends the cover, so its real
+        # message id does not exist yet. The printed sequence is a single
+        # paste-able shell snippet: a `cover_id=$(...)` assignment around
+        # the cover command, then one `mail reply --reply-to "$cover_id"`
+        # line per patch that expands against it when run. The
+        # `--reply-to "$cover_id"` token is written out raw, not through
+        # the `printf '%q '` loop used for every other argument, so the
+        # pasted line contains a literal, unescaped `"$cover_id"` that
+        # expands at paste time instead of an inert copy of those
+        # characters.
+        # shellcheck disable=SC2016  # single-quoted on purpose: these are
+        # the literal characters `cover_id=$(` and `"$cover_id" ` to appear
+        # in the printed shell snippet, not expansions to run now.
+        printf 'cover_id=$('
+        printf '%q ' "${cover_cmd[@]}"
+        printf ')\n'
         for f in "${patches[@]}"; do
             printf '%q ' fork-sandbox mail reply --from "$from" --to @operator --reply-to
             # shellcheck disable=SC2016
@@ -764,6 +799,9 @@ else
             printf '%q ' --subject "$(patch_subject "$f")" --body "$f"
             printf '\n'
         done
+    else
+        printf '%q ' "${cover_cmd[@]}"
+        printf '\n'
     fi
     printf 'Note: temp files for this command are left under %s -- nothing removes them; delete it yourself once done.\n' "$tmpdir" >&2
     tmpdir_kept=1

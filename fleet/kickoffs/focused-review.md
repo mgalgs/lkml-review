@@ -62,9 +62,13 @@ for a correctness focus, core + security for a trust-boundary one):
 round's To: or Cc: when the focus touches a trust boundary.)
 
 Payload: the branch-name form below; or post the current version's
-patches as separate reply messages (`lkml-fleet-kickoff.sh --patches`:
-one `mail reply --to @operator` per patch, replying to this round's
-own cover) if the seats cannot check the branch out themselves.
+patches as separate reply messages if the seats cannot check the
+branch out themselves -- one `fork-sandbox mail reply --from ${FROM}
+--to @operator --reply-to <this round's own message id> --subject
+"[PATCH vN i/K] <patch subject>" --body <patch file>` per patch,
+composed by hand. `lkml-fleet-kickoff.sh --patches` does not apply
+here: it posts its cover with `fork-sandbox mail send`, which starts a
+new thread -- exactly what this template exists to avoid.
 -->
 
 ${HANDOFF}
