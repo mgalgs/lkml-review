@@ -334,6 +334,30 @@ contains "cost-cluster: the cluster seat keeps its real persona name" "$OUT" \
     "cluster-seat   \$0.000000 (1 no summary)"
 contains "cost-cluster: the local run's cost is unaffected" "$OUT" "local          \$1.000000"
 
+printf '\n== cost-newline-persona: a sibling persona with an embedded newline must not drop a good cost ==\n'
+init_series cost-newline-persona
+mkdir -p "$work/cnp-good" "$work/cnp-bad"
+printf '{"total_cost_usd": 2.5}' > "$work/cnp-good/summary.json"
+printf '{}' > "$work/cnp-bad/summary.json"
+write_run cost-newline-persona "$work/cnp-good" good-seat
+# jq -r decodes this JSON escape into a raw newline byte inside the
+# persona variable -- exactly the shape that desynced the old
+# newline-delimited stdin zip in the classifier (commit 8ada7d937a).
+# The second persona is deliberately NOCOST, not costed: a newline
+# persona that also carries a cost still splits its own TOTAL line and
+# poisons the whole batch to unreadable, an accepted residual, not what
+# this fixture is pinning.
+printf '{"run_dir":"%s","persona":"bad\\nname"}\n' "$work/cnp-bad" \
+    >> "$LKML_MAILBOX_ROOT/cost-newline-persona/runs.jsonl"
+
+OUT="$("$status" cost-newline-persona 2>/dev/null)"
+contains "cost-newline-persona: runs launched is 2" "$OUT" "Runs launched: 2"
+not_contains "cost-newline-persona: the batch is not dragged into unreadable" "$OUT" "unreadable"
+contains "cost-newline-persona: good-seat's cost survives its sibling's embedded newline" "$OUT" \
+    "good-seat      \$2.500000"
+contains "cost-newline-persona: the aggregate includes good-seat's cost" "$OUT" \
+    "Total cost so far: \$2.500000"
+
 printf '\n== cost-pyabsent: a missing python3 degrades to a named state ==\n'
 init_series cost-pyabsent
 mkdir -p "$work/cp-withcost"

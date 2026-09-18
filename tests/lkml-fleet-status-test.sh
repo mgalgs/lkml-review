@@ -609,8 +609,10 @@ cat > "$corrupt_python_bin/python3" <<STUB
 # Runs the real classifier untouched, then overwrites the last line of
 # its output -- ordinarily a TOTAL line -- with garbage that matches
 # neither the TOTAL nor the sentinel shape. This pins one disjunct of
-# the gate: a present-but-malformed TOTAL line trips batch_ok=0 (missing
-# sentinel and wrong line count are covered by the stubs above; this
+# the gate: a present-but-malformed TOTAL line trips batch_ok=0 (the
+# wrong-line-count disjunct is covered by the stub above; the
+# misplaced-sentinel disjunct -- enough lines, but the wrong value
+# sitting at index n_paths -- has no fixture in this suite; this
 # screen has no GRAND line to malform -- that's lkml-status.sh's alone).
 # It does NOT prove the gate catches every corrupt-block shape: an
 # entirely dropped TOTAL line for one agent leaves every remaining line
