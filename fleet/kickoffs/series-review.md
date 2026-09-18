@@ -45,15 +45,16 @@ the expensive seats out of the default crew is the cost throttle.)
 
 Payload: pick ONE of the two variants below and delete the other.
 
-  Variant A -- attachments. Format the series first:
-      git format-patch ${BASE}..${BRANCH} -o <tmpdir>
-  then pass each file as its own `--attach <file>` (repeatable, 4 MiB
-  cap each). Good when reviewers' sandboxes do not already have the
-  branch.
+  Variant A -- patch messages. Post this cover with `fork-sandbox mail
+  send`, then post one `fork-sandbox mail reply --to @operator
+  --reply-to <cover-id>` per patch, body = that patch's own
+  `git format-patch` output (`lkml-fleet-kickoff.sh --patches` does
+  this for you). Good when reviewers' sandboxes do not already have
+  the branch.
 
   Variant B -- branch name in the body (below). Good when every
   reviewer's sandbox is a clone of the same repo and can check the
-  branch out itself; nothing to attach, nothing to stage.
+  branch out itself; nothing to post per patch.
 -->
 
 ${HANDOFF}
@@ -64,8 +65,9 @@ Base: ${BASE}
 Branch: ${BRANCH}
 Patches: ${PATCH_COUNT}
 
-Read the diff either from the attached patches (if this message carries
-any) or by checking out the branch yourself:
+Read the diff either from the patch messages on this thread (posted
+separately, one per patch, if this round used --patches) or by
+checking out the branch yourself:
 
     git fetch origin ${BRANCH}
     git checkout ${BRANCH}
@@ -105,9 +107,10 @@ is not on the first line and will not register there.)
 
 ## Next version
 
-v2 goes out as a reply to this thread, with a changelog answering
-review comment by comment and the v2 patches inline in the body, one
-fenced code block per patch, each headed by its filename. Reviewer
-sandboxes cannot fetch branches, and a wake's reply cannot carry
-attachments, so the inline copy is the review copy — a version named
-only as a branch is a version nobody on this thread can read.
+v2 goes out as one cover reply to this thread, with a changelog
+answering review comment by comment, followed by one message per
+patch (`[PATCH v2 i/K] ...`, addressed `To: @operator` so it sits on
+the thread without waking anyone). Reviewer sandboxes cannot fetch
+branches, and a wake's reply cannot carry attachments, so the patch
+messages are the review copy — a version named only as a branch is a
+version nobody on this thread can read.

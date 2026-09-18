@@ -61,10 +61,10 @@ for a correctness focus, core + security for a trust-boundary one):
 (@security is deliberately not in the standing crew — add it to this
 round's To: or Cc: when the focus touches a trust boundary.)
 
-Payload: the branch-name form below; or attach the current version's
-patches with `--attach` (repeatable, 4 MiB cap each) if the seats
-cannot check it out themselves — both `mail send` and `mail reply`
-carry attachments.
+Payload: the branch-name form below; or post the current version's
+patches as separate reply messages (`lkml-fleet-kickoff.sh --patches`:
+one `mail reply --to @operator` per patch, replying to this round's
+own cover) if the seats cannot check the branch out themselves.
 -->
 
 ${HANDOFF}

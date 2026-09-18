@@ -37,12 +37,15 @@ core + security for anything touching a trust boundary):
 
 Payload: pick ONE of the two variants below and delete the other.
 
-  Variant A -- attachment. Format the single commit first:
-      git format-patch -1 ${BRANCH} -o <tmpdir>
-  then pass the one file as `--attach <file>` (4 MiB cap).
+  Variant A -- patch message. Post this cover with `fork-sandbox mail
+  send`, then post ONE `fork-sandbox mail reply --to @operator
+  --reply-to <cover-id>` whose body is the patch's own
+  `git format-patch` output (`lkml-fleet-kickoff.sh --patches` does
+  this for you). Good when the reviewer's sandbox does not already
+  have the branch.
 
   Variant B -- branch name in the body (below). Reviewer sandboxes
-  check the branch out themselves; nothing to attach.
+  check the branch out themselves; nothing to post per patch.
 -->
 
 ${HANDOFF}
@@ -52,8 +55,9 @@ ${SUMMARY}
 Base: ${BASE}
 Branch: ${BRANCH}
 
-Read the diff either from the attached patch (if this message carries
-one) or by checking out the branch yourself:
+Read the diff either from the patch message on this thread (posted
+separately, if this round used --patches) or by checking out the
+branch yourself:
 
     git fetch origin ${BRANCH}
     git checkout ${BRANCH}
@@ -93,7 +97,8 @@ is not on the first line and will not register there.)
 
 ## Next version
 
-A fix goes out as a reply to this thread, with the revised patch
-inline in the body as a fenced code block headed by its filename.
+A fix goes out as one cover reply to this thread, followed by ONE
+patch message (`[PATCH v2 1/1] ...`, addressed `To: @operator` so it
+sits on the thread without waking anyone) carrying the revised patch.
 Reviewer sandboxes cannot fetch branches, and a wake's reply cannot
-carry attachments, so the inline copy is the review copy.
+carry attachments, so the patch message is the review copy.
