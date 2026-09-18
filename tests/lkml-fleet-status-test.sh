@@ -597,6 +597,35 @@ contains "a costed run is unreadable under a partial batch, not a bare zero" "$O
 contains "a second agent's costed run is unreadable under a partial batch too" "$OUT" "review-two  2 runs  \$0.000000 (2 unreadable)"
 contains "a lone run is unreadable under a partial batch, not silently free" "$OUT" "review-null  1 run  \$0.000000 (1 unreadable)"
 
+printf '\n== cost per agent: a corrupt totals block must poison the batch, not partially sum ==\n'
+real_python3="$(command -v python3)"
+corrupt_python_bin="$work/corrupt-python-bin"; mkdir -p -- "$corrupt_python_bin"
+for command in bash awk date head sed sort; do
+    ln -s "$(command -v "$command")" "$corrupt_python_bin/$command"
+done
+ln -s "$stub_bin/fork-sandbox" "$corrupt_python_bin/fork-sandbox"
+cat > "$corrupt_python_bin/python3" <<STUB
+#!/usr/bin/env bash
+# Runs the real classifier untouched, then overwrites the last line of
+# its output -- ordinarily a TOTAL line -- with garbage that matches
+# neither the TOTAL nor the sentinel shape. This is one representative
+# member of the gate's disjuncts (missing sentinel, malformed TOTAL
+# line, malformed GRAND line, wrong line count): they all funnel into
+# the same batch_ok=0 fallback, so proving one is wired proves the path.
+mapfile -t lines < <("$real_python3" "\$@")
+lines[-1]='not a totals line'
+printf '%s\n' "\${lines[@]}"
+STUB
+chmod +x -- "$corrupt_python_bin/python3"
+OUT="$(PATH="$corrupt_python_bin" "$status" "$t1" --mail-root "$root" 2>&1)"; RC=$?
+check "a corrupt totals block does not fail the screen" "0" "$RC"
+contains "a corrupt totals block explains runs as unreadable" "$OUT" "unreadable"
+contains "a corrupt totals block still prints the run inventory" "$OUT" 'runs: 6 (1 no summary, 5 unreadable)'
+not_contains "a corrupt totals block never launders a costed run into no cost" "$OUT" 'no cost'
+contains "a costed run is unreadable under a corrupt totals block, not a bare zero" "$OUT" "review-one  3 runs  \$0.000000 (1 no summary, 2 unreadable)"
+contains "a second agent's costed run is unreadable under a corrupt totals block too" "$OUT" "review-two  2 runs  \$0.000000 (2 unreadable)"
+contains "a lone run is unreadable under a corrupt totals block, not silently free" "$OUT" "review-null  1 run  \$0.000000 (1 unreadable)"
+
 # python3 is only needed for summaries belonging to the requested thread.
 # An otherwise populated ledger must still report observable no-run and
 # no-summary states when that parser is absent.
@@ -744,6 +773,34 @@ check "2500 runs of 4e-10 sum to exactly the display floor, not a silent zero" \
     "floor-pin  2500 runs  \$0.000001" "$LINE"
 not_contains "the floor-pin aggregate does not display as a bare zero" "$OUT" "floor-pin  2500 runs  \$0.000000"
 not_contains "the floor-pin aggregate is not annotated as no cost" "$LINE" "no cost"
+
+# floor-gone: 13000 runs at 4e-11 each, below the old 5e-11 floor this
+# fold removed. Its .10f text is 0.0000000000 -- all zeros -- so the
+# retired awk chain, which round-tripped each addend through that text
+# before summing, added 13000 exact zeros and reported $0.000000. The
+# fold sums the float itself (4e-11 never touches text until the
+# total), so its true sum, 5.2e-7, survives and displays as $0.000001.
+# This is the fixture a reviewer flagged as untestable before the fold
+# -- a deleted follow-up doc warned that adding it pre-fold would be
+# meaningless, since nothing then could tell a real sub-floor sum from
+# a floored one -- and is exactly the fixture that tells them apart
+# now. Fleet-suite only: the status screen runs the identical chain
+# and is already pinned by its own mirror fixtures (cost-floor-pin
+# etc in tests/lkml-status-test.sh); that suite's own per-fixture cost
+# is the subject of a separate commit, not this fixture.
+for i in $(seq -w 1 13000); do
+    run_dir="$work/run-floor-gone-$i"; mkdir -p -- "$run_dir"
+    printf '{"total_cost_usd": 4e-11}\n' > "$run_dir/summary.json"
+    printf 'agent=floor-gone\nthread=%s\nrun_dir=%s\n' "$t8" "$run_dir" > "$pm/runs/run-floor-gone-$i.env"
+done
+
+OUT="$(PATH="$STUB_PATH" "$status" "$t8" --mail-root "$root" 2>&1)"; RC=$?
+check "floor-gone fixture screen exits 0" "0" "$RC"
+LINE="$(grep -F 'floor-gone ' <<<"$OUT" | head -n1)"
+check "13000 runs of 4e-11 sum past the old floor only under float-carried summation" \
+    "floor-gone  13000 runs  \$0.000001" "$LINE"
+not_contains "the floor-gone aggregate does not display as a bare zero" "$OUT" "floor-gone  13000 runs  \$0.000000"
+not_contains "the floor-gone aggregate is not annotated as no cost" "$LINE" "no cost"
 
 printf '\n== prefix resolution ==\n'
 OUT="$(PATH="$STUB_PATH" "$status" "${t1:0:12}" --mail-root "$root" 2>&1)"; RC=$?
