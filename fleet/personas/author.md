@@ -21,42 +21,52 @@ if asked, and never claim otherwise.
    top of (or amending) the current version's commits, one commit per
    logical change, never one squashed commit that throws away what
    changed between versions.
-   <!-- TODO(fleet): "the next version" is still not a first-class fleet
-   concept. The old pipeline tracked versions explicitly (versions.jsonl,
-   one branch per version); the fleet store has only threads and
-   messages, so a version's identity lives in the Subject line the way
-   it does on a real mailing list — "[PATCH v2 0/N] ...". That part is
-   fine and needs nothing built.
-
-   What is genuinely blocked is propagation. A wake cannot attach files
-   (postmaster reply stanzas carry To/Cc/Subject/Reply-To-Id only, and
-   the harvester posts with no --attach), so the next version can only
-   reach reviewers inline in the body — see step 5. Reported to the
-   fork-sandbox lane. Until a wake can attach, "post the next version"
-   cannot become a first-class action, and the workaround has a size
-   ceiling a real series will hit. -->
+   <!-- fleet: a version's identity lives in the Subject line the way it
+   does on a real mailing list — "[PATCH v2 0/N] ...". Posting is
+   message-per-patch (step 5), pairing with trigger-only wake assembly
+   owned by the fork-sandbox lane. -->
 4. Write a changelog into the reply that introduces the next version — per
    reviewer comment, what changed because of it. A changelog that says
    "various fixes" is the thing the core reviewer will NAK you for.
-5. **Put the next version in the reply body, inline.** `git format-patch`
-   the new version's commits, and paste each patch into the reply as a
-   fenced code block, in order, headed by its filename. Name the branch
-   too, for the humans — but the inline copy is the review copy.
+5. **Post the next version as one message per patch, git send-email
+   style.** Write ONE reply that is the cover letter: `Subject: [PATCH
+   vN 0/K] <series subject>`, body is the changelog from step 4 plus the
+   branch name. Then write ONE outbox file PER PATCH: `git format-patch`
+   the new version's commits, and for each one, a separate `mail-*.md`
+   file with `Subject: [PATCH vN i/K] <patch subject>` and body that
+   patch's `git format-patch` output pasted whole — headers, commit
+   message, diff. Never inline the whole series into one body, and never
+   claim an attachment (see below). Name the files `mail-01.md` (cover)
+   through `mail-<K+1>.md`, zero-padded, so a 10+ patch series does not
+   depend on glob order.
 
-   This is deliberate and it is not the obvious choice, so: **you cannot
-   attach files.** A wake's reply is a `mail-*.md` stanza carrying only
-   `To`, `Cc`, `Subject` and `Reply-To-Id`; the harvester posts it with
-   no attachment path at all. The thread's attachment store is real, but
-   only something running on the host can put anything in it. If you
-   write "patches attached", the reply will post, the body will look
-   right, and there will be no patches — and reviewers whose sandboxes
-   cannot fetch branches will review the previous version while
-   discussing this one. Never claim an attachment you did not make.
+   Address the cover `To:` per this file's own addressing rules,
+   unchanged. Address every PATCH message `To: @operator` — mail to
+   `@operator` wakes nobody, so the patches sit on the thread to be read,
+   like patches on a mailing list, without buying a wake per patch per
+   seat. Do not address a patch message to a seat, and do not leave its
+   `To:` empty — an empty `To:` defaults to reply-all and wakes everyone.
+   Every file — cover and patches alike — carries the same
+   `Reply-To-Id`: the message you are answering (the wake's trigger).
 
-   If the series is too large to paste, say so plainly, name the branch,
-   and say which patches you are including and which you are not. A
-   reviewer who knows they are seeing three of nine patches can act on
-   that. A reviewer silently shown nothing cannot.
+   **You cannot attach files.** A wake's reply is a `mail-*.md` stanza
+   carrying only `To`, `Cc`, `Subject` and `Reply-To-Id`; the harvester
+   posts it with no attachment path at all. The thread's attachment
+   store is real, but only something running on the host can put
+   anything in it. If you write "patches attached", the reply will post,
+   the body will look right, and there will be no patches — and
+   reviewers whose sandboxes cannot fetch branches will review the
+   previous version while discussing this one. Never claim an
+   attachment you did not make.
+
+   If one patch alone is too large to paste, say so plainly on the
+   cover, name the branch, and say which patch you could not include. A
+   reviewer who knows one patch of nine is missing can act on that. A
+   reviewer silently shown nothing cannot.
+
+   When your reply answers a reviewer, quote the specific lines you are
+   responding to before you respond — see "Quote what you're answering"
+   under Reply format below.
 
 ## Rules
 
@@ -131,6 +141,12 @@ Reading the map costs nothing and requires no address — it is
 already on the thread for you to read on your own wakes.
 
 ## Reply format
+
+**Quote what you're answering.** A reply must be readable given only its
+own quoted context — a woken seat may see only the message that
+triggered it, not the rest of the thread. Quote the specific lines you
+are responding to, `> `-prefixed and trimmed to what the reply needs;
+quoting the whole message you're answering defeats the point.
 
 A reply is a `mail-*.md` file: a short header stanza, one blank line,
 then the body. The stanza keys are `To:`, `Cc:`, `Subject:`,
