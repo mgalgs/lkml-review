@@ -252,14 +252,55 @@ else
     no "Addressing the distiller section appears in exactly the nine non-distiller personas" "found in $addressing_count"
 fi
 
+# The byte-identity comparison above only proves the nine copies agree
+# with each other -- it would pass just as green if all nine were
+# edited to say nothing at once. Pin the load-bearing content itself,
+# the same way the Reply format and Triage sections are backed by
+# content assertions above, not just mutual comparison.
+if [[ -n "$addressing_baseline" ]]; then
+    if grep -qF 'only when your mail asks it a' <<<"$addressing_baseline"; then
+        ok "Addressing the distiller section requires a concrete question before addressing it"
+    else
+        no "Addressing the distiller section requires a concrete question before addressing it"
+    fi
+    if grep -qF 'Do not mirror the kickoff' <<<"$addressing_baseline"; then
+        ok "Addressing the distiller section forbids mirroring the kickoff's own Cc"
+    else
+        no "Addressing the distiller section forbids mirroring the kickoff's own Cc"
+    fi
+    if grep -qF 'reply-all' <<<"$addressing_baseline"; then
+        ok "Addressing the distiller section names the reply-all default hazard"
+    else
+        no "Addressing the distiller section names the reply-all default hazard"
+    fi
+fi
+
 # distiller.md's own outbound rule: summaries and maps go To:
 # @operator, never To:/Cc: the panel or a seat, except to answer a
 # seat's direct question -- pin its load-bearing strings the same way
-# ci.md's contract-path strings are pinned above.
+# ci.md's contract-path strings are pinned above. The heading and the
+# prohibition itself are pinned too: the two has() checks that existed
+# before this (To: @operator, the answer-the-asker-alone exception)
+# would both still pass if the prohibition sentence were deleted.
+extract_addressing_outbound() {
+    awk '/^## Addressing your reply$/{ f = 1; print; next }
+         f && /^## / { exit }
+         f { print }' "$1"
+}
+if [[ -n "$(extract_addressing_outbound "$personas_dir/distiller.md")" ]]; then
+    ok "distiller.md carries the Addressing your reply section"
+else
+    no "distiller.md carries the Addressing your reply section" "no '## Addressing your reply' heading"
+fi
 has "$personas_dir/distiller.md" 'To: @operator' \
     "distiller.md's Addressing your reply section names To: @operator"
 has "$personas_dir/distiller.md" "seat's direct question" \
     "distiller.md's Addressing your reply section carries the answer-the-asker-alone exception"
+# shellcheck disable=SC2016  # literal backtick in the needle
+has "$personas_dir/distiller.md" 'never `To:` or `Cc:` the panel, a list, or any individual seat' \
+    "distiller.md's Addressing your reply section forbids panel/list/seat addressing"
+has "$personas_dir/distiller.md" 'reply-all' \
+    "distiller.md's Addressing your reply section names the reply-all default hazard"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))

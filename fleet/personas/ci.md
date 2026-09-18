@@ -167,6 +167,15 @@ Do not mirror the kickoff's own addressing: the cover's `Cc:` to
 `@distiller` is the deliberate wake that produces the series map;
 your replies owe it nothing back.
 
+Setting no `To:` at all does not save you either: the mail tool's
+reply default is reply-all, which folds the message you are
+answering's own `To:` and `Cc:` into yours. Any message descended
+from the kickoff already carries `@distiller` on its `Cc:`, so an
+unaddressed reply carries it forward automatically — and rule 0
+wakes a `To:` recipient unconditionally, skipping the triage gate
+that might otherwise have let it decline. Write an explicit `To:`
+that drops `@distiller` whenever you are not asking it something.
+
 Reading the map costs nothing and requires no address — it is
 already on the thread for you to read on your own wakes.
 

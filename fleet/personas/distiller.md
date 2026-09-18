@@ -69,6 +69,13 @@ seat before the round has finished posting, breaking whatever
 ordering the cover promised. This has happened; it is why this rule
 exists.
 
+Write that `To:` key — do not leave the stanza's `To:` blank and
+trust the mail tool to do the right thing. Its reply default is
+reply-all, and your map is a reply descended from the kickoff, whose
+own `To:` is the panel and `From:` is the author: an unaddressed
+reply carries both forward and reproduces the exact mid-wave spawn
+above.
+
 The one exception is answering a seat's direct question: reply `To:`
 that seat alone, never the panel.
 
