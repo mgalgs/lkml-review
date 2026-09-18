@@ -2025,6 +2025,173 @@ else
     no "multi-version fleet thread: all 4 messages render exactly once (no v3-under-v2 duplication)"
 fi
 
+printf '\n== fleet-store thread: message-per-patch posting (cover and patches are SIBLINGS) ==\n'
+# fleet/personas/author.md posts a version's cover and every one of its
+# patches with the SAME Reply-To-Id -- the wake's trigger -- because an
+# outbox file cannot reference a sibling file's not-yet-assigned id.
+# That makes each '[PATCH vN i/K]' patch a structural SIBLING of its
+# cover (both reply to the same prior message), not a child of it, the
+# way lkml-fleet-kickoff.sh's cover-then-reply posting produces. Without
+# a repair for this shape, each patch opens its own empty version
+# (0 patches tallied, its diff left unfolded) -- the exact body-size
+# failure the message-per-patch format exists to cure, reproduced by
+# the fix itself.
+mpp="$work/fleet-mail/threads/mpp-thread"
+mkdir -p "$mpp"
+mpp_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+mpp_v1_reply="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+mpp_v2_cover="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+mpp_v2_patch="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+printf '%s\n' \
+    "Message-ID: ${mpp_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+    'Subject: [PATCH v1 0/1] message-per-patch demo' \
+    '' \
+    'kickoff v1' \
+    > "$mpp/001-${mpp_root}.msg"
+printf '%s\n' \
+    "Message-ID: ${mpp_v1_reply}" \
+    "In-Reply-To: ${mpp_root}" \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: [PATCH v1 0/1] message-per-patch demo' \
+    '' \
+    'Changes-requested: size the queue against the right limit' \
+    > "$mpp/002-${mpp_v1_reply}.msg"
+printf '%s\n' \
+    "Message-ID: ${mpp_v2_cover}" \
+    "In-Reply-To: ${mpp_v1_reply}" \
+    'From: @author' \
+    'To: @core' \
+    'Date: Wed, 17 Sep 2025 02:00:00 +0000' \
+    'Subject: [PATCH v2 0/1] message-per-patch demo' \
+    '' \
+    'v2: fixed the queue size per core review' \
+    > "$mpp/003-${mpp_v2_cover}.msg"
+printf '%s\n' \
+    "Message-ID: ${mpp_v2_patch}" \
+    "In-Reply-To: ${mpp_v1_reply}" \
+    'From: @author' \
+    'To: @operator' \
+    'Date: Wed, 17 Sep 2025 02:00:01 +0000' \
+    'Subject: [PATCH v2 1/1] size the queue against the right limit' \
+    '' \
+    'From 1111111111111111111111111111111111111111 Mon Sep 17 00:00:00 2001' \
+    'From: Author <author@example.com>' \
+    'Date: Mon, 17 Sep 2001 00:00:00 +0000' \
+    'Subject: [PATCH v2 1/1] size the queue against the right limit' \
+    '' \
+    'Fixed size the queue against the right limit.' \
+    '' '---' ' demo.c | 1 +' ' 1 file changed, 1 insertion(+)' '' \
+    'diff --git a/demo.c b/demo.c' \
+    '+fixed' \
+    > "$mpp/004-${mpp_v2_patch}.msg"
+mpp_text="$(python3 "$renderer" --text "$mpp")"
+contains "message-per-patch: v2 tallies its sibling-posted patch, not zero" \
+    "$mpp_text" '1 patches · 0 replies · 0 reviewers'
+contains "message-per-patch: the sibling patch's diff is folded, not inlined" \
+    "$mpp_text" '[diff omitted: 2 lines -- see the series branch]'
+case "$mpp_text" in
+    *'diff --git a/demo.c b/demo.c'*)
+        no "message-per-patch: v2's diff --git hunk never appears verbatim" ;;
+    *) ok "message-per-patch: v2's diff --git hunk never appears verbatim" ;;
+esac
+mpp_html="$work/mpp.html"
+python3 "$renderer" "$mpp" -o "$mpp_html"
+if [[ "$(grep -o '<section class="section"' "$mpp_html" | wc -l)" -eq 2 ]]; then
+    ok "message-per-patch: two version sections render (v1, v2) -- the sibling patch opens no section of its own"
+else
+    no "message-per-patch: two version sections render (v1, v2) -- the sibling patch opens no section of its own"
+fi
+if [[ "$(grep -o '<details class="msg"' "$mpp_html" | wc -l)" -eq 4 ]]; then
+    ok "message-per-patch: all 4 messages render exactly once"
+else
+    no "message-per-patch: all 4 messages render exactly once"
+fi
+
+printf '\n== fleet-store thread: message-per-patch posting (cover and patches are CHILDREN of the cover) ==\n'
+# The counterpart to the sibling shape above: lkml-fleet-kickoff.sh posts
+# sequentially and CAN capture the cover's id from `fork-sandbox mail
+# send`, so it addresses every patch reply's Reply-To-Id straight at the
+# cover -- a real depth-1 child, the shape build_fleet_layout's sibling
+# repair is a no-op for. Both shapes must tally and fold the same way.
+mppc="$work/fleet-mail/threads/mpp-child-thread"
+mkdir -p "$mppc"
+mppc_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+mppc_p1="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+mppc_p2="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+mppc_review="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+printf '%s\n' \
+    "Message-ID: ${mppc_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+    'Subject: [PATCH v1 0/2] cover-child demo' \
+    '' \
+    'kickoff v1' \
+    > "$mppc/001-${mppc_root}.msg"
+printf '%s\n' \
+    "Message-ID: ${mppc_p1}" \
+    "In-Reply-To: ${mppc_root}" \
+    'From: @author' \
+    'To: @operator' \
+    'Date: Wed, 17 Sep 2025 00:00:01 +0000' \
+    'Subject: [PATCH v1 1/2] first patch' \
+    '' \
+    'From 2222222222222222222222222222222222222222 Mon Sep 17 00:00:00 2001' \
+    'From: Author <author@example.com>' \
+    'Date: Mon, 17 Sep 2001 00:00:00 +0000' \
+    'Subject: [PATCH v1 1/2] first patch' \
+    '' \
+    'Commit message for patch one.' \
+    '' '---' ' demo.c | 1 +' ' 1 file changed, 1 insertion(+)' '' \
+    'diff --git a/demo.c b/demo.c' \
+    '+one' \
+    > "$mppc/002-${mppc_p1}.msg"
+printf '%s\n' \
+    "Message-ID: ${mppc_p2}" \
+    "In-Reply-To: ${mppc_root}" \
+    'From: @author' \
+    'To: @operator' \
+    'Date: Wed, 17 Sep 2025 00:00:02 +0000' \
+    'Subject: [PATCH v1 2/2] second patch' \
+    '' \
+    'From 3333333333333333333333333333333333333333 Mon Sep 17 00:00:00 2001' \
+    'From: Author <author@example.com>' \
+    'Date: Mon, 17 Sep 2001 00:00:00 +0000' \
+    'Subject: [PATCH v1 2/2] second patch' \
+    '' \
+    'Commit message for patch two.' \
+    '' '---' ' demo.c | 1 +' ' 1 file changed, 1 insertion(+)' '' \
+    'diff --git a/demo.c b/demo.c' \
+    '+two' \
+    > "$mppc/003-${mppc_p2}.msg"
+printf '%s\n' \
+    "Message-ID: ${mppc_review}" \
+    "In-Reply-To: ${mppc_p2}" \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: [PATCH v1 2/2] second patch' \
+    '' \
+    'Reviewed-by: core' \
+    > "$mppc/004-${mppc_review}.msg"
+mppc_text="$(python3 "$renderer" --text "$mppc")"
+contains "cover-child: both patches are tallied, not zero" \
+    "$mppc_text" '2 patches · 1 replies · 1 reviewers'
+if [[ "$(grep -cF '[diff omitted:' <<<"$mppc_text")" -eq 2 ]]; then
+    ok "cover-child: both patches fold their diff"
+else
+    no "cover-child: both patches fold their diff"
+fi
+contains "cover-child: the reviewer's Reviewed-by lands on patch 2/2, not the cover" \
+    "$mppc_text" '[PATCH v1 2/2] second patch  R'
+contains "cover-child: patch 1/2 carries no verdict of its own" \
+    "$mppc_text" '[PATCH v1 1/2] first patch   ·'
+
 printf '\n== fleet-store thread: a Re:-prefixed version bump still opens its own section ==\n'
 # The same shape as the previous fixture, except the v3 posting's own
 # Subject carries a 'Re: ' prefix -- exactly what a wake stanza produces

@@ -280,6 +280,22 @@ def fleet_version(subject, default=1):
     return int(vm.group(1)) if vm else default
 
 
+PATCH_INDEX_RE = re.compile(r"^\[PATCH (?:v\d+ )?(\d+)/(\d+)\]")
+
+
+def patch_index_total(subject):
+    """(i, K) from a '[PATCH vN i/K] ...' subject (Re: layers stripped),
+    or None when the subject is not that shape. A cover ('.../0/K') and
+    a patch ('.../i/K', i >= 1) both match this -- is_cover_subject
+    cannot tell them apart (it only checks for the word PATCH in the
+    bracket), so callers that need the distinction compare the index."""
+    subj = subject
+    while subj.startswith("Re: "):
+        subj = subj[4:]
+    mm = PATCH_INDEX_RE.match(subj)
+    return (int(mm.group(1)), int(mm.group(2))) if mm else None
+
+
 def esc(s):
     return html.escape(s, quote=True)
 
@@ -567,6 +583,33 @@ def build_fleet_layout(series_dir, assume_root_version=None):
             p["children"].append(m)
         else:
             roots.append(m)
+    # The author posts a version's cover and every one of its patches
+    # with the SAME Reply-To-Id -- the wake's trigger -- because an
+    # outbox file cannot reference a sibling file's not-yet-assigned id
+    # (fleet/personas/author.md, decision 1). Structurally that makes a
+    # patch a SIBLING of its cover, not a child of it: without this
+    # repair each '[PATCH vN i/K]' patch would open its own version
+    # (the depth reset below fires on any child whose version exceeds
+    # its parent's), landing with zero patches and its diff unfolded --
+    # the same body-size failure this whole posting format exists to
+    # cure. Re-parent a patch under its sibling cover before depth is
+    # computed, so it renders at depth 1 exactly like a patch nested
+    # under its cover already is (the kickoff's own cover-then-reply
+    # posting, where this loop is a no-op: the cover is each patch's
+    # direct parent there, not a sibling to search for).
+    for m in list(msgs.values()):
+        idx = patch_index_total(m["subject"])
+        p = msgs.get(m["parent"]) if m["parent"] else None
+        if not idx or idx[0] == 0 or p is None:
+            continue
+        cover = next((s for s in p["children"]
+                      if s is not m and s["version"] == m["version"]
+                      and patch_index_total(s["subject"]) == (0, idx[1])), None)
+        if cover is None:
+            continue
+        p["children"].remove(m)
+        cover["children"].append(m)
+        m["parent"] = cover["id"]
     for m in msgs.values():
         m["children"].sort(key=lambda x: (x["seq"], x["date"] or datetime.min))
 
@@ -703,13 +746,14 @@ def tally(cover, boundary_ids=frozenset()):
     cover, are never counted as this version's patches or replies."""
     rows = []
     personas = {}
-    # A child's subject starting with '[PATCH' is only a same-version
-    # patch in the old layout, where a real '[PATCH vN i/M]' message and
-    # this cover always share one X-Version. In a fleet thread the only
-    # child that can match is a later version's own cover reply
-    # ('[PATCH v3 0/1] ...'), which never shares this cover's version --
-    # the version check is what tells the two apart, since fleet has no
-    # individual patch messages at all.
+    # A child's subject starting with '[PATCH' is a same-version patch
+    # in both layouts now: the old layout's real '[PATCH vN i/M]'
+    # message always shares its cover's one X-Version, and a fleet
+    # patch does too once build_fleet_layout's sibling repair has
+    # re-parented it here. The only other child this can match is a
+    # later version's own cover reply ('[PATCH v3 0/1] ...'), which
+    # never shares THIS cover's version -- the version check is what
+    # tells the two apart.
     targets = [cover] + [c for c in cover["children"]
                          if c["subject"].startswith("[PATCH") and c["version"] == cover["version"]]
     patch_roots = {c["id"] for c in targets[1:]}
