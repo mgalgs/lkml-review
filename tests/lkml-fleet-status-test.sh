@@ -357,11 +357,12 @@ run_no_agent="$work/run-no-agent"; mkdir -p -- "$run_no_agent"
 printf '{"total_cost_usd": 6.0}\n' > "$run_no_agent/summary.json"
 printf 'thread=%s\nrun_dir=%s\n' "$t7" "$run_no_agent" > "$pm/runs/run-noagent.env"
 
-# thread t8: dedicated fixture for the sub-5e-7 aggregate test far below.
-# Created here, alongside t1..t7, rather than at its point of use, so the
-# --list count check right after this block counts every fixture thread
-# the store will ever hold, not just the ones created before it happened
-# to run.
+# thread t8: dedicated fixture for the sub-5e-7 aggregate test far below,
+# also reused by the floor-pin fixture further down for its own 2500-run
+# aggregate. Created here, alongside t1..t7, rather than at its point of
+# use, so the --list count check right after this block counts every
+# fixture thread the store will ever hold, not just the ones created
+# before it happened to run.
 t8="88888888-0000-4000-8000-000000000000"
 mkdir -p -- "$root/threads/$t8"
 write_msg "$root" "$t8" 001 j0010000-0000-4000-8000-000000000001 "$(D 28)" \

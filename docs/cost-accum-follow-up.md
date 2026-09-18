@@ -49,7 +49,7 @@ fixture comment in both `tests/lkml-status-test.sh` and
 `tests/lkml-fleet-status-test.sh` (it describes the same awk-fork cost
 class and 5e-11 floor as live facts, so it needs updating, not
 deleting — the fixture still tests display precision after the fold).
-There is no cost-floor-blind fixture to update: the floor it pinned
+Do not add a fixture asserting a cost below the 5e-11 floor: that floor
 (a real sub-5e-11 cost never reaching the accumulator) is exactly what
-this fold removes, so that fixture's behavior would become meaningless
-rather than merely stale.
+this fold removes, so such a fixture's behavior would become
+meaningless rather than merely stale.
