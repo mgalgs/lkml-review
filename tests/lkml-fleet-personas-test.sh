@@ -339,5 +339,30 @@ has "$personas_dir/distiller.md" 'never `To:` or `Cc:` the panel, a list, or any
 has "$personas_dir/distiller.md" 'reply-all' \
     "distiller.md's Addressing your reply section names the reply-all default hazard"
 
+# Wake prompts are moving to trigger-only delivery (the fork-sandbox
+# lane's half of this change), so a reply that only makes sense next to
+# the rest of the thread is a reply a woken seat cannot act on. Every
+# persona's Reply format section must carry the quote-reply instruction,
+# worded once and reused verbatim -- pinned the same way as the section
+# itself above, so this is redundant with that byte-identical check but
+# still asserted directly per persona per the operator's own ask.
+for f in "$personas_dir"/*.md; do
+    name="$(basename "$f" .md)"
+    has "$f" "Quote what you're answering" \
+        "$name carries the quote-reply discipline"
+done
+
+# The message-per-patch rewrite of author.md's step 5 replaces the old
+# single-body-inline instruction; the stable phrase below is the one
+# this round introduced, and the old instruction's own wording must be
+# gone, not just superseded further down the file.
+has "$personas_dir/author.md" 'one message per patch' \
+    "author.md instructs one message per patch"
+if grep -qF 'paste each patch into the reply' "$personas_dir/author.md"; then
+    no "author.md no longer instructs inlining the whole series into one reply"
+else
+    ok "author.md no longer instructs inlining the whole series into one reply"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))
