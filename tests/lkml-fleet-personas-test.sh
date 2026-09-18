@@ -273,6 +273,22 @@ if [[ -n "$addressing_baseline" ]]; then
     else
         no "Addressing the distiller section names the reply-all default hazard"
     fi
+    # The explicit To: rule must describe reply-all's real recipient
+    # set (parent's From + To + Cc, not just To:/Cc:) and tell seats to
+    # subtract from it rather than reconstruct a fresh list -- a fresh
+    # list built from the kickoff's visible To: silently drops the
+    # author, who reaches a reply only via the kickoff's From:.
+    # shellcheck disable=SC2016  # literal backtick in the needle
+    if grep -qF '`From:`, `To:` and `Cc:` into yours' <<<"$addressing_baseline"; then
+        ok "Addressing the distiller section's reply-all description includes From:"
+    else
+        no "Addressing the distiller section's reply-all description includes From:"
+    fi
+    if grep -qF 'reply-all set' <<<"$addressing_baseline" && grep -qF 'not a fresh list' <<<"$addressing_baseline"; then
+        ok "Addressing the distiller section tells seats to subtract from reply-all, not rebuild it"
+    else
+        no "Addressing the distiller section tells seats to subtract from reply-all, not rebuild it"
+    fi
 fi
 
 # distiller.md's own outbound rule: summaries and maps go To:

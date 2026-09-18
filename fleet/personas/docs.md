@@ -71,12 +71,15 @@ your replies owe it nothing back.
 
 Setting no `To:` at all does not save you either: the mail tool's
 reply default is reply-all, which folds the message you are
-answering's own `To:` and `Cc:` into yours. Any message descended
-from the kickoff already carries `@distiller` on its `Cc:`, so an
-unaddressed reply carries it forward automatically — and rule 0
-wakes a `To:` recipient unconditionally, skipping the triage gate
-that might otherwise have let it decline. Write an explicit `To:`
-that drops `@distiller` whenever you are not asking it something.
+answering's own `From:`, `To:` and `Cc:` into yours — the kickoff's
+`From:` is the author, so the author reaches you that way, not via
+its `To:` or `Cc:`. Any message descended from the kickoff already
+carries `@distiller` on its `Cc:`, so an unaddressed reply carries it
+forward automatically — and rule 0 wakes a `To:` recipient
+unconditionally, skipping the triage gate that might otherwise have
+let it decline. Write an explicit `To:` that is the reply-all set
+minus `@distiller` — not a fresh list built from the kickoff's own
+header, which would silently drop the author along with it.
 
 Reading the map costs nothing and requires no address — it is
 already on the thread for you to read on your own wakes.
