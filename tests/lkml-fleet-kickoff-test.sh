@@ -96,6 +96,18 @@ adjacent_ownline_same() {
     ' "$@"
 }
 
+# Pulls the Nth (1-indexed) printed `--body <file>` argument's own
+# Subject: header out of a composed --patches sequence -- the
+# --patches-mode replacement for the old `--attach [^ ]*` pattern, since
+# a patch is now named only in a `mail reply ... --body <file>` line,
+# not by an --attach flag. N=1 is always the cover's own body file; N=2
+# is the first patch reply, N=3 the second, and so on.
+patch_subject_at() {
+    local out="$1" nth="$2" f
+    f="$(grep -o -- '--body [^ ]*' <<<"$out" | sed -n "${nth}p" | awk '{print $2}')"
+    [[ -f "$f" ]] && grep -m1 '^Subject: ' "$f" | sed 's/^Subject: //'
+}
+
 printf '\n== fill(): literal ${PLACEHOLDER} substitution, in isolation ==\n'
 # Pull lkml-fleet-kickoff.sh's own fill() definition out of the script
 # rather than keeping a hand-copied duplicate here: a copy drifts the
@@ -255,8 +267,19 @@ if [[ "${1-}" == "fleet" && "${2-}" == "expand" ]]; then
     esac
     exit 0
 fi
-printf '%s\n' "$*" > "$STUB_CAPTURE_DIR/argv"
-echo "stub fork-sandbox: sent"
+if [[ "${1-}" == "mail" && ( "${2-}" == "send" || "${2-}" == "reply" ) ]]; then
+    printf '%s\n' "$*" >> "$STUB_CAPTURE_DIR/argv"
+    id="stub-$(printf '%s' "$*" | cksum | awk '{print $1}')-$$"
+    if [[ "$2" == "send" ]]; then
+        echo "stub fork-sandbox: sent $id as a new thread" >&2
+    else
+        echo "stub fork-sandbox: replied $id" >&2
+    fi
+    printf '%s\n' "$id"
+    exit 0
+fi
+echo "Error: unexpected stub invocation: $*" >&2
+exit 1
 STUB
 chmod +x "$stub_bin/fork-sandbox"
 
@@ -333,22 +356,61 @@ rc_hops_negative=$?
 if (( rc_hops_negative != 0 )); then ok "a negative --hops exits non-zero"; else no "a negative --hops exits non-zero" "exit 0: $out_hops_negative"; fi
 contains "a negative --hops names the validation problem" "$out_hops_negative" "non-negative integer"
 
-printf '\n== --attach mode ==\n'
-out_attach="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" \
+printf '\n== --patches mode: composed (no --send) sequence ==\n'
+out_patches="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" \
     "$kickoff" "$project_dir" "master...topic" \
-    --from '@author' --to '@lkml-panel' --subject 'subj' --attach 2>&1)"
-rc_attach=$?
-check "--attach mode exits 0" "0" "$rc_attach"
-n_attach="$(grep -o -- '--attach' <<<"$out_attach" | wc -l | tr -d '[:space:]')"
-check "one --attach flag per produced patch (2 commits in the range)" "2" "$n_attach"
+    --from '@author' --to '@lkml-panel' --subject 'subj' --patches 2>&1)"
+rc_patches=$?
+check "--patches mode exits 0" "0" "$rc_patches"
+n_cover_id="$(grep -c -- 'cover_id=\$(' <<<"$out_patches")"
+check "--patches composes exactly one cover_id=\$(...) assignment" "1" "$n_cover_id"
+n_reply="$(grep -c -- '^fork-sandbox mail reply' <<<"$out_patches")"
+check "--patches composes one mail reply per produced patch (2 commits in the range)" "2" "$n_reply"
+n_to_operator="$(grep -o -- '--to @operator' <<<"$out_patches" | wc -l | tr -d '[:space:]')"
+check "every patch reply addresses --to @operator" "2" "$n_to_operator"
+n_reply_to="$(grep -o -- '--reply-to "\$cover_id"' <<<"$out_patches" | wc -l | tr -d '[:space:]')"
+check "every patch reply carries --reply-to \"\$cover_id\"" "2" "$n_reply_to"
+contains "the cover keeps its own recipients" "$out_patches" '--to @lkml-panel'
+patch1_subject="$(patch_subject_at "$out_patches" 2)"
+patch2_subject="$(patch_subject_at "$out_patches" 3)"
+contains "the first patch reply's subject is [PATCH v1 1/2]" "$patch1_subject" "[PATCH v1 1/2]"
+contains "the second patch reply's subject is [PATCH v1 2/2]" "$patch2_subject" "[PATCH v1 2/2]"
 
-printf '\n== single-patch range (one commit, --attach) ==\n'
+printf '\n== single-patch range (one commit, --patches) ==\n'
 out_single="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" \
     "$kickoff" "$project_dir" "topic~1..topic" \
     --from '@author' --to '@lkml-panel' --subject 'subj' \
-    --template "$repo_dir/fleet/kickoffs/single-patch.md" --attach 2>&1)"
-n_attach_single="$(grep -o -- '--attach' <<<"$out_single" | wc -l | tr -d '[:space:]')"
-check "single-patch range attaches exactly one patch" "1" "$n_attach_single"
+    --template "$repo_dir/fleet/kickoffs/single-patch.md" --patches 2>&1)"
+n_reply_single="$(grep -c -- '^fork-sandbox mail reply' <<<"$out_single")"
+check "single-patch range composes exactly one mail reply" "1" "$n_reply_single"
+single_patch_subject="$(patch_subject_at "$out_single" 2)"
+contains "the single patch reply's subject is [PATCH v1 1/1]" "$single_patch_subject" "[PATCH v1 1/1]"
+
+printf '\n== --attach is a deprecated alias for --patches ==\n'
+out_attach_alias="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --attach 2>&1)"
+contains "--attach prints a deprecation warning naming --patches" "$out_attach_alias" "deprecated alias for --patches"
+n_reply_alias="$(grep -c -- '^fork-sandbox mail reply' <<<"$out_attach_alias")"
+check "--attach still composes one mail reply per patch (behaves like --patches)" "2" "$n_reply_alias"
+
+printf '\n== --send mode with --patches: actual dispatch, not just composed ==\n'
+rm -f -- "$capture_dir/argv"
+PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --patches --send >/dev/null 2>&1
+rc_send_patches=$?
+check "--send with --patches exits 0" "0" "$rc_send_patches"
+send_patches_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
+n_send_patches_sent="$(grep -c -- '^mail send' <<<"$send_patches_argv")"
+check "--send --patches posts exactly one cover" "1" "$n_send_patches_sent"
+n_send_patches_replied="$(grep -c -- '^mail reply' <<<"$send_patches_argv")"
+check "--send --patches posts one reply per patch (2 commits in the range)" "2" "$n_send_patches_replied"
+n_send_patches_to_operator="$(grep -o -- '--to @operator' <<<"$send_patches_argv" | wc -l | tr -d '[:space:]')"
+check "every posted patch reply addresses --to @operator" "2" "$n_send_patches_to_operator"
+contains "the posted cover keeps its own recipients" "$send_patches_argv" "mail send --from @author --to @lkml-panel"
+send_patches_reply_to_values="$(grep -oE -- '\-\-reply-to [^ ]+' <<<"$send_patches_argv" | sort -u)"
+check "both posted patch replies use the same --reply-to (the cover's own id)" "1" "$(wc -l <<<"$send_patches_reply_to_values")"
 
 printf '\n== --send mode ==\n'
 out_send="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
@@ -509,14 +571,14 @@ rc_trailing=$?
 if (( rc_trailing != 0 )); then ok "trailing --from with no value exits non-zero"; else no "trailing --from with no value exits non-zero" "exit 0: $out_trailing"; fi
 contains "trailing --from with no value names the flag" "$out_trailing" "--from requires a value"
 
-printf '\n== --attach with a range that produces no commits is a hard error ==\n'
-out_empty_attach="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "HEAD..HEAD" \
-    --from '@author' --to '@lkml-panel' --subject 'subj' --attach 2>&1)"
-rc_empty_attach=$?
-if (( rc_empty_attach != 0 )); then ok "--attach with an empty range exits non-zero"; else no "--attach with an empty range exits non-zero" "exit 0: $out_empty_attach"; fi
-contains "--attach with an empty range names the problem" "$out_empty_attach" "produced no patches"
+printf '\n== --patches with a range that produces no commits is a hard error ==\n'
+out_empty_patches="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "HEAD..HEAD" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --patches 2>&1)"
+rc_empty_patches=$?
+if (( rc_empty_patches != 0 )); then ok "--patches with an empty range exits non-zero"; else no "--patches with an empty range exits non-zero" "exit 0: $out_empty_patches"; fi
+contains "--patches with an empty range names the problem" "$out_empty_patches" "produced no patches"
 
-printf '\n== branch-name variant (no --attach) with a range that produces no commits is also a hard error ==\n'
+printf '\n== branch-name variant (no --patches) with a range that produces no commits is also a hard error ==\n'
 out_empty_branch="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "topic..topic" \
     --from '@author' --to '@lkml-panel' --subject 'subj' 2>&1)"
 rc_empty_branch=$?
@@ -531,13 +593,13 @@ rc_bad_branch=$?
 if (( rc_bad_branch != 0 )); then ok "branch-name variant with a non-branch range exits non-zero"; else no "branch-name variant with a non-branch range exits non-zero" "exit 0: $out_bad_branch"; fi
 contains "branch-name variant names the problem" "$out_bad_branch" "does not resolve to a checkout-able branch name"
 
-printf '\n== --attach also refuses a range whose right side is not a branch, since the template always offers the checkout fallback too ==\n'
-out_bad_branch_attach="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "HEAD~1..HEAD" \
-    --from '@author' --to '@lkml-panel' --subject 'subj' --attach \
+printf '\n== --patches also refuses a range whose right side is not a branch, since the template always offers the checkout fallback too ==\n'
+out_bad_branch_patches="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "HEAD~1..HEAD" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --patches \
     --template "$repo_dir/fleet/kickoffs/single-patch.md" 2>&1)"
-rc_bad_branch_attach=$?
-if (( rc_bad_branch_attach != 0 )); then ok "--attach with a non-branch range exits non-zero"; else no "--attach with a non-branch range exits non-zero" "exit 0: $out_bad_branch_attach"; fi
-contains "--attach with a non-branch range names the problem" "$out_bad_branch_attach" "does not resolve to a checkout-able branch name"
+rc_bad_branch_patches=$?
+if (( rc_bad_branch_patches != 0 )); then ok "--patches with a non-branch range exits non-zero"; else no "--patches with a non-branch range exits non-zero" "exit 0: $out_bad_branch_patches"; fi
+contains "--patches with a non-branch range names the problem" "$out_bad_branch_patches" "does not resolve to a checkout-able branch name"
 
 printf '\n== a comment closing with trailing whitespace still strips cleanly ==\n'
 template_dir="$(mktemp -d)"; tmpdirs+=("$template_dir")
@@ -850,10 +912,10 @@ printf '\n== kickoff templates keep the no-attachment guard on the author reply 
 # these sections govern.
 series_tail="$(sed -n '/^## Next version/,$p' "$repo_dir/fleet/kickoffs/series-review.md")"
 contains "series-review Next version keeps the wake no-attachment guard" "$series_tail" "a wake's reply cannot carry"
-contains "series-review Next version keeps the inline-copy convention" "$series_tail" "inline copy is the review copy"
+contains "series-review Next version keeps the review-copy convention" "$series_tail" "messages are the review copy"
 single_tail="$(sed -n '/^## Next version/,$p' "$repo_dir/fleet/kickoffs/single-patch.md")"
 contains "single-patch Next version keeps the wake no-attachment guard" "$single_tail" "a wake's reply cannot"
-contains "single-patch Next version keeps the inline-copy convention" "$single_tail" "inline copy is the review copy"
+contains "single-patch Next version keeps the review-copy convention" "$single_tail" "the patch message is the review copy"
 
 printf '\n== --version stamps the kickoff subject ==\n'
 # Extract fs_subject_versions() from lkml-fleet-status.sh itself, the
@@ -904,17 +966,16 @@ check "the v3-stamped subject round-trips through fs_subject_versions" \
     "3" "$(fs_subject_versions "$(ver_argv_subject "$ver_3_argv")")"
 
 # --version must reach `git format-patch -v` too, or the cover subject
-# says "v3" while every attached patch's own Subject line says
-# unversioned "[PATCH i/N]" -- a reviewer reading the attachments (the
-# copy they actually apply) would see a contradiction.
-out_ver_attach="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
-    --from '@author' --to '@lkml-panel' --subject 'a series' --version 3 --attach 2>&1)"
-rc_ver_attach=$?
-check "--version with --attach exits 0" "0" "$rc_ver_attach"
-attach_patch_file="$(printf '%s' "$out_ver_attach" | grep -o -- '--attach [^ ]*' | head -n1 | awk '{print $2}')"
-attach_patch_subject="$([[ -f "$attach_patch_file" ]] && grep -m1 '^Subject:' "$attach_patch_file")"
-contains "the attached patch's own Subject line carries the same version" \
-    "$attach_patch_subject" "[PATCH v3"
+# says "v3" while every posted patch reply's own Subject line says
+# unversioned "[PATCH i/N]" -- a reviewer reading the patch messages
+# (the copy they actually apply) would see a contradiction.
+out_ver_patches="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'a series' --version 3 --patches 2>&1)"
+rc_ver_patches=$?
+check "--version with --patches exits 0" "0" "$rc_ver_patches"
+ver_patches_subject="$(patch_subject_at "$out_ver_patches" 2)"
+contains "the posted patch reply's own Subject line carries the same version" \
+    "$ver_patches_subject" "[PATCH v3"
 
 # Different fixture range (one commit, not two) so the patch count in the
 # marker is proven to track the real count rather than a hardcoded "2"
@@ -930,16 +991,15 @@ contains "the marker's patch count tracks the real count (1), not a hardcoded on
     "$ver_count_argv" "[PATCH v1 0/1] single patch subject"
 
 # The cover's "0/1" is a numbering claim, and `git format-patch` does not
-# number a one-commit range on its own -- without -n the sole attached
-# patch's own Subject would carry no "1/1" to agree with it.
-out_single_attach="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "topic~1..topic" \
-    --from '@author' --to '@lkml-panel' --subject 'single patch subject' --attach 2>&1)"
-rc_single_attach=$?
-check "single-patch range with --attach exits 0" "0" "$rc_single_attach"
-single_attach_file="$(printf '%s' "$out_single_attach" | grep -o -- '--attach [^ ]*' | head -n1 | awk '{print $2}')"
-single_attach_subject="$([[ -f "$single_attach_file" ]] && grep -m1 '^Subject:' "$single_attach_file")"
-contains "the single attached patch's own Subject line is numbered 1/1, matching the cover's 0/1" \
-    "$single_attach_subject" "1/1"
+# number a one-commit range on its own -- without -n the sole posted
+# patch reply's own Subject would carry no "1/1" to agree with it.
+out_single_patches="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "topic~1..topic" \
+    --from '@author' --to '@lkml-panel' --subject 'single patch subject' --patches 2>&1)"
+rc_single_patches=$?
+check "single-patch range with --patches exits 0" "0" "$rc_single_patches"
+single_patches_subject="$(patch_subject_at "$out_single_patches" 2)"
+contains "the single posted patch reply's own Subject line is numbered 1/1, matching the cover's 0/1" \
+    "$single_patches_subject" "1/1"
 
 rm -f -- "$capture_dir/argv"
 PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
