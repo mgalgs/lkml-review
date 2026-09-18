@@ -597,7 +597,7 @@ contains "a costed run is unreadable under a partial batch, not a bare zero" "$O
 contains "a second agent's costed run is unreadable under a partial batch too" "$OUT" "review-two  2 runs  \$0.000000 (2 unreadable)"
 contains "a lone run is unreadable under a partial batch, not silently free" "$OUT" "review-null  1 run  \$0.000000 (1 unreadable)"
 
-printf '\n== cost per agent: a corrupt totals block must poison the batch, not partially sum ==\n'
+printf '\n== cost per agent: a malformed totals line must poison the batch, not partially sum ==\n'
 real_python3="$(command -v python3)"
 corrupt_python_bin="$work/corrupt-python-bin"; mkdir -p -- "$corrupt_python_bin"
 for command in bash awk date head sed sort; do
@@ -608,10 +608,17 @@ cat > "$corrupt_python_bin/python3" <<STUB
 #!/usr/bin/env bash
 # Runs the real classifier untouched, then overwrites the last line of
 # its output -- ordinarily a TOTAL line -- with garbage that matches
-# neither the TOTAL nor the sentinel shape. This is one representative
-# member of the gate's disjuncts (missing sentinel, malformed TOTAL
-# line, malformed GRAND line, wrong line count): they all funnel into
-# the same batch_ok=0 fallback, so proving one is wired proves the path.
+# neither the TOTAL nor the sentinel shape. This pins one disjunct of
+# the gate: a present-but-malformed TOTAL line trips batch_ok=0 (missing
+# sentinel and wrong line count are covered by the stubs above; this
+# screen has no GRAND line to malform -- that's lkml-status.sh's alone).
+# It does NOT prove the gate catches every corrupt-block shape: an
+# entirely dropped TOTAL line for one agent leaves every remaining line
+# well-formed, so batch_ok stays 1 and that agent's cost silently
+# displays as a bare, unannotated 0 -- reproduced outside this suite,
+# not fixed here, since the fix would touch the positional gate the
+# handoff fenced out of scope for this round. That gap is left for the
+# operator to weigh, not papered over by this stub or its assertions.
 mapfile -t lines < <("$real_python3" "\$@")
 lines[-1]='not a totals line'
 printf '%s\n' "\${lines[@]}"
@@ -723,7 +730,11 @@ printf '\n== cost per agent: a sub-5e-7 aggregate is not silently zeroed ==\n'
 # full precision apart from one that gets re-rounded away after every
 # addition. 10000 runs is the exposure bound this fixture always
 # intended -- one per costed run below the display floor -- and is
-# cheap now that accumulation no longer forks a process per run.
+# cheap now that accumulation no longer forks a process per run. The
+# mirror fixture in tests/lkml-status-test.sh pins the same chain at a
+# cheaper 100-run, display-threshold form instead: that screen is slated
+# for retirement, so it doesn't carry this suite's exposure-bound
+# rationale. The counts are intentionally asymmetric, not a drift bug.
 for i in $(seq -w 1 10000); do
     run_dir="$work/run-tiny-agg-$i"; mkdir -p -- "$run_dir"
     printf '{"total_cost_usd": 1e-7}\n' > "$run_dir/summary.json"

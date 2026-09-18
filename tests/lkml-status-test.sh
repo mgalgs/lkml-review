@@ -178,16 +178,18 @@ not_contains "cost-sum: negative zero is not reported as no cost" "$OUT" "negzer
 contains "cost-sum: aggregate is the sum of all four" "$OUT" "Total cost so far: \$3.750012"
 
 printf '\n== cost-tiny-aggregate: a sub-5e-7 aggregate is not silently zeroed ==\n'
-# Mirrors tests/lkml-fleet-status-test.sh's identical fixture: this
-# script's classifier and accumulator must match that one's exactly (see
-# the "One interpreter for the whole ledger" comment in lkml-status.sh),
-# so the same sub-5e-7 blind spot the fleet screen was fixed for must be
-# fixed here too, or the two screens would print different costs for the
-# same runs. This screen is slated for retirement, so it pins the same
-# chain at the cheap 100-run display-threshold form rather than the
-# fleet suite's 10000-run exposure-bound form -- the same per-suite
-# sizing asymmetry the cost-floor-pin fixtures below already use (2500
-# runs in the fleet suite, 1300 here).
+# Mirrors tests/lkml-fleet-status-test.sh's fixture, sized differently on
+# purpose: this script's classifier and accumulator must match that
+# one's exactly (see the "One interpreter for the whole ledger" comment
+# in lkml-status.sh), so the same sub-5e-7 blind spot the fleet screen
+# was fixed for must be fixed here too, or the two screens would print
+# different costs for the same runs. This screen is slated for
+# retirement, so it pins the same chain at the cheap 100-run
+# display-threshold form rather than the fleet suite's 10000-run
+# exposure-bound form -- the same per-suite sizing asymmetry the
+# cost-floor-pin fixtures below already use (2500 runs in the fleet
+# suite, 1300 here). The counts are intentionally asymmetric, not a
+# drift bug.
 init_series cost-tiny-aggregate
 for i in $(seq -w 1 100); do
     run_dir="$work/cta-agg-$i"; mkdir -p -- "$run_dir"
