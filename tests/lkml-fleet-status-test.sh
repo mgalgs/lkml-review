@@ -688,15 +688,14 @@ printf '\n== cost per agent: a sub-5e-7 aggregate is not silently zeroed ==\n'
 # t8 itself is created earlier, alongside t1..t7, so the --list count
 # check counts it too -- see the comment there.
 
-# tiny-aggregate: 100 runs at 1e-7 each, true sum 1e-5. Each addend alone
-# rounds to 0.000000 at the screen's 6-decimal convention, so only the
-# aggregate crossing 1e-6 tells a sum carried at full precision apart
-# from one that gets re-rounded away after every addition. 100 runs, not
-# the 10000 that would exactly match a per-run exposure bound: the
-# accumulator forks one awk process per run record, so 10000 runs costs
-# tens of seconds of suite time for no extra distinguishing power once
-# the true sum clears 1e-6.
-for i in $(seq -w 1 100); do
+# tiny-aggregate: 10000 runs at 1e-7 each, true sum 1e-3. Each addend
+# alone rounds to 0.000000 at the screen's 6-decimal convention, so
+# only the aggregate crossing that threshold tells a sum carried at
+# full precision apart from one that gets re-rounded away after every
+# addition. 10000 runs is the exposure bound this fixture always
+# intended -- one per costed run below the display floor -- and is
+# cheap now that accumulation no longer forks a process per run.
+for i in $(seq -w 1 10000); do
     run_dir="$work/run-tiny-agg-$i"; mkdir -p -- "$run_dir"
     printf '{"total_cost_usd": 1e-7}\n' > "$run_dir/summary.json"
     printf 'agent=tiny-aggregate\nthread=%s\nrun_dir=%s\n' "$t8" "$run_dir" > "$pm/runs/run-tiny-agg-$i.env"
@@ -712,9 +711,9 @@ printf 'agent=tiny-lone\nthread=%s\nrun_dir=%s\n' "$t8" "$run_tiny_lone" > "$pm/
 OUT="$(PATH="$STUB_PATH" "$status" "$t8" --mail-root "$root" 2>&1)"; RC=$?
 check "sub-5e-7 aggregate fixture screen exits 0" "0" "$RC"
 LINE="$(grep -F 'tiny-aggregate ' <<<"$OUT" | head -n1)"
-check "100 runs of 1e-7 sum to a visible cost, not a silent zero" "tiny-aggregate  100 runs  \$0.000010" "$LINE"
+check "10000 runs of 1e-7 sum to a visible cost, not a silent zero" "tiny-aggregate  10000 runs  \$0.001000" "$LINE"
 not_contains "the aggregate is not annotated as no cost" "$LINE" "no cost"
-not_contains "the aggregate does not display as a bare zero" "$OUT" "tiny-aggregate  100 runs  \$0.000000"
+not_contains "the aggregate does not display as a bare zero" "$OUT" "tiny-aggregate  10000 runs  \$0.000000"
 LINE="$(grep -F 'tiny-lone ' <<<"$OUT" | head -n1)"
 check "a single sub-5e-7 run stays under the display cap, unannotated" "tiny-lone  1 run  \$0.000000" "$LINE"
 

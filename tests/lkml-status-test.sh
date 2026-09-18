@@ -185,7 +185,7 @@ printf '\n== cost-tiny-aggregate: a sub-5e-7 aggregate is not silently zeroed ==
 # fixed here too, or the two screens would print different costs for the
 # same runs.
 init_series cost-tiny-aggregate
-for i in $(seq -w 1 100); do
+for i in $(seq -w 1 10000); do
     run_dir="$work/cta-agg-$i"; mkdir -p -- "$run_dir"
     printf '{"total_cost_usd": 1e-7}\n' > "$run_dir/summary.json"
     write_run cost-tiny-aggregate "$run_dir" tiny-aggregate
@@ -195,8 +195,8 @@ printf '{"total_cost_usd": 1e-7}\n' > "$work/cta-lone/summary.json"
 write_run cost-tiny-aggregate "$work/cta-lone" tiny-lone
 
 OUT="$("$status" cost-tiny-aggregate 2>/dev/null)"
-contains "cost-tiny-aggregate: 100 runs of 1e-7 sum to a visible cost, not a silent zero" "$OUT" \
-    "tiny-aggregate \$0.000010"
+contains "cost-tiny-aggregate: 10000 runs of 1e-7 sum to a visible cost, not a silent zero" "$OUT" \
+    "tiny-aggregate \$0.001000"
 not_contains "cost-tiny-aggregate: the aggregate does not display as a bare zero" "$OUT" \
     "tiny-aggregate \$0.000000"
 contains "cost-tiny-aggregate: a single sub-5e-7 run stays under the display cap, unannotated" "$OUT" \
@@ -204,7 +204,7 @@ contains "cost-tiny-aggregate: a single sub-5e-7 run stays under the display cap
 not_contains "cost-tiny-aggregate: the single sub-5e-7 run is not annotated as no cost" "$OUT" \
     "tiny-lone      \$0.000000 ("
 contains "cost-tiny-aggregate: the total reflects the full-precision sum, not a re-rounded one" "$OUT" \
-    "Total cost so far: \$0.000010"
+    "Total cost so far: \$0.001000"
 
 printf '\n== cost-floor-pin: the 5e-11 display floor, at the bottom of its window ==\n'
 # Mirrors tests/lkml-fleet-status-test.sh's floor-pin fixture: this
