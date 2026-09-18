@@ -26,8 +26,11 @@
 # displays as $0.000000 -- a display choice, not a summation limit --
 # but an aggregate of many such runs is shown in full once it clears
 # that threshold, since the underlying sum carries full float
-# precision the whole way through. See scripts/lkml-fleet-status.sh's
-# --help for the identical wording; the two must not drift.
+# precision the whole way through, exactly as in
+# scripts/lkml-fleet-status.sh's --help -- the four-state taxonomy and
+# the summation semantics must not drift between the two. The grand
+# total described above is this script's own addition: the fleet
+# screen has no single thread-wide total to report.
 
 set -uo pipefail
 
@@ -165,10 +168,13 @@ done < "$ledger"
 # replacement, and a shared library would have to be unpicked at
 # retirement. Keep any change to the taxonomy in both places.
 #
-# The interpreter also receives each path's persona, one per line on
+# The interpreter also receives each path's persona, NUL-delimited on
 # stdin in the same order as the paths on argv (a name like "unknown
 # persona" contains a space, so it cannot ride along on argv as a bare
-# extra word without a delimiter scheme). It sums each accepted cost
+# extra word without a delimiter scheme; a newline-delimited scheme
+# would desync on a persona name that itself contains a newline, which
+# a maliciously or accidentally crafted seat name could produce). It
+# sums each accepted cost
 # against that persona as it classifies, and once every result line is
 # printed, emits a fixed sentinel line, one tab-delimited total per
 # persona that received at least one addend, and finally a grand total
@@ -178,13 +184,16 @@ done < "$ledger"
 # of its two former awk-fork accumulators.
 if (( ${#parse_paths[@]} > 0 )); then
     out_lines=()
-    results="$(printf '%s\n' "${parse_personas[@]}" | python3 -c '
+    results="$(printf '%s\0' "${parse_personas[@]}" | python3 -c '
 import json, math, re, sys
 
 DIGIT_RE = re.compile(r"\A[0-9]+([.][0-9]+)?\Z")
 
 paths = sys.argv[1:]
-personas = sys.stdin.read().splitlines()
+personas = sys.stdin.buffer.read().split(b"\0")
+if personas and personas[-1] == b"":
+    personas.pop()
+personas = [p.decode() for p in personas]
 if len(personas) != len(paths):
     sys.exit(1)
 

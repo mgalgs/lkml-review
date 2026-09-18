@@ -76,7 +76,12 @@
 #              choice, not a summation limit -- but an aggregate of many
 #              such runs is shown in full once it clears that threshold,
 #              since the underlying sum carries full float precision the
-#              whole way through.
+#              whole way through, exactly as in scripts/lkml-status.sh's
+#              --help -- the four-state taxonomy and the summation
+#              semantics must not drift between the two. That script
+#              also prints a grand total across every persona; this
+#              screen has no single thread-wide total to report, so it
+#              has none.
 #   unanswered see the design decision below.
 #
 # Design decision -- tags: Reviewed-by, Acked-by, Tested-by,
@@ -414,10 +419,13 @@ print_cost_per_agent() {
     # through, must not be allowed to desync that zip and silently
     # misattribute one run's fate to another's.
     #
-    # The interpreter also receives each path's agent, one per line on
+    # The interpreter also receives each path's agent, NUL-delimited on
     # stdin in the same order as the paths on argv (a name like "unknown
     # agent" contains a space, so it cannot ride along on argv as a bare
-    # extra word without a delimiter scheme). It sums each accepted cost
+    # extra word without a delimiter scheme; a newline-delimited scheme
+    # would desync on an agent name that itself contains a newline,
+    # which a maliciously or accidentally crafted seat name could
+    # produce). It sums each accepted cost
     # against that agent as it classifies, and once every result line is
     # printed, emits a fixed sentinel line followed by one tab-delimited
     # total per agent that received at least one addend. That trailing
@@ -429,7 +437,7 @@ print_cost_per_agent() {
     if (( ${#parse_paths[@]} > 0 )); then
         local out py_rc res
         local -a out_lines=()
-        out="$(printf '%s\n' "${parse_agents[@]}" | python3 -c '
+        out="$(printf '%s\0' "${parse_agents[@]}" | python3 -c '
 import json, math, re, sys
 
 # A routed continuation includes the prior context cost in total_cost_usd.
@@ -445,7 +453,10 @@ import json, math, re, sys
 DIGIT_RE = re.compile(r"\A[0-9]+([.][0-9]+)?\Z")
 
 paths = sys.argv[1:]
-agents = sys.stdin.read().splitlines()
+agents = sys.stdin.buffer.read().split(b"\0")
+if agents and agents[-1] == b"":
+    agents.pop()
+agents = [a.decode() for a in agents]
 if len(agents) != len(paths):
     # The caller zips this list onto argv 1:1; a mismatch is a contract
     # violation between the shell and this interpreter, not a per-path
