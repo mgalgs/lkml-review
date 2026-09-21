@@ -289,6 +289,7 @@ if [[ "${1-}" == "fleet" && "${2-}" == "expand" ]]; then
         @ci-and-core) printf '%s\n' '@ci' '@core' ;;
         @lkml-panel) printf '%s\n' '@core' '@ci' ;;
         @ci-only) printf '%s\n' '@ci' ;;
+        @panel) printf '%s\n' '@core' '@docs' '@tests' ;;
         @missing|@empty) echo "Error: expand: unknown address '${3}'." >&2; exit 1 ;;
         *) echo "Error: unexpected fixture address '${3}'." >&2; exit 1 ;;
     esac
@@ -929,6 +930,61 @@ if grep -Fqx -- unset "$personas_log"; then
 else
     ok "--ci-first gate never expands with no personas dir set"
 fi
+
+printf '\n== --seats stamps the expanded, de-duplicated roster as X-Seats on the cover ==\n'
+out_seats="$(PATH="$stub_bin:$PATH" STUB_EXPAND_LOG="$expand_log" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --seats '@panel,@ci' 2>&1)"
+rc_seats=$?
+check "--seats print-only mode exits 0" "0" "$rc_seats"
+# The printed command is %q-quoted, so the comma-space separator and
+# the header's own space are each backslash-escaped in the output.
+contains "--seats stamps the expanded roster, comma-space-joined, @-prefixed" \
+    "$out_seats" 'X-Seats:\ @core\,\ @docs\,\ @tests\,\ @ci'
+n_seats_header="$(grep -oE -- '\-\-header X-Seats:[^\\'"'"']*' <<<"$out_seats" | wc -l | tr -d '[:space:]')"
+check "--seats stamps exactly one X-Seats header" "1" "$n_seats_header"
+
+out_seats_patches="$(PATH="$stub_bin:$PATH" STUB_EXPAND_LOG="$expand_log" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --seats '@panel,@ci' --patches 2>&1)"
+cover_line_seats="$(grep -m1 -- 'cover_id=\$(' <<<"$out_seats_patches")"
+contains "the cover line carries X-Seats" "$cover_line_seats" "X-Seats"
+reply_lines_seats="$(grep -- '^fork-sandbox mail reply' <<<"$out_seats_patches")"
+case "$reply_lines_seats" in
+    *"X-Seats"*) no "no per-patch reply carries X-Seats" "$reply_lines_seats" ;;
+    *) ok "no per-patch reply carries X-Seats" ;;
+esac
+
+out_no_seats="$(PATH="$stub_bin:$PATH" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' 2>&1)"
+case "$out_no_seats" in
+    *"X-Seats"*) no "omitting --seats stamps no X-Seats header" "$out_no_seats" ;;
+    *) ok "omitting --seats stamps no X-Seats header" ;;
+esac
+
+out_seats_missing="$(PATH="$stub_bin:$PATH" STUB_EXPAND_LOG="$expand_log" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --seats '@panel,@missing' 2>&1)"
+rc_seats_missing=$?
+if (( rc_seats_missing != 0 )); then ok "an unresolvable --seats address refuses"; else no "an unresolvable --seats address refuses" "exit 0: $out_seats_missing"; fi
+contains "the unresolvable --seats refusal names the address" "$out_seats_missing" "'@missing'"
+# The refusal's own prose names "X-Seats roster", so check for the
+# stamped header shape (colon, no trailing "roster") rather than the
+# bare word, or this would false-fail on the refusal message itself.
+case "$out_seats_missing" in
+    *"X-Seats:"*) no "a refused --seats expansion prints no X-Seats header" "$out_seats_missing" ;;
+    *) ok "a refused --seats expansion prints no X-Seats header" ;;
+esac
+
+rm -f -- "$capture_dir/argv"
+PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" STUB_EXPAND_LOG="$expand_log" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --seats '@ci' --send >/dev/null 2>&1
+rc_seats_send=$?
+check "--seats with --send exits 0" "0" "$rc_seats_send"
+seats_send_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
+contains "--send carries the X-Seats header through to the real command" "$seats_send_argv" "X-Seats: @ci"
 
 printf '\n== kickoff templates keep the no-attachment guard on the author reply ==\n'
 # A wake's harvested reply carries no attachment path (the postmaster

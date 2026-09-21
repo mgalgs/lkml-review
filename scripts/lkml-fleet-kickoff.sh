@@ -6,7 +6,8 @@
 #            [--cc <addr>] --subject <subject> [--summary <text>]
 #            [--focus <text>] [--template <file>] [--hops <n>]
 #            [--ci-first <ci-addr>] [--version <n>]
-#            [--allow-ambiguous-version] [--patches] [--send]
+#            [--allow-ambiguous-version] [--patches] [--seats <addr-list>]
+#            [--send]
 #
 # <repo>       path to a local git repository.
 # <range>      a revision range passed straight to `git format-patch`
@@ -154,6 +155,20 @@
 #              posted by this script -- kept only so an existing caller
 #              spelling --attach still works, with a Warning pointing at
 #              --patches.
+# --seats      comma-separated fleet addresses -- seats and/or list
+#              addresses such as @panel -- expanded through this
+#              script's own lkml-fleet.sh wrapper (the same registry
+#              --ci-first's gate consults) and stamped, de-duplicated in
+#              first-seen order, as an X-Seats header on the COVER ONLY,
+#              in the store's canonical address-list format (e.g.
+#              "X-Seats: @core, @ci, @docs"). This is the seated-panel
+#              roster lkml-render.py trusts for its convergence verdict:
+#              a To:/Cc: header is wave-based on this transport and
+#              cannot stand in for it. An address that does not resolve
+#              REFUSES the whole kickoff rather than stamping a partial
+#              or wrong roster. Optional: omitted, nothing changes for
+#              existing callers. Never added to the per-patch replies
+#              --patches posts; those are not review seats.
 # --send       actually run the composed `fork-sandbox mail send`
 #              command. Without it, the command is printed, shell-quoted,
 #              and nothing is sent.
@@ -193,10 +208,11 @@ ci_first=""
 version=""
 version_given=0
 allow_ambiguous_version=0
+seats=""
 
 while (( $# > 0 )); do
     case "$1" in
-        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version)
+        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats)
             (( $# >= 2 )) || { echo "Error: $1 requires a value. See --help." >&2; exit 1; }
             ;;
     esac
@@ -211,6 +227,7 @@ while (( $# > 0 )); do
         --hops) hops="$2"; shift 2 ;;
         --ci-first) ci_first="$2"; shift 2 ;;
         --version) version="$2"; version_given=1; shift 2 ;;
+        --seats) seats="$2"; shift 2 ;;
         --allow-ambiguous-version) allow_ambiguous_version=1; shift ;;
         --patches) post_patches=1; shift ;;
         --attach) post_patches=1; echo "Warning: --attach is a deprecated alias for --patches; attachments are never posted -- this now posts one mail reply per patch instead. Use --patches." >&2; shift ;;
@@ -246,13 +263,13 @@ ci_first_refusal() {
 
 panel="$to"
 handoff=""
+# Resolved as a sibling, the same way default_template is, so both
+# --ci-first's gate and --seats's expansion consult lkml's own persona
+# registry rather than whatever fleet the machine's ~/.config/fork-sandbox
+# happens to describe. Without this they resolve against the wrong
+# registry, or against none, and refuse (or stamp) for the wrong reason.
+fleet_cmd="$script_dir/lkml-fleet.sh"
 if [[ -n "$ci_first" ]]; then
-    # Resolved as a sibling, the same way default_template is, so the
-    # gate consults lkml's own persona registry rather than whatever
-    # fleet the machine's ~/.config/fork-sandbox happens to describe.
-    # Without this the panel resolves against the wrong registry, or
-    # against none, and every gate below refuses for the wrong reason.
-    fleet_cmd="$script_dir/lkml-fleet.sh"
     if [[ ! -x "$fleet_cmd" ]]; then
         ci_first_refusal "--ci-first requires '$fleet_cmd', which is missing or not executable; the gate cannot be skipped."
     fi
@@ -307,6 +324,47 @@ is informed. A panel that is never woken is not.
 EOF
 )"
     to="$ci_first"
+fi
+
+seats_header=""
+if [[ -n "$seats" ]]; then
+    if [[ ! -x "$fleet_cmd" ]]; then
+        echo "Error: --seats requires '$fleet_cmd', which is missing or not executable; expansion cannot be skipped." >&2
+        exit 1
+    fi
+    declare -A seats_seen=()
+    seats_expanded=()
+    IFS=',' read -r -a seats_addrs <<<"$seats"
+    for seats_addr in "${seats_addrs[@]}"; do
+        # Trim surrounding whitespace so "@a, @b" (a space after the
+        # comma, the natural way to type a list by hand) splits into
+        # clean addresses instead of a literal leading-space name.
+        seats_addr="${seats_addr#"${seats_addr%%[![:space:]]*}"}"
+        seats_addr="${seats_addr%"${seats_addr##*[![:space:]]}"}"
+        [[ -z "$seats_addr" ]] && continue
+        if ! seats_expansion="$("$fleet_cmd" fleet expand "$seats_addr")"; then
+            echo "Error: --seats address '$seats_addr' did not resolve; refusing to stamp a partial or wrong X-Seats roster." >&2
+            exit 1
+        fi
+        while IFS= read -r seats_name; do
+            [[ -z "${seats_name//[$'\t\r ']/}" ]] && continue
+            if [[ -z "${seats_seen[$seats_name]+x}" ]]; then
+                seats_seen[$seats_name]=1
+                seats_expanded+=("$seats_name")
+            fi
+        done <<<"$seats_expansion"
+    done
+    if (( ${#seats_expanded[@]} == 0 )); then
+        echo "Error: --seats '$seats' expanded to no addresses; refusing to stamp an empty X-Seats roster." >&2
+        exit 1
+    fi
+    for seats_name in "${seats_expanded[@]}"; do
+        if [[ -z "$seats_header" ]]; then
+            seats_header="$seats_name"
+        else
+            seats_header="$seats_header, $seats_name"
+        fi
+    done
 fi
 
 # Comments are stripped by finding "-->" as a substring anywhere in the
@@ -753,6 +811,7 @@ print(str(email.header.make_header(email.header.decode_header(raw))))
 cover_cmd=(fork-sandbox mail send --from "$from" --to "$to")
 [[ -n "$cc" ]] && cover_cmd+=(--cc "$cc")
 [[ -n "$hops" ]] && cover_cmd+=(--hops "$hops")
+[[ -n "$seats_header" ]] && cover_cmd+=(--header "X-Seats: $seats_header")
 cover_cmd+=(--subject "$subject" --body "$body_file")
 
 if (( send )); then
