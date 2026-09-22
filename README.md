@@ -175,6 +175,14 @@ verdict is therefore exactly as trustworthy as whoever posted the thread
 root -- for a kickoff-posted cover that is the host or CI that ran
 `--seats`. The header is anchored, not self-certifying.
 
+`X-Seats` is part of fork-sandbox's header-vocabulary contract, not
+lkml's own invention: that contract is the authoritative definition, and
+this section describes only what `lkml-render.py` does with it. See
+`docs/agent-mail.md` in
+[fork-sandbox](https://github.com/mgalgs/fork-sandbox) for the header's
+full semantics, including its value format and absent-value rule. If the
+two ever disagree, the contract wins.
+
 ## Tests
 
 ```bash
