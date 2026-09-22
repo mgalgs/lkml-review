@@ -8,6 +8,8 @@
 #            --personas <p1,p2,...> [--reply-to <id>]... [--personas-dir <dir>]
 #            [--version <n>] [--timeout <seconds>] [--model-override <harness/model>]
 #            [--services-trust-ref <ref>] [--k8s] [--endpoint <name>] [--no-summarize]
+#            [--allow-namespace <NS[:PORT]>]... [--reach-probe <HOST:PORT>]...
+#            [--context-ro <dir>]
 #
 # <project>  the repo fork-sandbox.sh clones -- same argument it takes.
 # --checkout the ref each persona's clone starts at: the series' tip, with
@@ -118,6 +120,29 @@
 #            the trusted base the series came from (e.g. the --base ref);
 #            each seat's hook then runs iff its checkout did not change the
 #            sandbox-services contract relative to that ref.
+# --allow-namespace <NS[:PORT]> may repeat. Forwarded verbatim to every
+#            cluster seat's `fork-sandbox-k8s.sh submit` as its own
+#            --allow-namespace: a per-run egress grant letting that seat's
+#            pod reach the named namespace. --k8s only -- refused on the
+#            local path, because upstream refuses it there too and a
+#            local panel that silently dropped the grant would run seats
+#            that never reach the target namespace while reporting
+#            success. Requires at least one --reach-probe. `submit` owns
+#            the value's shape rules (host form, port, platform
+#            capability); this script does not re-check them.
+# --reach-probe <HOST:PORT> may repeat. Forwarded verbatim to every
+#            cluster seat's `submit` as its own --reach-probe: a probe
+#            the egress gate must reach before the agent starts, failing
+#            closed. --k8s only, same reasoning as --allow-namespace.
+#            Requires at least one --allow-namespace -- a probe with
+#            nothing granted to exercise is refused, matching upstream.
+# --context-ro <dir> is passed through to every seat, on BOTH the local
+#            and --k8s paths, as that launcher's own --context-ro: a
+#            small read-only context directory handed to the seat.
+#            Needs no refusal of its own here -- both launchers validate
+#            the directory themselves, and it is identical for every
+#            seat, so an all-or-nothing refusal from either owns the
+#            same guarantee a round-level check here would.
 #
 # What this launches, per persona: a fork-sandbox.sh run (or, with
 # --k8s, a fork-sandbox-k8s.sh submit of the same seat as a cluster Job
@@ -223,6 +248,9 @@ summarize=1
 reply_to_ids=()
 k8s=0
 endpoint=""
+allow_ns=()
+reach_probes=()
+context_ro=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -238,6 +266,9 @@ while [[ $# -gt 0 ]]; do
         --services-trust-ref) services_trust_ref="${2:?--services-trust-ref requires a ref}"; shift 2 ;;
         --k8s) k8s=1; shift ;;
         --endpoint) endpoint="${2:?--endpoint requires a name}"; shift 2 ;;
+        --allow-namespace) allow_ns+=("${2:?--allow-namespace requires NS[:PORT]}"); shift 2 ;;
+        --reach-probe) reach_probes+=("${2:?--reach-probe requires HOST:PORT}"); shift 2 ;;
+        --context-ro) context_ro="${2:?--context-ro requires a directory}"; shift 2 ;;
         --no-summarize) summarize=0; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Error: unknown option '$1'." >&2; exit 1 ;;
@@ -258,9 +289,30 @@ if (( k8s )); then
     # carries.
     [[ -n "$endpoint" ]] || { echo "Error: --k8s requires --endpoint <name>: a cluster seat's pi (including a translated pi-local) run is wired to a registered proxy endpoint, and none may be guessed." >&2; exit 1; }
     command -v fork-sandbox-k8s.sh >/dev/null 2>&1 || { echo "Error: fork-sandbox-k8s.sh not found on PATH." >&2; exit 1; }
+    # The pairing rule matches upstream `submit` exactly, in both
+    # directions, so it can be checked here at zero cost -- before any
+    # seat is submitted -- rather than letting `submit` refuse seat 1
+    # after the round already committed to a cluster run. This is NOT a
+    # re-implementation of submit's shape validation (host form, which
+    # namespace a probe belongs to, port rules, platform capability):
+    # those rules are round-level-identical across every seat, so a
+    # shape refusal from `submit` hits seat 1 before any pod exists and
+    # then hits every other seat identically -- no seat ever spends cost
+    # ahead of it, so there is no false-green risk in leaving them to
+    # `submit`.
+    if (( ${#allow_ns[@]} > 0 && ${#reach_probes[@]} == 0 )); then
+        echo "Error: --allow-namespace requires at least one --reach-probe: every grant needs a reach probe." >&2
+        exit 1
+    fi
+    if (( ${#reach_probes[@]} > 0 && ${#allow_ns[@]} == 0 )); then
+        echo "Error: --reach-probe requires at least one --allow-namespace: a probe needs a grant to exercise." >&2
+        exit 1
+    fi
 else
     [[ -z "$endpoint" ]] || { echo "Error: --endpoint <name> is only used with --k8s." >&2; exit 1; }
     command -v fork-sandbox.sh >/dev/null 2>&1 || { echo "Error: fork-sandbox.sh not found on PATH." >&2; exit 1; }
+    (( ${#allow_ns[@]} == 0 )) || { echo "Error: --allow-namespace is only used with --k8s." >&2; exit 1; }
+    (( ${#reach_probes[@]} == 0 )) || { echo "Error: --reach-probe is only used with --k8s." >&2; exit 1; }
 fi
 command -v jq >/dev/null 2>&1 || { echo "Error: jq not found on PATH." >&2; exit 1; }
 # Refused at startup, before any persona launches: a panel that spends real
@@ -756,6 +808,8 @@ for persona in "${personas[@]}"; do
         fi
         submit_argv=(submit --branch "$branch" --harness "$harness" --checkout "$checkout_ref")
         [[ -n "$services_trust_ref" ]] && submit_argv+=(--services-trust-ref "$services_trust_ref")
+        for v in "${allow_ns[@]}"; do submit_argv+=(--allow-namespace "$v"); done
+        for v in "${reach_probes[@]}"; do submit_argv+=(--reach-probe "$v"); done
         [[ -n "$model" ]] && submit_argv+=(--model "$model")
         # pi (and a translated pi-local) seat is wired to the endpoint;
         # a claude seat runs against its own per-run proxy and is not.

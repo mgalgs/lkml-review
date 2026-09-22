@@ -1065,6 +1065,107 @@ case "$out_orphan2" in
     *) ok "no seats file at all: the warning does not fire" ;;
 esac
 
+printf '\n== --k8s: --allow-namespace / --reach-probe pass through as a pair ==\n'
+# fork-sandbox-k8s.sh submit is gaining --allow-namespace / --reach-probe
+# (a per-run egress grant for the agent pod, plus a probe the egress gate
+# must reach before the agent starts). This round-level flag pair must
+# reach every seat's submit argv unchanged -- pi and claude alike -- so
+# check at least one of each, not just the pi-only --endpoint branch.
+cap_k8s_grant="$(mktemp -d)"; tmpdirs+=("$cap_k8s_grant")
+k8s_state_grant="$(mktemp -d)"; tmpdirs+=("$k8s_state_grant")
+out_k8s_grant="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_k8s_grant" STUB_RUN_PREFIX="$run_prefix_dir" \
+    STUB_K8S_CAPTURE_DIR="$cap_k8s_grant" STUB_K8S_STATE_DIR="$k8s_state_grant" \
+    STUB_REPLY_TO="$patch2_id" STUB_REPLY_TO_BRACKETED="$patch_id_bracketed" \
+    "$round" widget-frob --project "$project_dir" --checkout otherbranch \
+    --personas "core, pi-local" --personas-dir "$work" \
+    --reply-to "$patch2_id" --no-summarize --timeout 10 \
+    --k8s --endpoint test-endpoint \
+    --allow-namespace preview-slot-01:8080 --allow-namespace other-ns \
+    --reach-probe mcp.preview-slot-01:8080 2>&1)"
+rc_k8s_grant=$?
+if (( rc_k8s_grant == 0 )); then ok "--k8s round with a grant pair exits 0"; else no "--k8s round with a grant pair exits 0" "exit $rc_k8s_grant: $out_k8s_grant"; fi
+
+core_grant_argv="$(cat "$cap_k8s_grant/core.submit.argv" 2>/dev/null)"
+pi_grant_argv="$(cat "$cap_k8s_grant/pi-local.submit.argv" 2>/dev/null)"
+contains "core's (claude) submit carries the first --allow-namespace" "$core_grant_argv" "--allow-namespace preview-slot-01:8080"
+contains "core's (claude) submit carries the second --allow-namespace" "$core_grant_argv" "--allow-namespace other-ns"
+contains "core's (claude) submit carries the --reach-probe" "$core_grant_argv" "--reach-probe mcp.preview-slot-01:8080"
+contains "pi-local's (pi) submit carries the first --allow-namespace" "$pi_grant_argv" "--allow-namespace preview-slot-01:8080"
+contains "pi-local's (pi) submit carries the second --allow-namespace" "$pi_grant_argv" "--allow-namespace other-ns"
+contains "pi-local's (pi) submit carries the --reach-probe" "$pi_grant_argv" "--reach-probe mcp.preview-slot-01:8080"
+
+case "$core_grant_argv" in
+    *"--allow-namespace preview-slot-01:8080"*"--allow-namespace other-ns"*) ok "the two --allow-namespace values appear in the order given" ;;
+    *) no "the two --allow-namespace values appear in the order given" "$core_grant_argv" ;;
+esac
+
+n_ns1="$(grep -o -- '--allow-namespace preview-slot-01:8080' <<<"$core_grant_argv" | wc -l | tr -d '[:space:]')"
+check "--allow-namespace preview-slot-01:8080 appears exactly once" "1" "$n_ns1"
+n_ns2="$(grep -o -- '--allow-namespace other-ns' <<<"$core_grant_argv" | wc -l | tr -d '[:space:]')"
+check "--allow-namespace other-ns appears exactly once" "1" "$n_ns2"
+n_probe="$(grep -o -- '--reach-probe' <<<"$core_grant_argv" | wc -l | tr -d '[:space:]')"
+check "--reach-probe appears exactly once" "1" "$n_probe"
+
+printf '\n== --k8s: without grant flags, submit argv is byte-identical to before ==\n'
+case "$(cat "$cap_k8s/core.submit.argv")" in
+    *"--allow-namespace"*|*"--reach-probe"*|*"--context-ro"*)
+        no "a --k8s round with no grant/context-ro flags carries none of them" "$(cat "$cap_k8s/core.submit.argv")" ;;
+    *) ok "a --k8s round with no grant/context-ro flags carries none of them" ;;
+esac
+
+printf '\n== --allow-namespace / --reach-probe are refused off --k8s ==\n'
+cap_grant_local="$(mktemp -d)"; tmpdirs+=("$cap_grant_local")
+out_grant_ns="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_grant_local" STUB_RUN_PREFIX="$run_prefix_dir" \
+    STUB_REPLY_TO="$patch2_id" STUB_REPLY_TO_BRACKETED="$patch_id_bracketed" \
+    "$round" widget-frob --project "$project_dir" --checkout otherbranch \
+    --personas core --personas-dir "$work" \
+    --reply-to "$patch2_id" --no-summarize \
+    --allow-namespace preview-slot-01:8080 2>&1)"
+rc_grant_ns=$?
+if (( rc_grant_ns != 0 )); then ok "--allow-namespace without --k8s is refused"; else no "--allow-namespace without --k8s is refused" "exit 0: $out_grant_ns"; fi
+contains "the --allow-namespace-without-k8s refusal names --k8s" "$out_grant_ns" "--k8s"
+n_local_grant_ns="$(find "$cap_grant_local" -name '*.task-meta.json' | wc -l | tr -d '[:space:]')"
+check "no local seat was launched (--allow-namespace without --k8s)" "0" "$n_local_grant_ns"
+
+out_grant_probe="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_grant_local" STUB_RUN_PREFIX="$run_prefix_dir" \
+    STUB_REPLY_TO="$patch2_id" STUB_REPLY_TO_BRACKETED="$patch_id_bracketed" \
+    "$round" widget-frob --project "$project_dir" --checkout otherbranch \
+    --personas core --personas-dir "$work" \
+    --reply-to "$patch2_id" --no-summarize \
+    --reach-probe mcp.preview-slot-01:8080 2>&1)"
+rc_grant_probe=$?
+if (( rc_grant_probe != 0 )); then ok "--reach-probe without --k8s is refused"; else no "--reach-probe without --k8s is refused" "exit 0: $out_grant_probe"; fi
+contains "the --reach-probe-without-k8s refusal names --k8s" "$out_grant_probe" "--k8s"
+n_local_grant_probe="$(find "$cap_grant_local" -name '*.task-meta.json' | wc -l | tr -d '[:space:]')"
+check "no local seat was launched (--reach-probe without --k8s)" "0" "$n_local_grant_probe"
+
+printf '\n== --k8s: an unpaired grant flag is refused before any submit ==\n'
+cap_grant_unpaired="$(mktemp -d)"; tmpdirs+=("$cap_grant_unpaired")
+k8s_state_unpaired="$(mktemp -d)"; tmpdirs+=("$k8s_state_unpaired")
+out_grant_noreach="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_grant_unpaired" STUB_RUN_PREFIX="$run_prefix_dir" \
+    STUB_K8S_CAPTURE_DIR="$cap_grant_unpaired" STUB_K8S_STATE_DIR="$k8s_state_unpaired" \
+    STUB_REPLY_TO="$patch2_id" STUB_REPLY_TO_BRACKETED="$patch_id_bracketed" \
+    "$round" widget-frob --project "$project_dir" --checkout otherbranch \
+    --personas core --personas-dir "$work" \
+    --reply-to "$patch2_id" --no-summarize \
+    --k8s --endpoint test-endpoint --allow-namespace preview-slot-01:8080 2>&1)"
+rc_grant_noreach=$?
+if (( rc_grant_noreach != 0 )); then ok "--allow-namespace with no --reach-probe is refused"; else no "--allow-namespace with no --reach-probe is refused" "exit 0: $out_grant_noreach"; fi
+n_submits_noreach="$(grep -c '^submit ' "$cap_grant_unpaired/call-order" 2>/dev/null)"; n_submits_noreach="${n_submits_noreach:-0}"
+check "no submit call is made (--allow-namespace with no --reach-probe)" "0" "$n_submits_noreach"
+
+out_grant_nogrant="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_grant_unpaired" STUB_RUN_PREFIX="$run_prefix_dir" \
+    STUB_K8S_CAPTURE_DIR="$cap_grant_unpaired" STUB_K8S_STATE_DIR="$k8s_state_unpaired" \
+    STUB_REPLY_TO="$patch2_id" STUB_REPLY_TO_BRACKETED="$patch_id_bracketed" \
+    "$round" widget-frob --project "$project_dir" --checkout otherbranch \
+    --personas core --personas-dir "$work" \
+    --reply-to "$patch2_id" --no-summarize \
+    --k8s --endpoint test-endpoint --reach-probe mcp.preview-slot-01:8080 2>&1)"
+rc_grant_nogrant=$?
+if (( rc_grant_nogrant != 0 )); then ok "--reach-probe with no --allow-namespace is refused"; else no "--reach-probe with no --allow-namespace is refused" "exit 0: $out_grant_nogrant"; fi
+n_submits_nogrant="$(grep -c '^submit ' "$cap_grant_unpaired/call-order" 2>/dev/null)"; n_submits_nogrant="${n_submits_nogrant:-0}"
+check "no submit call is made (--reach-probe with no --allow-namespace)" "0" "$n_submits_nogrant"
+
 printf '\n== --help ==\n'
 h_out="$("$round" --help 2>&1)"; h_rc=$?
 if (( h_rc == 0 )); then ok "--help alone exits 0"; else no "--help alone exits 0" "exit $h_rc: $h_out"; fi
