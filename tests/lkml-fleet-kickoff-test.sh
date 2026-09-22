@@ -941,7 +941,7 @@ check "--seats print-only mode exits 0" "0" "$rc_seats"
 # the header's own space are each backslash-escaped in the output.
 contains "--seats stamps the expanded roster, comma-space-joined, @-prefixed" \
     "$out_seats" 'X-Seats:\ @core\,\ @docs\,\ @tests\,\ @ci'
-n_seats_header="$(grep -oE -- '\-\-header X-Seats:[^\\'"'"']*' <<<"$out_seats" | wc -l | tr -d '[:space:]')"
+n_seats_header="$(grep -coE -- '\-\-header X-Seats:' <<<"$out_seats" | tr -d '[:space:]')"
 check "--seats stamps exactly one X-Seats header" "1" "$n_seats_header"
 
 out_seats_patches="$(PATH="$stub_bin:$PATH" STUB_EXPAND_LOG="$expand_log" \
