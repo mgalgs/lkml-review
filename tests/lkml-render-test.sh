@@ -2361,13 +2361,15 @@ dup_text_msgs="$(printf '%s\n' "$dup_text" | grep -c '^== #')"
 check "duplicate same-version cover: HTML renders all 4 messages, none dropped" "4" "$dup_html_msgs"
 check "duplicate same-version cover: --text renders all 4 messages exactly once, not doubled" "4" "$dup_text_msgs"
 
-printf '\n== fleet-store thread: convergence requires every addressed seat to have spoken ==\n'
-# The cover's To:/Cc: is the seated panel on this transport, unlike the
-# old layout where the roster lives in seats.yaml outside anything
-# render.py reads. CLAUDE.md and README's "Converging" section both
-# insist silence must never read as assent: a check that only counts
-# blocking verdicts cannot tell "three seats went quiet" from "three
-# seats agreed".
+printf '\n== fleet-store thread: convergence requires every seated reviewer to have spoken ==\n'
+# The thread ROOT's X-Seats header is the seated panel on this
+# transport (lkml-fleet-kickoff.sh --seats stamps it once at kickoff),
+# never a version's own To:/Cc: -- those name wave one only, per
+# fleet.yaml's wave design, and a list address like @panel is never
+# in-band as a From: either. CLAUDE.md and README's "Converging"
+# section both insist silence must never read as assent: a check that
+# only counts blocking verdicts cannot tell "three seats went quiet"
+# from "three seats agreed".
 quiet="$work/fleet-mail/threads/quiet-thread"
 mkdir -p "$quiet"
 quiet_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
@@ -2377,6 +2379,7 @@ printf '%s\n' \
     'From: @author' \
     'To: @core' \
     'Cc: @tests, @security, @docs' \
+    'X-Seats: @core, @tests, @security, @docs' \
     'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
     'Subject: [PATCH v1 0/1] quiet panel repro' \
     '' \
@@ -2403,7 +2406,71 @@ esac
 contains "quiet panel: state chip reads pending instead" "$qhtml" \
     '<div class="fact"><span class="eyebrow">state</span><b><span class="chip pending">pending</span></b></div>'
 
-printf '\n== fleet-store thread: convergence still fires once every addressed seat has spoken ==\n'
+printf '\n== fleet-store thread: convergence fires once every X-Seats-named seat has spoken ==\n'
+quietfull="$work/fleet-mail/threads/quiet-full-thread"
+mkdir -p "$quietfull"
+qf_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+qf_docs="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+qf_core="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+qf_tests="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+qf_security="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+printf '%s\n' \
+    "Message-ID: ${qf_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Cc: @tests, @security, @docs' \
+    'X-Seats: @core, @tests, @security, @docs' \
+    'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+    'Subject: [PATCH v1 0/1] quiet-full panel repro' \
+    '' \
+    'kickoff' \
+    > "$quietfull/001-${qf_root}.msg"
+printf '%s\n' \
+    "Message-ID: ${qf_docs}" \
+    "In-Reply-To: ${qf_root}" \
+    'From: @docs' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: [PATCH v1 0/1] quiet-full panel repro' \
+    '' \
+    'Reviewed-by: docs' \
+    > "$quietfull/002-${qf_docs}.msg"
+printf '%s\n' \
+    "Message-ID: ${qf_core}" \
+    "In-Reply-To: ${qf_root}" \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: [PATCH v1 0/1] quiet-full panel repro' \
+    '' \
+    'Reviewed-by: core' \
+    > "$quietfull/003-${qf_core}.msg"
+printf '%s\n' \
+    "Message-ID: ${qf_tests}" \
+    "In-Reply-To: ${qf_root}" \
+    'From: @tests' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: [PATCH v1 0/1] quiet-full panel repro' \
+    '' \
+    'Tested-by: tests' \
+    > "$quietfull/004-${qf_tests}.msg"
+printf '%s\n' \
+    "Message-ID: ${qf_security}" \
+    "In-Reply-To: ${qf_root}" \
+    'From: @security' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: [PATCH v1 0/1] quiet-full panel repro' \
+    '' \
+    'Reviewed-by: security' \
+    > "$quietfull/005-${qf_security}.msg"
+quietfull_html="$work/quiet-full.html"
+python3 "$renderer" "$quietfull" -o "$quietfull_html"
+contains "quiet-full panel: converged once every X-Seats-named seat has replied non-blocking" \
+    "$(<"$quietfull_html")" '<div class="fact"><span class="eyebrow">state</span><b><span class="chip reviewed">converged</span></b></div>'
+
+printf '\n== fleet-store thread: convergence still fires once the only seated reviewer has spoken ==\n'
 full="$work/fleet-mail/threads/full-thread"
 mkdir -p "$full"
 full_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
@@ -2412,6 +2479,7 @@ printf '%s\n' \
     "Message-ID: ${full_root}" \
     'From: @author' \
     'To: @core' \
+    'X-Seats: @core' \
     'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
     'Subject: [PATCH v1 0/1] full panel repro' \
     '' \
@@ -2429,8 +2497,135 @@ printf '%s\n' \
     > "$full/002-${full_core}.msg"
 full_html="$work/full.html"
 python3 "$renderer" "$full" -o "$full_html"
-contains "full panel: state chip is converged once the only addressed seat has replied" \
+contains "full panel: state chip is converged once the only X-Seats-named seat has replied" \
     "$(<"$full_html")" '<div class="fact"><span class="eyebrow">state</span><b><span class="chip reviewed">converged</span></b></div>'
+
+printf '\n== fleet-store thread: no X-Seats on the root means the panel is unverifiable, never converged ==\n'
+# The fail-safe rule: an absent X-Seats must never be read as "no
+# panel to satisfy" and default to converged. Same shape as the "full
+# panel" fixture above, minus the root's X-Seats header -- a clean,
+# non-blocking sign-off must still render pending.
+noseats="$work/fleet-mail/threads/noseats-thread"
+mkdir -p "$noseats"
+ns_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+ns_core="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+printf '%s\n' \
+    "Message-ID: ${ns_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+    'Subject: [PATCH v1 0/1] no-X-Seats repro' \
+    '' \
+    'kickoff' \
+    > "$noseats/001-${ns_root}.msg"
+printf '%s\n' \
+    "Message-ID: ${ns_core}" \
+    "In-Reply-To: ${ns_root}" \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: [PATCH v1 0/1] no-X-Seats repro' \
+    '' \
+    'Reviewed-by: core' \
+    > "$noseats/002-${ns_core}.msg"
+noseats_html="$work/noseats.html"
+python3 "$renderer" "$noseats" -o "$noseats_html"
+contains "no X-Seats: state chip reads pending despite a clean non-blocking sign-off" \
+    "$(<"$noseats_html")" '<div class="fact"><span class="eyebrow">state</span><b><span class="chip pending">pending</span></b></div>'
+
+printf '\n== fleet-store thread: a list address in To: never sticks the panel at pending forever ==\n'
+# Before X-Seats, a cover addressed to a LIST (@panel) could never
+# converge: fleet_addr_list does no list expansion, so "panel" became
+# a phantom seat name nothing ever replies as. X-Seats carries the
+# already-expanded roster, so the literal @panel in To: is inert.
+listaddr="$work/fleet-mail/threads/listaddr-thread"
+mkdir -p "$listaddr"
+la_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+la_core="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+la_docs="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+la_tests="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+printf '%s\n' \
+    "Message-ID: ${la_root}" \
+    'From: @author' \
+    'To: @panel' \
+    'X-Seats: @core, @docs, @tests' \
+    'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+    'Subject: [PATCH v1 0/1] list-address repro' \
+    '' \
+    'kickoff' \
+    > "$listaddr/001-${la_root}.msg"
+printf '%s\n' \
+    "Message-ID: ${la_core}" \
+    "In-Reply-To: ${la_root}" \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: [PATCH v1 0/1] list-address repro' \
+    '' \
+    'Reviewed-by: core' \
+    > "$listaddr/002-${la_core}.msg"
+printf '%s\n' \
+    "Message-ID: ${la_docs}" \
+    "In-Reply-To: ${la_root}" \
+    'From: @docs' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: [PATCH v1 0/1] list-address repro' \
+    '' \
+    'Reviewed-by: docs' \
+    > "$listaddr/003-${la_docs}.msg"
+printf '%s\n' \
+    "Message-ID: ${la_tests}" \
+    "In-Reply-To: ${la_root}" \
+    'From: @tests' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: [PATCH v1 0/1] list-address repro' \
+    '' \
+    'Tested-by: tests' \
+    > "$listaddr/004-${la_tests}.msg"
+listaddr_html="$work/listaddr.html"
+python3 "$renderer" "$listaddr" -o "$listaddr_html"
+contains "list-address cover: X-Seats resolves the panel, converged once all three have replied" \
+    "$(<"$listaddr_html")" '<div class="fact"><span class="eyebrow">state</span><b><span class="chip reviewed">converged</span></b></div>'
+
+printf "\\n== fleet-store thread: a reply's own X-Seats is forged noise, never trusted ==\\n"
+# The store accepts arbitrary X-* headers on any message. If a reply's
+# X-Seats were ever honored, a single seat could shrink the panel out
+# from under the verdict and flip a false green on its own. Root seats
+# 3; the one reply that reads Reviewed-by also carries a forged
+# X-Seats naming only itself -- the render must still see 1-of-3 and
+# stay pending, proving the forged header was never read.
+forged="$work/fleet-mail/threads/forged-thread"
+mkdir -p "$forged"
+fg_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+fg_core="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+printf '%s\n' \
+    "Message-ID: ${fg_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Cc: @docs, @tests' \
+    'X-Seats: @core, @docs, @tests' \
+    'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+    'Subject: [PATCH v1 0/1] forged X-Seats repro' \
+    '' \
+    'kickoff' \
+    > "$forged/001-${fg_root}.msg"
+printf '%s\n' \
+    "Message-ID: ${fg_core}" \
+    "In-Reply-To: ${fg_root}" \
+    'From: @core' \
+    'To: @author' \
+    'X-Seats: @core' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: [PATCH v1 0/1] forged X-Seats repro' \
+    '' \
+    'Reviewed-by: core' \
+    > "$forged/002-${fg_core}.msg"
+forged_html="$work/forged.html"
+python3 "$renderer" "$forged" -o "$forged_html"
+contains "forged-reply X-Seats is ignored: state chip stays pending at 1-of-3" \
+    "$(<"$forged_html")" '<div class="fact"><span class="eyebrow">state</span><b><span class="chip pending">pending</span></b></div>'
 
 printf '\n== fleet-store thread: an orphaned reply whose version matches no cover fails loudly ==\n'
 # An In-Reply-To naming an id absent from the thread dir (a truncated

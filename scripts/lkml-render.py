@@ -489,11 +489,11 @@ def build_old_layout(series_dir):
 
 
 def fleet_addr_list(raw):
-    """A To:/Cc: header value split into bare seat names ('@core, @docs'
-    -> ['core', 'docs']), the same '@' stripping read_fleet_msg gives
-    From:. Used to compute the addressed panel for a fleet cover -- the
-    one place on this transport where the seated panel is in-band and
-    therefore computable without seats.yaml."""
+    """An address-list header value split into bare seat names
+    ('@core, @docs' -> ['core', 'docs']), the same '@' stripping
+    read_fleet_msg gives From:. Used both for To:/Cc: and for the
+    thread root's X-Seats -- the same canonical address-list format,
+    per fork-sandbox-mail.sh's mail_validate_addr_list."""
     return [a.strip().removeprefix("@") for a in raw.split(",") if a.strip()]
 
 
@@ -529,7 +529,9 @@ def read_fleet_msg(path, seq, attachment_root):
     attachments/<basename> shape the old layout uses, just rooted at
     the thread dir instead of the series dir -- inline_attachment
     resolves them the same way in both layouts; only the displayed
-    label differs (the bare basename here, ref elsewhere)."""
+    label differs (the bare basename here, ref elsewhere). x_seats is
+    the raw X-Seats header value, unparsed: only render_series may
+    interpret it, and only when this message is the thread root."""
     with open(path, encoding="utf-8", errors="replace") as f:
         raw = f.read()
     head, _, body = raw.partition("\n\n")
@@ -561,6 +563,7 @@ def read_fleet_msg(path, seq, attachment_root):
         "attachments": attachments, "children": [], "fleet": True,
         "to": fleet_addr_list(hdr.get("To", "")),
         "cc": fleet_addr_list(hdr.get("Cc", "")),
+        "x_seats": hdr.get("X-Seats"),
     }
 
 
@@ -1342,27 +1345,35 @@ def render_series(series_dir, assume_root_version=None):
     if cur:
         s = strongest_tag([t for _t, latest in cur["rows"]
                            for _p, _m, tags in latest.values() for t in tags])
-        # A fleet cover's To:/Cc: is the seated panel, in-band on this
-        # transport (unlike the old layout, where the roster lives in
-        # seats.yaml outside anything render.py reads) -- so here, and
-        # only here, "converged" can be checked against who was actually
-        # addressed. A seat addressed but never heard from is silence,
-        # not agreement (CLAUDE.md and README's "Converging" section):
-        # the strongest tag across those who spoke must not be allowed
-        # to read as the whole panel's verdict when part of the panel
-        # never replied at all.
+        # The seated panel comes from the thread ROOT's X-Seats header,
+        # stamped once at kickoff time by lkml-fleet-kickoff.sh --seats,
+        # never from a version's own To:/Cc: -- those name wave one on
+        # this transport (fleet.yaml's lists expand long after the
+        # cover is posted), not the panel, and a list address like
+        # @panel is never in-band as a From: either. A later reply's
+        # own X-Seats is never read: the store accepts arbitrary X-*
+        # headers on any message, so honoring one there would let a
+        # single seat shrink the panel underneath the verdict. Trust is
+        # anchored to the root message's author (kickoff-posted covers
+        # are host- or CI-authored) -- not self-certifying, not
+        # tamper-proof, just as trustworthy as whoever posted the root.
+        seated = None
+        root = roots[0] if roots else None
+        if root is not None and root.get("fleet"):
+            x_seats = root.get("x_seats")
+            if x_seats:
+                seated = set(fleet_addr_list(x_seats))
         silent = set()
-        if cur["cover"].get("fleet"):
-            addressed = set(cur["cover"].get("to", [])) | set(cur["cover"].get("cc", []))
+        if cur["cover"].get("fleet") and seated is not None:
             replied = {m["persona"] for m in cur["version_msgs"] if m["persona"]}
-            silent = addressed - replied - {cur["cover"]["persona"]}
+            silent = seated - replied - {cur["cover"]["persona"]}
         if s == "NAK":
             state = '<span class="chip nak">nak</span>'
         elif s == "Changes-requested":
             state = '<span class="chip changes">changes requested</span>'
         elif s == "Question":
             state = '<span class="chip question">question</span>'
-        elif s is not None and not silent:
+        elif s is not None and not silent and (not cur["cover"].get("fleet") or seated is not None):
             state = '<span class="chip reviewed">converged</span>'
         else:
             state = '<span class="chip pending">pending</span>'
