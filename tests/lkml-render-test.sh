@@ -2589,6 +2589,61 @@ python3 "$renderer" "$listaddr" -o "$listaddr_html"
 contains "list-address cover: X-Seats resolves the panel, converged once all three have replied" \
     "$(<"$listaddr_html")" '<div class="fact"><span class="eyebrow">state</span><b><span class="chip reviewed">converged</span></b></div>'
 
+printf "\\n== fleet-store thread: a second, lower-version root cannot hijack the trust anchor ==\\n"
+# A truncated/corrupted store can hold a second structural root: a
+# message whose In-Reply-To names an id absent from the thread dir (see
+# the orphan-thread fixture below). build_fleet_layout's `roots` list is
+# sorted by (version, seq) for DISPLAY ordering, not arrival order -- if
+# the trust-anchor pick ever indexes into that sorted list instead of
+# selecting the earliest-arriving root, a phantom root whose own Subject
+# carries a lower version marker (here v0, arriving second) outranks the
+# real kickoff (v1, arriving first) and its narrower X-Seats becomes the
+# panel. The real cover seats 3 with only 1 reply (pending); the phantom
+# seats only itself (would read converged 1-of-1) -- proving which root
+# actually won.
+multiroot="$work/fleet-mail/threads/multiroot-thread"
+mkdir -p "$multiroot"
+mr_root="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+mr_core="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+mr_orphan="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+mr_missing_parent="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+printf '%s\n' \
+    "Message-ID: ${mr_root}" \
+    'From: @author' \
+    'To: @core' \
+    'Cc: @docs, @tests' \
+    'X-Seats: @core, @docs, @tests' \
+    'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+    'Subject: [PATCH v1 0/1] multi-root repro' \
+    '' \
+    'kickoff' \
+    > "$multiroot/001-${mr_root}.msg"
+printf '%s\n' \
+    "Message-ID: ${mr_core}" \
+    "In-Reply-To: ${mr_root}" \
+    'From: @core' \
+    'To: @author' \
+    'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
+    'Subject: Re: [PATCH v1 0/1] multi-root repro' \
+    '' \
+    'Reviewed-by: core' \
+    > "$multiroot/002-${mr_core}.msg"
+printf '%s\n' \
+    "Message-ID: ${mr_orphan}" \
+    "In-Reply-To: ${mr_missing_parent}" \
+    'From: @core' \
+    'To: @author' \
+    'X-Seats: @core' \
+    'Date: Wed, 17 Sep 2025 02:00:00 +0000' \
+    'Subject: [PATCH v0 0/1] phantom low-version root' \
+    '' \
+    'phantom root, arrived after the real kickoff' \
+    > "$multiroot/003-${mr_orphan}.msg"
+multiroot_html="$work/multiroot.html"
+python3 "$renderer" "$multiroot" -o "$multiroot_html"
+contains "a later, lower-version root never outranks the real kickoff: state stays pending at 1-of-3" \
+    "$(<"$multiroot_html")" '<div class="fact"><span class="eyebrow">state</span><b><span class="chip pending">pending</span></b></div>'
+
 printf "\\n== fleet-store thread: a reply's own X-Seats is forged noise, never trusted ==\\n"
 # The store accepts arbitrary X-* headers on any message. If a reply's
 # X-Seats were ever honored, a single seat could shrink the panel out

@@ -1357,8 +1357,14 @@ def render_series(series_dir, assume_root_version=None):
         # anchored to the root message's author (kickoff-posted covers
         # are host- or CI-authored) -- not self-certifying, not
         # tamper-proof, just as trustworthy as whoever posted the root.
+        # `roots` is sorted by (version, seq) for display, not arrival
+        # -- picking [0] would let a second structural root (a
+        # truncated/corrupted store's orphaned reply, see
+        # require_full_coverage) with a lower version marker in its own
+        # Subject outrank the real kickoff. The genuine root is
+        # whichever structural root actually arrived first.
         seated = None
-        root = roots[0] if roots else None
+        root = min(roots, key=lambda r: r["seq"]) if roots else None
         if root is not None and root.get("fleet"):
             x_seats = root.get("x_seats")
             if x_seats:

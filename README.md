@@ -63,8 +63,14 @@ router, then send a kickoff:
 lkml-fleet.sh fleet expand @all
 lkml-fleet.sh postmaster deliver --project <path>
 lkml-fleet-kickoff.sh <repo> <range> --from <addr> --to @all \
-  --subject <subject> --send
+  --seats @all --subject <subject> --send
 ```
+
+`--seats` stamps the fully-expanded panel roster onto the kickoff cover as
+an `X-Seats` header; `lkml-render.py` trusts that header, and only that
+header, to know who is seated. Omit it and the series can report `nak`,
+`changes requested`, or `question` but can never report `converged` — see
+Converging below.
 
 `fleet expand @all` works from the persona frontmatter alone. An optional
 `~/.config/lkml/fleet.yaml` (overridable with `LKML_FLEET_FILE`) can add a
@@ -138,7 +144,7 @@ scheduling and reading are different jobs held by different sessions.
 | `lkml-forklift.sh` | moves a series between repos |
 | `lkml-seats-parse.py`, `lkml-seats-resolve` | plumbing: read and resolve `seats.yaml` |
 | `lkml-fleet.sh` | fleet transport wrapper: selects lkml's personas and isolated optional fleet file, then passes its arguments to `fork-sandbox` |
-| `lkml-fleet-kickoff.sh` | Dogfood harness: formats a series and composes a kickoff mail for the fleet transport above; prints the `fork-sandbox mail send` command, or runs it with `--send`. `--ci-first <ci-addr>` addresses the kickoff to the CI seat alone so its reply is what wakes the panel — see `docs/ci-first-ordering.md` |
+| `lkml-fleet-kickoff.sh` | Dogfood harness: formats a series and composes a kickoff mail for the fleet transport above; prints the `fork-sandbox mail send` command, or runs it with `--send`. `--ci-first <ci-addr>` addresses the kickoff to the CI seat alone so its reply is what wakes the panel — see `docs/ci-first-ordering.md`. `--seats <addr-list>` expands every address (seats and/or lists like `@panel`) and stamps the result as `X-Seats` on the cover — the panel `lkml-render.py` trusts for convergence |
 
 ## Converging
 
@@ -151,6 +157,18 @@ went quiet" from "four seats agreed" — and those are opposite states. A
 reviewer that fell over, ran out of context, or never ingested the thread
 produces silence, and silence must never read as assent. Demand a
 positive signal per seat.
+
+Knowing who was seated is itself a precondition: `lkml-render.py` reads
+the panel from the `X-Seats` header on the thread's kickoff cover, stamped
+by `lkml-fleet-kickoff.sh --seats` (see the tools table above), never from
+`To:`/`Cc:` — those name whichever wave posted the cover, not the whole
+panel, and a list address like `@panel` never appears as a sender. If the
+kickoff cover carries no `X-Seats`, the panel is unverifiable and the
+series can never report `converged`, no matter how many seats reply
+non-blocking — it can still report `nak`, `changes requested`, or
+`question`, since those are claims someone actually made. A later
+message's own `X-Seats` is ignored even if present, so one seat can't
+shrink the panel out from under the verdict.
 
 ## Tests
 
