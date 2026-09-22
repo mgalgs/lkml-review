@@ -168,7 +168,12 @@ series can never report `converged`, no matter how many seats reply
 non-blocking — it can still report `nak`, `changes requested`, or
 `question`, since those are claims someone actually made. A later
 message's own `X-Seats` is ignored even if present, so one seat can't
-shrink the panel out from under the verdict.
+shrink the panel out from under the verdict. That includes a later
+version's cover: a `v2`/`v3` cover is a reply posted by the author seat,
+not the thread root, so it carries no `X-Seats` authority either. The
+verdict is therefore exactly as trustworthy as whoever posted the thread
+root -- for a kickoff-posted cover that is the host or CI that ran
+`--seats`. The header is anchored, not self-certifying.
 
 ## Tests
 
