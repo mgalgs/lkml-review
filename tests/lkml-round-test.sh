@@ -1166,6 +1166,43 @@ if (( rc_grant_nogrant != 0 )); then ok "--reach-probe with no --allow-namespace
 n_submits_nogrant="$(grep -c '^submit ' "$cap_grant_unpaired/call-order" 2>/dev/null)"; n_submits_nogrant="${n_submits_nogrant:-0}"
 check "no submit call is made (--reach-probe with no --allow-namespace)" "0" "$n_submits_nogrant"
 
+printf '\n== --context-ro passes through on both launch paths ==\n'
+context_dir="$(mktemp -d)"; tmpdirs+=("$context_dir")
+
+cap_k8s_ctx="$(mktemp -d)"; tmpdirs+=("$cap_k8s_ctx")
+k8s_state_ctx="$(mktemp -d)"; tmpdirs+=("$k8s_state_ctx")
+out_k8s_ctx="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_k8s_ctx" STUB_RUN_PREFIX="$run_prefix_dir" \
+    STUB_K8S_CAPTURE_DIR="$cap_k8s_ctx" STUB_K8S_STATE_DIR="$k8s_state_ctx" \
+    STUB_REPLY_TO="$patch2_id" STUB_REPLY_TO_BRACKETED="$patch_id_bracketed" \
+    "$round" widget-frob --project "$project_dir" --checkout otherbranch \
+    --personas "core, pi-local" --personas-dir "$work" \
+    --reply-to "$patch2_id" --no-summarize --timeout 10 \
+    --k8s --endpoint test-endpoint --context-ro "$context_dir" 2>&1)"
+rc_k8s_ctx=$?
+if (( rc_k8s_ctx == 0 )); then ok "--k8s round with --context-ro exits 0"; else no "--k8s round with --context-ro exits 0" "exit $rc_k8s_ctx: $out_k8s_ctx"; fi
+contains "core's (claude) cluster submit carries --context-ro" \
+    "$(cat "$cap_k8s_ctx/core.submit.argv" 2>/dev/null)" "--context-ro $context_dir"
+contains "pi-local's (pi) cluster submit carries --context-ro" \
+    "$(cat "$cap_k8s_ctx/pi-local.submit.argv" 2>/dev/null)" "--context-ro $context_dir"
+
+cap_local_ctx="$(mktemp -d)"; tmpdirs+=("$cap_local_ctx")
+out_local_ctx="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_local_ctx" STUB_RUN_PREFIX="$run_prefix_dir" \
+    STUB_REPLY_TO="$patch2_id" STUB_REPLY_TO_BRACKETED="$patch_id_bracketed" \
+    "$round" widget-frob --project "$project_dir" --checkout otherbranch \
+    --personas "core, security" --personas-dir "$work" \
+    --reply-to "$patch2_id" --no-summarize --context-ro "$context_dir" 2>&1)"
+rc_local_ctx=$?
+if (( rc_local_ctx == 0 )); then ok "local round with --context-ro exits 0"; else no "local round with --context-ro exits 0" "exit $rc_local_ctx: $out_local_ctx"; fi
+contains "core's local launch carries --context-ro" \
+    "$(cat "$cap_local_ctx/core.argv" 2>/dev/null)" "--context-ro $context_dir"
+contains "security's local launch carries --context-ro" \
+    "$(cat "$cap_local_ctx/security.argv" 2>/dev/null)" "--context-ro $context_dir"
+
+case "$(cat "$capture_dir/core.argv" 2>/dev/null)" in
+    *"--context-ro"*) no "a local round with no --context-ro carries none of it" "$(cat "$capture_dir/core.argv")" ;;
+    *) ok "a local round with no --context-ro carries none of it" ;;
+esac
+
 printf '\n== --help ==\n'
 h_out="$("$round" --help 2>&1)"; h_rc=$?
 if (( h_rc == 0 )); then ok "--help alone exits 0"; else no "--help alone exits 0" "exit $h_rc: $h_out"; fi

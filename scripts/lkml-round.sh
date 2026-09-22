@@ -343,6 +343,8 @@ fi
 
 trust_args=()
 [[ -n "$services_trust_ref" ]] && trust_args=(--services-trust-ref "$services_trust_ref")
+context_ro_args=()
+[[ -n "$context_ro" ]] && context_ro_args=(--context-ro "$context_ro")
 
 if [[ -z "$version" ]]; then
     if (( ${#reply_to_ids[@]} > 0 )); then
@@ -810,6 +812,7 @@ for persona in "${personas[@]}"; do
         [[ -n "$services_trust_ref" ]] && submit_argv+=(--services-trust-ref "$services_trust_ref")
         for v in "${allow_ns[@]}"; do submit_argv+=(--allow-namespace "$v"); done
         for v in "${reach_probes[@]}"; do submit_argv+=(--reach-probe "$v"); done
+        [[ -n "$context_ro" ]] && submit_argv+=(--context-ro "$context_ro")
         [[ -n "$model" ]] && submit_argv+=(--model "$model")
         # pi (and a translated pi-local) seat is wired to the endpoint;
         # a claude seat runs against its own per-run proxy and is not.
@@ -848,7 +851,7 @@ for persona in "${personas[@]}"; do
     echo "fork-sandbox lkml-round: launching $persona ($harness_announce$thinking_note)..." >&2
     launch_out="$(fork-sandbox.sh --harness "$harness_spec" \
         "${network_args[@]}" --checkout "$checkout_ref" \
-        "${pi_args[@]}" "${trust_args[@]}" \
+        "${pi_args[@]}" "${trust_args[@]}" "${context_ro_args[@]}" \
         --branch "$branch" --task-meta "$task_meta" "$project" "$handoff_file" 2>&1)"
     rc=$?
     run_dir="$(printf '%s\n' "$launch_out" | sed -n 's/^  run dir:  *//p' | head -n1)"
