@@ -478,6 +478,8 @@ exit 1
 STUB
 chmod +x "$render_fail_bin/python3"
 cap_sec_fail="$(mktemp -d)"; tmpdirs+=("$cap_sec_fail")
+empty_handoffs() { find /var/tmp/claude-scratch -maxdepth 1 -name 'lkml-round-*.md' -empty 2>/dev/null | sort; }
+empty_before="$(empty_handoffs)"
 out_sec_fail="$(PATH="$render_fail_bin:$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_sec_fail" STUB_RUN_PREFIX="$run_prefix_dir" \
     STUB_REPLY_TO="$patch_id" STUB_REPLY_TO_BRACKETED="$patch_id_bracketed" \
     "$round" widget-frob --project "$project_dir" --checkout otherbranch --base otherbranch \
@@ -499,6 +501,13 @@ if [[ -f "$cap_sec_fail/core.handoff.md" ]]; then
     ok "core still launched even though the secretary's render failed"
 else
     no "core still launched even though the secretary's render failed"
+fi
+leaked="$(comm -13 <(printf '%s\n' "$empty_before") <(empty_handoffs) | grep -v '^$' || true)"
+if [[ -z "$leaked" ]]; then
+    ok "the refused secretary left no empty handoff file behind"
+else
+    no "the refused secretary left no empty handoff file behind" "$leaked"
+    printf '%s\n' "$leaked" | xargs -r rm -f --
 fi
 
 printf '\n== post-round summarize ==\n'

@@ -734,12 +734,6 @@ for persona in "${personas[@]}"; do
     thinking="${seat_thinking[$persona]}"
     network="${seat_network[$persona]}"
 
-    mkdir -p -- /var/tmp/claude-scratch
-    handoff_file="$(mktemp /var/tmp/claude-scratch/lkml-round-XXXXXX.md)" || {
-        echo "Error: mktemp failed for $persona's handoff file." >&2
-        launch_failed=1
-        continue
-    }
     # The secretary summarizes the discussion instead of reviewing the
     # diff, so unlike the reviewer seats it needs the message bodies.
     # Its sandbox cannot read the mailbox (fork-sandbox.sh binds only
@@ -755,6 +749,14 @@ for persona in "${personas[@]}"; do
             continue
         fi
     fi
+    # Created only after every refusal above, so a refused seat leaves
+    # no empty handoff behind.
+    mkdir -p -- /var/tmp/claude-scratch
+    handoff_file="$(mktemp /var/tmp/claude-scratch/lkml-round-XXXXXX.md)" || {
+        echo "Error: mktemp failed for $persona's handoff file." >&2
+        launch_failed=1
+        continue
+    }
     build_handoff "$persona_file" "$cover_text" "$tree_text" "$thread_text" > "$handoff_file"
 
     branch="lkml/${series}-v${version}-round-${persona}-$(date +%s)"
