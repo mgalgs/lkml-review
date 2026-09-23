@@ -28,6 +28,12 @@
 #             vN's tip..vN+1 would post only this round's fixups as if they
 #             were the whole series; formatting the ORIGINAL base..vN+1
 #             posts the complete series every time.
+# --upstream-head <ref> the commit the series is stacked on (e.g. a
+#             reviewed pull request's head), resolved to a full sha and
+#             passed to the new version's `init`. Omit it to inherit
+#             whatever an earlier version recorded -- see
+#             skills/lkml-mode/SKILL.md for what this and the other
+#             review-target headers mean.
 # --author    which persona file speaks for the series. Defaults to
 #             "author" -- see skills/lkml-mode/personas/author.md.
 # --model-override <harness>[/<model>] overrides the author persona's own
@@ -115,6 +121,7 @@ project=""
 checkout_ref=""
 version=""
 base_ref=""
+upstream_head_ref=""
 personas_dir="$default_personas_dir"
 author_persona="author"
 model_override=""
@@ -127,6 +134,7 @@ while [[ $# -gt 0 ]]; do
         --checkout) checkout_ref="${2:?--checkout requires a ref}"; shift 2 ;;
         --version) version="${2:?--version requires a number}"; shift 2 ;;
         --base) base_ref="${2:?--base requires a ref}"; shift 2 ;;
+        --upstream-head) upstream_head_ref="${2:?--upstream-head requires a ref}"; shift 2 ;;
         --personas-dir) personas_dir="${2:?--personas-dir requires a directory}"; shift 2 ;;
         --author) author_persona="${2:?--author requires a persona name}"; shift 2 ;;
         --model-override) model_override="${2:?--model-override requires harness or harness/model}"; shift 2 ;;
@@ -147,6 +155,27 @@ trust_args=()
 [[ -n "$base_ref" ]] || { echo "Error: --base is required (the series' original base, the same ref v1 was formatted against)." >&2; exit 1; }
 command -v fork-sandbox.sh >/dev/null 2>&1 || { echo "Error: fork-sandbox.sh not found on PATH." >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "Error: jq not found on PATH." >&2; exit 1; }
+
+# Resolved here, before the author is launched, and reused verbatim at
+# harvest and at the new cover's init: the author's replies and the new
+# version are about what this run was spawned at, not whatever the branch
+# points to by the time this script gets around to posting.
+real_repo="$(git -C "$project" rev-parse --show-toplevel)"
+checkout_sha="$(git -C "$real_repo" rev-parse --verify --quiet "${checkout_ref}^{commit}" 2>/dev/null)" || {
+    echo "Error: checkout '$checkout_ref' does not resolve in $real_repo." >&2
+    exit 1
+}
+series_base_sha="$(git -C "$real_repo" rev-parse --verify --quiet "${base_ref}^{commit}" 2>/dev/null)" || {
+    echo "Error: --base '$base_ref' does not name a commit in $real_repo." >&2
+    exit 1
+}
+upstream_head_sha=""
+if [[ -n "$upstream_head_ref" ]]; then
+    upstream_head_sha="$(git -C "$real_repo" rev-parse --verify --quiet "${upstream_head_ref}^{commit}" 2>/dev/null)" || {
+        echo "Error: --upstream-head '$upstream_head_ref' does not resolve in $real_repo." >&2
+        exit 1
+    }
+fi
 
 persona_file="$personas_dir/$author_persona.md"
 [[ -f "$persona_file" ]] || { echo "Error: no persona file '$persona_file'." >&2; exit 1; }
@@ -455,7 +484,8 @@ harvest_reply() {
     local id rc=0
     id="$("$mailbox" post "$series" --from "$author_persona" --display "$display" \
         --reply-to "$reply_to" --file "$body_file" --harness "$harness" --model "$model" \
-        --network "$network" "${extra[@]}")" || rc=$?
+        --network "$network" --review-target "$checkout_ref $checkout_sha" \
+        --base-sha "$series_base_sha" "${extra[@]}")" || rc=$?
     rm -f "$body_file"
     if (( rc != 0 )); then
         echo "Warning: lkml-revise: failed to post $msgfile." >&2
@@ -498,20 +528,26 @@ patch_dir="$(mktemp -d /var/tmp/claude-scratch/lkml-revise-patches-XXXXXX)" || {
     echo "Error: mktemp -d failed for the format-patch output directory." >&2
     exit 1
 }
-real_repo="$(git -C "$project" rev-parse --show-toplevel)"
-series_base_sha="$(cd "$real_repo" && git rev-parse --verify --quiet "${base_ref}^{commit}")" || {
-    echo "Error: --base '$base_ref' does not name a commit in $real_repo." >&2
-    exit 1
-}
 if ! (cd "$real_repo" && git format-patch --quiet -o "$patch_dir" "$series_base_sha..$real_branch") >/dev/null; then
     echo "Error: git format-patch failed for $series_base_sha..$real_branch in $real_repo." >&2
     exit 1
 fi
 
+# Resolved fresh, right here, rather than reusing checkout_sha above:
+# real_branch is the branch the author's run fetched back, a different ref
+# from --checkout, and this is the one setter signal for the new version.
+real_branch_sha="$(cd "$real_repo" && git rev-parse --verify --quiet "${real_branch}^{commit}")" || {
+    echo "Error: branch '$real_branch' does not resolve in $real_repo." >&2
+    exit 1
+}
+upstream_head_args=()
+[[ -n "$upstream_head_sha" ]] && upstream_head_args=(--upstream-head "$upstream_head_sha")
 new_cover_id="$(cd "$real_repo" && "$mailbox" init "$series" --cover "$cover_file" --patches "$patch_dir" \
     --from "$author_persona" --display "$display" --version "$next_version" \
     --harness "$harness" --model "$model" --network "$network" \
-    --diffstat "$series_base_sha..$real_branch" --checkout "$real_branch")" || {
+    --diffstat "$series_base_sha..$real_branch" --checkout "$real_branch" \
+    --review-target-set "$real_branch $real_branch_sha" --base-sha "$series_base_sha" \
+    "${upstream_head_args[@]}")" || {
     echo "Error: lkml-mailbox.sh init failed -- v$next_version was not posted." >&2
     echo "Patches are sitting at $patch_dir; branch $real_branch was not" >&2
     echo "recorded in $ledger_root/$series/versions.jsonl." >&2

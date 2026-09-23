@@ -81,6 +81,12 @@ printf 'int frob(void) { return 0; }\n' > "$real_repo/frob.c"
 git -C "$real_repo" add frob.c
 git -C "$real_repo" commit -q -m "frob: add core"
 
+# --checkout is resolved to a full sha in this repo before the author is
+# launched -- give it a real branch to resolve, standing in for the branch
+# v1 was posted from.
+git -C "$real_repo" branch somebranch -q
+somebranch_sha="$(git -C "$real_repo" rev-parse --verify --quiet somebranch)"
+
 # The branch a persona's run would have fetched back into the real repo --
 # built here directly, standing in for what fork-sandbox.sh's own fetch
 # step does after a real sandboxed run.
@@ -88,6 +94,7 @@ git -C "$real_repo" branch v2-branch -q
 git -C "$real_repo" checkout v2-branch -q
 printf 'int frob(void) { return 1; }\n' > "$real_repo/frob.c"
 git -C "$real_repo" commit -q -am "frob: fix return value"
+v2_branch_sha="$(git -C "$real_repo" rev-parse --verify --quiet v2-branch)"
 git -C "$real_repo" checkout - -q
 
 # A minimal v1 series to revise.
@@ -163,6 +170,40 @@ contains "v2 is posted as the whole series (v1's commit plus this round's fixup)
     "$tree_out" "PATCH v2 2/2"
 contains "core's Changes-requested was answered with Reviewed-by" \
     "$("$mailbox" tree widget-frob)" "Reviewed-by"
+
+printf '\n== review-target headers ==\n'
+reviewed_by_id="$(printf '%s\n' "$tree_out" | grep -m1 Reviewed-by | awk '{print $1}')"
+reply_msg="$("$mailbox" show widget-frob "$reviewed_by_id")"
+contains "the author's harvested reply carries X-Review-Target for the checkout it was spawned on" \
+    "$reply_msg" "X-Review-Target: somebranch $somebranch_sha"
+contains "the author's harvested reply carries X-Base" "$reply_msg" "X-Base: $series_base_sha"
+v2_cover_id="$(printf '%s\n' "$tree_out" | awk '/^=== v2 ===/{found=1; next} found && /^[[:alnum:]]/{print $1; exit}')"
+v2_cover_msg="$("$mailbox" show widget-frob "$v2_cover_id")"
+contains "the new cover carries X-Review-Target-Set with the fetched branch's tip sha" \
+    "$v2_cover_msg" "X-Review-Target-Set: v2-branch $v2_branch_sha"
+contains "the new cover also carries X-Review-Target (same value as -Set)" \
+    "$v2_cover_msg" "X-Review-Target: v2-branch $v2_branch_sha"
+contains "the new cover carries X-Base with the series' original base" \
+    "$v2_cover_msg" "X-Base: $series_base_sha"
+case "$v2_cover_msg" in
+    *"X-Upstream-Head:"*) no "no --upstream-head was given; the new cover carries no X-Upstream-Head" ;;
+    *) ok "no --upstream-head was given; the new cover carries no X-Upstream-Head" ;;
+esac
+
+printf '\n== an unresolvable --checkout is refused before any launch ==\n'
+out_badco="$(PATH="$stub_bin:$PATH" "$revise" widget-frob --project "$real_repo" \
+    --checkout nosuchcheckoutref --version 1 --base "$series_base_sha" 2>&1)"
+rc_badco=$?
+if (( rc_badco != 0 )); then ok "an unresolvable --checkout exits non-zero"; else no "an unresolvable --checkout exits non-zero" "exit 0: $out_badco"; fi
+contains "the refusal names the bad checkout ref" "$out_badco" "nosuchcheckoutref"
+
+printf '\n== an unresolvable --upstream-head is refused before any launch ==\n'
+out_baduh="$(PATH="$stub_bin:$PATH" "$revise" widget-frob --project "$real_repo" \
+    --checkout somebranch --version 1 --base "$series_base_sha" \
+    --upstream-head nosuchupstreamref 2>&1)"
+rc_baduh=$?
+if (( rc_baduh != 0 )); then ok "an unresolvable --upstream-head exits non-zero"; else no "an unresolvable --upstream-head exits non-zero" "exit 0: $out_baduh"; fi
+contains "the refusal names the bad upstream-head ref" "$out_baduh" "nosuchupstreamref"
 
 printf '\n== the author handoff carries thread bodies, not just subjects ==\n'
 # r1's body ("please fix the return value") lives in the message BODY --
