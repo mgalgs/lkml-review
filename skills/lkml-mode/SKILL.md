@@ -42,6 +42,19 @@ scheduling, not reading, and the reviewers' job is reading.
   "📎". Read its own header comment for the full verb list, the message
   shape, and the attachment size cap/collision rules. You will mostly call
   `tree`, `open`, `tally` and `cover` — see above.
+  `init` and `post` also stamp four review-target headers, so a panel
+  stays correct when the code under review moves (a force-push, or a new
+  version posted): `X-Review-Target` (`<branch> <full sha>`) names the
+  commit a message is about; `X-Review-Target-Set` (same shape) appears
+  ONLY on the message that posts a new version's cover letter — the one
+  setter signal, never inferred from any other header; `X-Base` (`<full
+  sha>`) is the series' base commit; `X-Upstream-Head` (`<full sha>`) is
+  the commit the series' own commits are stacked on (a reviewed pull
+  request's head, for example). Shas are always full 40-hex, resolved at
+  the moment a ref is used — never a ref name, since a later push must not
+  change what an old message claims. `lkml-round.sh` and `lkml-revise.sh`
+  stamp these on every reply and version they post; see their own header
+  comments for which flags feed them.
 - **`scripts/lkml-render.py`** — renders a single-file HTML archive of the
   threads and review tally (typefaces load from the Google Fonts CDN; the
   local fallback stacks apply when there is no network): `lkml-render.py "$LKML_MAILBOX_ROOT/<series>" > threads.html`.
