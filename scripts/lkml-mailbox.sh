@@ -11,8 +11,8 @@
 #
 # --diffstat <range> and --smoke <file>, on `init` only, each append a
 # section to the cover letter body AFTER whatever --cover already contains:
-# `--diffstat` appends "## Diffstat" with the output of `git diff --stat
-# <range>`, run with NO `-C` flag -- it uses THIS PROCESS'S current working
+# `--diffstat` appends "## Diffstat" naming the command, then the output of
+# `git diff --stat --diff-algorithm=myers <range>`, run with NO `-C` flag -- it uses THIS PROCESS'S current working
 # directory, since this script takes no --project flag. A caller that wants
 # the diffstat computed against a project other than its own cwd must `cd`
 # into that project before invoking `init`, e.g. `(cd "$project" && "$mailbox"
@@ -747,12 +747,17 @@ cmd_init() {
     cover_body="$(cat -- "$cover")"
     if [[ -n "$diffstat_range" ]]; then
         local diffstat_out
-        if ! diffstat_out="$(git diff --stat "$diffstat_range" 2>&1)"; then
+        # myers pinned: an operator's diff.algorithm (e.g. histogram) counts
+        # the same change differently from a reviewer's clone, and reviewers
+        # re-run this diffstat to check the cover.
+        if ! diffstat_out="$(git diff --stat --diff-algorithm=myers "$diffstat_range" 2>&1)"; then
             echo "Error: init: --diffstat range '$diffstat_range' failed:" >&2
             echo "$diffstat_out" >&2
             return 1
         fi
-        cover_body="$(printf '%s\n\n## Diffstat\n\n%s\n' "$cover_body" "$diffstat_out")"
+        # shellcheck disable=SC2016 # literal markdown backticks, not a command substitution.
+        cover_body="$(printf '%s\n\n## Diffstat\n\n`git diff --stat --diff-algorithm=myers %s`:\n\n%s\n' \
+            "$cover_body" "$diffstat_range" "$diffstat_out")"
     fi
     if [[ -n "$smoke_file" ]]; then
         [[ -f "$smoke_file" ]] || { echo "Error: init: --smoke file '$smoke_file' not found." >&2; return 1; }

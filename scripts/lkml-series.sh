@@ -344,7 +344,7 @@ echo "fork-sandbox lkml-series: reconstruction on '$real_branch' matches $tip_re
 patch_dir="$ledger_root/$series/patches-v1"
 mkdir -p -- "$patch_dir"
 rm -f -- "$patch_dir"/*.patch
-if ! (cd "$real_repo" && git format-patch --quiet -o "$patch_dir" "$base_sha..$real_branch") >/dev/null; then
+if ! (cd "$real_repo" && git format-patch --quiet --diff-algorithm=myers -o "$patch_dir" "$base_sha..$real_branch") >/dev/null; then
     echo "Error: git format-patch failed for $base_sha..$real_branch in $real_repo." >&2
     exit 1
 fi

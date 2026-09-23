@@ -683,6 +683,30 @@ out="$("$mailbox" init widget-frob --cover "$work/cover.txt" --patches "$work/pa
 rc=$?
 if (( rc != 0 )); then ok "refuses a --diffstat range when cwd is not a git repo"; else no "refuses a --diffstat range when cwd is not a git repo" "it succeeded"; fi
 
+# This edit counts 2/2 under myers and 4/4 under histogram, so a repo
+# configured for histogram proves the diffstat ignores the operator's
+# diff.algorithm.
+algo_repo="$(mktemp -d)"; tmpdirs+=("$algo_repo")
+git -C "$algo_repo" init -q
+git -C "$algo_repo" config user.email t@fork-sandbox.invalid
+git -C "$algo_repo" config user.name Tester
+git -C "$algo_repo" config diff.algorithm histogram
+printf 'x\na\nb\nc\ny\na\nb\nc\nz\n' > "$algo_repo/file.txt"
+git -C "$algo_repo" add file.txt
+git -C "$algo_repo" commit -q -m "base"
+algo_base="$(git -C "$algo_repo" rev-parse --verify --quiet HEAD)"
+printf 'a\nb\nc\nq\nx\na\nb\nc\nz\n' > "$algo_repo/file.txt"
+git -C "$algo_repo" commit -q -am "reorder"
+algo_tip="$(git -C "$algo_repo" rev-parse --verify --quiet HEAD)"
+check "fixture: histogram counts this edit differently" "4	4	file.txt" \
+    "$(git -C "$algo_repo" diff --numstat "$algo_base..$algo_tip")"
+out="$(cd "$algo_repo" && "$mailbox" init algo-pin --cover "$work/cover.txt" --patches "$work/patches" \
+    --from author --harness claude --model opus --diffstat "$algo_base..$algo_tip" --no-checkout 2>/dev/null)"
+raw_algo="$("$mailbox" show algo-pin "${out:0:7}")"
+contains "the diffstat uses myers despite diff.algorithm=histogram" "$raw_algo" "2 insertions(+), 2 deletions(-)"
+contains "the diffstat names the command and range it ran" "$raw_algo" \
+    "\`git diff --stat --diff-algorithm=myers $algo_base..$algo_tip\`:"
+
 printf '\n== large body performance ==\n'
 # post's emptiness check once ran a whole-string glob substitution that walked
 # the body per multibyte character under a UTF-8 locale. Measured on this

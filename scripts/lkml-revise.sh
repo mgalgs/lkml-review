@@ -543,7 +543,7 @@ patch_dir="$(mktemp -d /var/tmp/claude-scratch/lkml-revise-patches-XXXXXX)" || {
     echo "Error: mktemp -d failed for the format-patch output directory." >&2
     exit 1
 }
-if ! (cd "$real_repo" && git format-patch --quiet -o "$patch_dir" "$series_base_sha..$real_branch") >/dev/null; then
+if ! (cd "$real_repo" && git format-patch --quiet --diff-algorithm=myers -o "$patch_dir" "$series_base_sha..$real_branch") >/dev/null; then
     echo "Error: git format-patch failed for $series_base_sha..$real_branch in $real_repo." >&2
     exit 1
 fi
