@@ -478,6 +478,31 @@ base_check_reply_msg="$("$mailbox" show widget-base-check "$(printf '%s\n' "$bas
 contains "a resolved --base stamps X-Base with its full sha" "$base_check_reply_msg" "X-Base: $somebranch_sha"
 contains "the same reply still carries X-Review-Target for the checkout" "$base_check_reply_msg" "X-Review-Target: somebranch $somebranch_sha"
 
+printf '\n== X-Upstream-Head: a ledger row carrying upstream_head reaches the harvested reply ==\n'
+# A separate series, so widget-frob's own (upstream_head-less) history does
+# not leak into this assertion. Round reads upstream_head from the ledger
+# at scripts/lkml-round.sh:425 and passes it through harvest_one -- this is
+# the only test that seeds a ledger row with the key at all.
+mkdir upstream-check-patches
+printf 'Subject: [PATCH 1/1] frob: upstream check\n\ndiff\n' > upstream-check-patches/0001.patch
+"$mailbox" init widget-upstream-check --cover cover.txt --patches upstream-check-patches --from author \
+    --harness claude --model opus --no-checkout >/dev/null 2>&1
+upstream_head_sha="$(git -C "$project_dir" rev-parse otherbranch)"
+printf '{"version":1,"branch":"somebranch","upstream_head":"%s"}\n' "$upstream_head_sha" \
+    > "$LKML_MAILBOX_ROOT/widget-upstream-check/versions.jsonl"
+upstream_check_patch_id="$("$mailbox" tree widget-upstream-check | awk 'NR==3{print $1}')"
+cap_upstream="$(mktemp -d)"; tmpdirs+=("$cap_upstream")
+out_upstream="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_upstream" STUB_RUN_PREFIX="$run_prefix_dir" \
+    STUB_REPLY_TO="$upstream_check_patch_id" \
+    "$round" widget-upstream-check --project "$project_dir" --checkout somebranch --base somebranch \
+    --personas core --personas-dir "$work" 2>&1)"
+rc_upstream=$?
+if (( rc_upstream == 0 )); then ok "upstream-head-check round exits 0 against the stub"; else no "upstream-head-check round exits 0 against the stub" "exit $rc_upstream: $out_upstream"; fi
+upstream_check_tree="$("$mailbox" tree widget-upstream-check)"
+upstream_check_reply_msg="$("$mailbox" show widget-upstream-check "$(printf '%s\n' "$upstream_check_tree" | grep -m1 Reviewed-by | awk '{print $1}')" 2>/dev/null)"
+contains "a ledger row's upstream_head is stamped on the harvested reply" \
+    "$upstream_check_reply_msg" "X-Upstream-Head: $upstream_head_sha"
+
 printf '\n== an unresolvable --base refuses the round before any launch ==\n'
 cap_badbase="$(mktemp -d)"; tmpdirs+=("$cap_badbase")
 out_badbase="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_badbase" STUB_RUN_PREFIX="$run_prefix_dir" \

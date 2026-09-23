@@ -762,9 +762,17 @@ cmd_init() {
     # same value on X-Review-Target, since there is only one commit this
     # init call is about.
     local effective_target="${review_target:-$review_target_set}"
+    # upstream_head is inherited from the highest earlier row that has
+    # one -- it names the PR head the whole series is stacked on, which
+    # does not change version to version unless told to. Computed before
+    # the posts below so the cover/patches and the ledger row agree.
+    local effective_upstream_head="$upstream_head"
+    if [[ -z "$effective_upstream_head" && -n "$checkout" && -f "$dir/versions.jsonl" ]]; then
+        effective_upstream_head="$(jq -rs 'map(select((.upstream_head|type)=="string")) | sort_by(.version) | last | .upstream_head // empty' "$dir/versions.jsonl")"
+    fi
     lkml_post_raw "$series" "$cover_id" "" "" "$version" 0 \
         "$from" "$display" "$harness" "$model" "$cover_subject" "" "$cover_body" "$attach_csv" "" "$network" \
-        "$effective_target" "$review_target_set" "$base_sha" "$upstream_head"
+        "$effective_target" "$review_target_set" "$base_sha" "$effective_upstream_head"
     echo "fork-sandbox lkml: posted cover ${cover_id:0:7} as v$version 0/$m" >&2
 
     local n=0 pf subj body id pos
@@ -781,17 +789,10 @@ cmd_init() {
         id="$(lkml_new_uuid)"
         lkml_post_raw "$series" "$id" "$cover_id" "<$cover_id@lkml.local>" "$version" 1 \
             "$from" "$display" "$harness" "$model" "[PATCH v$version $pos/$m] $subj" "" "$body" \
-            "" "" "$network" "$effective_target" "" "$base_sha" "$upstream_head"
+            "" "" "$network" "$effective_target" "" "$base_sha" "$effective_upstream_head"
         echo "fork-sandbox lkml: posted patch ${id:0:7} as v$version $n/$m" >&2
     done
     if [[ -n "$checkout" ]]; then
-        # upstream_head is inherited from the highest earlier row that
-        # has one -- it names the PR head the whole series is stacked
-        # on, which does not change version to version unless told to.
-        local effective_upstream_head="$upstream_head"
-        if [[ -z "$effective_upstream_head" && -f "$dir/versions.jsonl" ]]; then
-            effective_upstream_head="$(jq -rs 'map(select((.upstream_head|type)=="string")) | sort_by(.version) | last | .upstream_head // empty' "$dir/versions.jsonl")"
-        fi
         local -a jq_args=(--argjson version "$version" --arg branch "$checkout" --arg sha "$checkout_sha")
         # shellcheck disable=SC2016 # jq's own $vars, not bash's -- must stay unexpanded.
         local jq_filter='{version:$version, branch:$branch, sha:$sha}'

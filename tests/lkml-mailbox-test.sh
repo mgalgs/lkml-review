@@ -795,9 +795,10 @@ rt_post_bad_rc=0
     --base-sha "shortsha" >/dev/null 2>&1 || rt_post_bad_rc=$?
 check "post: invalid --base-sha is refused with rc 2" "2" "$rt_post_bad_rc"
 
-# A second version omitting --upstream-head inherits it from v1's ledger row
-# -- the header is NOT retroactively inherited, only the ledger's own record
-# of "what PR head is this series stacked on" is.
+# A second version omitting --upstream-head inherits it from v1's ledger
+# row -- and the cover/patch headers carry that inherited value too, so a
+# reader of the setter message agrees with the ledger and with every reply
+# lkml-round.sh stamps for this version.
 git -C "$rt_repo" commit --allow-empty -qm v2-tip
 rt_tip2_sha="$(git -C "$rt_repo" rev-parse HEAD)"
 git -C "$rt_repo" branch -f rt-branch
@@ -809,10 +810,10 @@ check "v2 ledger row inherits upstream_head from v1" \
     "{\"version\":2,\"branch\":\"rt-branch\",\"sha\":\"$rt_tip2_sha\",\"base\":\"$rt_base_sha\",\"upstream_head\":\"$rt_upstream_sha\"}" \
     "$rt_ledger_v2"
 rt_cover2_raw="$("$mailbox" show rt-series "${rt_out3:0:7}")"
-case "$rt_cover2_raw" in
-    *"X-Upstream-Head:"*) no "v2 cover header omits X-Upstream-Head (only the ledger inherits)" "$rt_cover2_raw" ;;
-    *) ok "v2 cover header omits X-Upstream-Head (only the ledger inherits)" ;;
-esac
+contains "v2 cover header carries the inherited X-Upstream-Head" "$rt_cover2_raw" "X-Upstream-Head: $rt_upstream_sha"
+rt_patch2_id="$("$mailbox" tree rt-series --version 2 | awk 'NR==3{print $1}')"
+rt_patch2_raw="$("$mailbox" show rt-series "${rt_patch2_id:0:7}")"
+contains "v2 patch header carries the inherited X-Upstream-Head" "$rt_patch2_raw" "X-Upstream-Head: $rt_upstream_sha"
 
 printf '\n== render/tally unaffected by the new headers ==\n'
 
