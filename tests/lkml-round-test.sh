@@ -132,6 +132,16 @@ printf '%s\n' "$task_meta" > "$STUB_CAPTURE_DIR/$persona.task-meta.json"
 printf '%s\n' "${args[*]}" > "$STUB_CAPTURE_DIR/$persona.argv"
 cp -- "${args[$((n-1))]}" "$STUB_CAPTURE_DIR/$persona.handoff.md"
 
+if [[ -n "${STUB_MOVE_BRANCH_TO:-}" ]]; then
+    # Simulates a push landing between scripts/lkml-round.sh's launch-time
+    # sha resolution (once, before the seat loop) and this seat's harvest:
+    # advances the checkout branch while the seat is "running". A
+    # regression that re-resolved the checkout/base at harvest instead of
+    # reusing the launch-time value would then stamp this moved sha.
+    project_arg="${args[$((n-2))]}"
+    git -C "$project_arg" update-ref "refs/heads/${STUB_MOVE_BRANCH_REF:?}" "$STUB_MOVE_BRANCH_TO"
+fi
+
 run_dir="$(mktemp -d "$STUB_RUN_PREFIX/run.XXXXXX")"
 clone_dir="$run_dir/clone/proj"
 # fork-sandbox.sh creates the outbox for every run; mirror that here.
@@ -502,6 +512,44 @@ upstream_check_tree="$("$mailbox" tree widget-upstream-check)"
 upstream_check_reply_msg="$("$mailbox" show widget-upstream-check "$(printf '%s\n' "$upstream_check_tree" | grep -m1 Reviewed-by | awk '{print $1}')" 2>/dev/null)"
 contains "a ledger row's upstream_head is stamped on the harvested reply" \
     "$upstream_check_reply_msg" "X-Upstream-Head: $upstream_head_sha"
+
+printf '\n== the harvested reply carries the LAUNCH-time sha, not a re-resolve at harvest ==\n'
+# A dedicated branch, isolated from every other section's use of
+# "somebranch"/"otherbranch": the stub advances it (STUB_MOVE_BRANCH_TO
+# above) while core's seat is "running", between scripts/lkml-round.sh's
+# launch-time rev-parse of checkout/base (lines ~390/420, before the seat
+# loop) and this seat's harvest. A regression that re-resolved either at
+# harvest instead of reusing the launch-time value would stamp the moved
+# commit; this proves the launch-time one is what actually lands.
+git -C "$project_dir" branch movebranch somebranch
+move_launch_sha="$(git -C "$project_dir" rev-parse movebranch)"
+moved_to_sha="$(git -C "$project_dir" rev-parse otherbranch)"
+mkdir move-check-patches
+printf 'Subject: [PATCH 1/1] frob: move check\n\ndiff\n' > move-check-patches/0001.patch
+"$mailbox" init widget-move-check --cover cover.txt --patches move-check-patches --from author \
+    --harness claude --model opus --no-checkout >/dev/null 2>&1
+printf '{"version":1,"branch":"movebranch"}\n' > "$LKML_MAILBOX_ROOT/widget-move-check/versions.jsonl"
+move_check_patch_id="$("$mailbox" tree widget-move-check | awk 'NR==3{print $1}')"
+cap_move="$(mktemp -d)"; tmpdirs+=("$cap_move")
+out_move="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_move" STUB_RUN_PREFIX="$run_prefix_dir" \
+    STUB_REPLY_TO="$move_check_patch_id" \
+    STUB_MOVE_BRANCH_REF="movebranch" STUB_MOVE_BRANCH_TO="$moved_to_sha" \
+    "$round" widget-move-check --project "$project_dir" --checkout movebranch --base movebranch \
+    --personas core --personas-dir "$work" 2>&1)"
+rc_move=$?
+if (( rc_move == 0 )); then ok "move-check round exits 0 against the stub"; else no "move-check round exits 0 against the stub" "exit $rc_move: $out_move"; fi
+check "the stub actually moved the branch during the seat's run (proves the race is real)" \
+    "$moved_to_sha" "$(git -C "$project_dir" rev-parse movebranch)"
+move_check_tree="$("$mailbox" tree widget-move-check)"
+move_check_reply_msg="$("$mailbox" show widget-move-check "$(printf '%s\n' "$move_check_tree" | grep -m1 Reviewed-by | awk '{print $1}')" 2>/dev/null)"
+contains "the harvested reply's X-Review-Target is the LAUNCH sha, not the moved one" \
+    "$move_check_reply_msg" "X-Review-Target: movebranch $move_launch_sha"
+case "$move_check_reply_msg" in
+    *"X-Review-Target: movebranch $moved_to_sha"*) no "the harvested reply must not carry the sha the branch moved to" ;;
+    *) ok "the harvested reply does not carry the sha the branch moved to" ;;
+esac
+contains "the harvested reply's X-Base is also the LAUNCH sha, not the moved one" \
+    "$move_check_reply_msg" "X-Base: $move_launch_sha"
 
 printf '\n== an unresolvable --base refuses the round before any launch ==\n'
 cap_badbase="$(mktemp -d)"; tmpdirs+=("$cap_badbase")

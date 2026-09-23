@@ -367,6 +367,43 @@ contains "refusal names the already-sealed alias" "$out" "already sealed"
 n_runs_after=$(find "$run_prefix_dir" -maxdepth 1 -name 'run.*' | wc -l)
 check "no run was launched" "$n_runs_before" "$n_runs_after"
 
+printf '\n== the author'"'"'s harvested reply carries the REVIEWED version'"'"'s ledger upstream_head ==\n'
+# A separate series: lkml-round.sh reads a version's OWN upstream_head from
+# the ledger (scripts/lkml-round.sh:425) and stamps it on every harvested
+# reply in that version's thread -- the author's own replies must agree,
+# reading the version-under-revision's ledger row (not $upstream_head_ref
+# above, which names the NEW version's head -- distinct on purpose here).
+mkdir uh-patches
+printf 'Subject: [PATCH 1/1] frob: uh core\n\ndiff\n' > uh-patches/0001.patch
+"$mailbox" init widget-uh --cover cover.txt --patches uh-patches --from author \
+    --harness claude --model opus --no-checkout >/dev/null 2>&1
+uh_patch_id="$("$mailbox" tree widget-uh | awk 'NR==3{print $1}')"
+reviewed_upstream_sha="$series_base_sha"
+printf '{"version":1,"branch":"somebranch","upstream_head":"%s"}\n' "$reviewed_upstream_sha" \
+    > "$LKML_MAILBOX_ROOT/widget-uh/versions.jsonl"
+echo "please look again" > q2.txt
+r_uh="$("$mailbox" post widget-uh --from core --reply-to "$uh_patch_id" --file q2.txt \
+    --tags Changes-requested --harness claude --model opus 2>/dev/null)"
+r1_saved="$r1"; r1="$r_uh"
+write_stub 1 true 1 1
+r1="$r1_saved"
+out_uh="$(PATH="$stub_bin:$PATH" "$revise" widget-uh --project "$real_repo" \
+    --checkout somebranch --version 1 --base "$series_base_sha" \
+    --upstream-head v2-branch 2>&1)"
+rc_uh=$?
+if (( rc_uh == 0 )); then ok "uh: exits 0 and posts v2"; else no "uh: exits 0 and posts v2" "exit $rc_uh: $out_uh"; fi
+uh_tree="$("$mailbox" tree widget-uh)"
+uh_reply_msg="$("$mailbox" show widget-uh "$(printf '%s\n' "$uh_tree" | grep -m1 Reviewed-by | awk '{print $1}')")"
+contains "the author's reply carries the REVIEWED version's ledger upstream_head" \
+    "$uh_reply_msg" "X-Upstream-Head: $reviewed_upstream_sha"
+case "$uh_reply_msg" in
+    *"X-Upstream-Head: $v2_branch_sha"*) no "the author's reply must not carry the NEW version's --upstream-head instead" ;;
+    *) ok "the author's reply does not carry the NEW version's --upstream-head" ;;
+esac
+uh_v2_cover_id="$(printf '%s\n' "$uh_tree" | awk '/^=== v2 ===/{found=1; next} found && /^[[:alnum:]]/{print $1; exit}')"
+contains "the new v2 cover still carries the NEW version's --upstream-head, not the reviewed one" \
+    "$("$mailbox" show widget-uh "$uh_v2_cover_id")" "X-Upstream-Head: $v2_branch_sha"
+
 printf '\n== --help ==\n'
 h_out="$("$revise" --help 2>&1)"; h_rc=$?
 if (( h_rc == 0 )); then ok "--help alone exits 0"; else no "--help alone exits 0" "exit $h_rc: $h_out"; fi

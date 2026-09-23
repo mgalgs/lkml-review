@@ -267,6 +267,20 @@ open_text="$("$mailbox" open "$series" --version "$version" 2>/dev/null)"
 # before anything is spent on a run) is even built. Same render
 # lkml-round.sh's secretary seat uses, same series directory resolution.
 ledger_root="${LKML_MAILBOX_ROOT:-/var/tmp/claude-scratch/lkml}"
+
+# The version under revision's OWN upstream_head, from the ledger -- NOT
+# $upstream_head_sha above, which names the NEW version's head. Read once,
+# before the author launches, so the author's harvested replies agree
+# with lkml-round.sh's replies in the same thread (round reads the same
+# ledger key for the same version).
+reviewed_upstream_head=""
+versions_file="$ledger_root/$series/versions.jsonl"
+if [[ -f "$versions_file" ]]; then
+    reviewed_upstream_head="$(jq -r --argjson v "$version" \
+        'select((.version|type)=="number" and .version==$v and (.upstream_head|type)=="string") | .upstream_head' \
+        "$versions_file" | tail -n1)"
+fi
+
 thread_text="$(python3 "$script_dir/lkml-render.py" --text "$ledger_root/$series" 2>/dev/null)" || thread_text=""
 if [[ -z "$thread_text" ]]; then
     echo "Error: could not render the thread bodies for series '$series'; refusing to launch an author who cannot read the review." >&2
@@ -481,6 +495,7 @@ harvest_reply() {
     local -a extra=()
     [[ -n "$subject" ]] && extra=(--subject "$subject")
     [[ -n "$tags" ]] && extra+=(--tags "$tags")
+    [[ -n "$reviewed_upstream_head" ]] && extra+=(--upstream-head "$reviewed_upstream_head")
     local id rc=0
     id="$("$mailbox" post "$series" --from "$author_persona" --display "$display" \
         --reply-to "$reply_to" --file "$body_file" --harness "$harness" --model "$model" \
