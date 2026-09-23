@@ -149,14 +149,17 @@
 # -- same handoff, same branch, no local tmux), --checkout at the
 # series' tip, with a handoff built from the persona file, the mailbox's
 # `cover` and `tree` output, and (with --reply-to) the specific threads to
-# answer. The secretary seat additionally gets the whole thread's message
-# bodies, as a `lkml-render.py --text` render: it summarizes the
-# discussion rather than reviewing the diff, and its sandbox cannot read
-# the mailbox, so the handoff itself must carry the thread. The run
-# makes NO commits -- it writes its replies as <n>.msg files in the
-# run's artifact outbox (the absolute path its own prompt preamble
-# gives it), which sits outside the clone: the project's "commit early
-# and often" instinct cannot sweep a reply into a commit by accident --
+# answer. Every seat also gets the whole thread, bodies included, as a
+# read-only file at /thread/thread.txt: one `lkml-render.py --text` render,
+# made once per round and mounted on every seat via --thread-dir (the
+# sandbox cannot read the mailbox itself). If that render fails or is
+# empty the WHOLE round is refused before any seat launches -- a seat
+# without it cannot judge the author's replies. The secretary reads it as
+# its primary input. The thread directory is kept afterwards, like the
+# handoffs. The run makes NO commits -- it writes its replies as <n>.msg
+# files in the run's artifact outbox (the absolute path its own prompt
+# preamble gives it), which sits outside the clone: the project's "commit
+# early and often" instinct cannot sweep a reply into a commit by accident --
 # and the --k8s mode serves a cluster run the same way: the outbox is
 # the only channel that carries a file out of a pod, and collect pulls
 # it back to the seat's own directory. Launches are started back to
@@ -435,23 +438,26 @@ lkml_persona_field() {
 }
 
 # Builds one persona's handoff on stdout: the persona file verbatim, the
-# series' cover letter and full thread tree, (for the secretary seat)
-# the whole thread's message bodies, then either the specific threads to
-# answer or instructions to review the whole diff, then the fixed rules
-# for writing replies into the artifact outbox.
+# series' cover letter and full thread tree, a pointer to the rest of the
+# thread at /thread/thread.txt, then either the specific threads to answer
+# or instructions to review the whole diff, then the fixed rules for
+# writing replies into the artifact outbox.
 build_handoff() {
-    local persona_file="$1" cover="$2" tree="$3" thread="${4:-}"
+    local persona_file="$1" cover="$2" tree="$3"
     cat -- "$persona_file"
     printf '\n---\n\n# The series you are reviewing: %s, v%s\n\n%s\n' "$series" "$version" "$cover"
     printf '\n## The full thread tree so far\n\n%s\n' "$tree"
-    if [[ -n "$thread" ]]; then
-        printf "\n## The thread's messages, bodies included\n\n"
-        printf 'The tree above is one line per message: id, persona, harness/model,\n'
-        printf 'tags and subject. This is the same thread with every message body,\n'
-        printf 'in thread order -- [PATCH] bodies keep the commit message and the\n'
-        printf 'diffstat, their diff is omitted (the patches are applied in this\n'
-        printf 'clone). This round is about v%s -- the section headed \"%s v%s\";\n' "$version" "$series" "$version"
-        printf 'earlier versions are there as context.\n\n%s\n' "$thread"
+    printf '\n## The rest of the thread\n\n'
+    printf 'Every message in the thread, bodies included, in thread order and\n'
+    printf 'across every version, is at /thread/thread.txt (read-only). [PATCH]\n'
+    printf 'bodies there keep the commit message and the diffstat, but their diff\n'
+    printf 'is cut, because the patches are applied in this clone. This round is\n'
+    printf 'about v%s; earlier versions are context. Read the file when the\n' "$version"
+    printf 'message above is not enough -- in particular in a v2+ round, to see\n'
+    printf 'what you said about the earlier version and how the author answered\n'
+    printf 'it, before you judge whether a point was addressed.\n'
+    if [[ "$persona" == "secretary" ]]; then
+        printf 'The thread file is your primary input: read it in full.\n'
     fi
     if (( ${#reply_to_ids[@]} > 0 )); then
         printf '\n## What to do this round\n\n'
@@ -507,8 +513,11 @@ Rules, all load-bearing:
   but you have not verified every line. `NAK` means this must not be
   merged as it stands. `Changes-requested` and `Question` are for exactly
   what they say.
-- **Quote what you are responding to**, with `> ` at the start of each
-  quoted line, the way an email reply does.
+- **Quote the way mailing-list etiquette does.** Quote only the lines
+  you are responding to, with `> ` at the start of each quoted line. Trim
+  everything else and mark each cut with `[...]`. Put your reply directly
+  below each quote (interleaved, bottom-posted, never top-posted). Never
+  quote a whole message or a whole patch.
 - **Ask a question rather than guess** when you are not sure.
 - **Make no commits and no other repository changes.** Do not edit, stage
   or commit anything. The outbox is outside the clone entirely, so there
@@ -702,6 +711,22 @@ for persona in "${personas[@]}"; do
     seat_network["$persona"]="$network"
 done
 
+# Every seat mounts this render read-only at /thread, so a v2+ reviewer can
+# read its own earlier comments and the author's answers. Without it the
+# round would run degraded and look fine: refuse the whole round instead.
+mkdir -p -- /var/tmp/claude-scratch
+thread_dir="$(mktemp -d /var/tmp/claude-scratch/lkml-round-thread-XXXXXX)" || {
+    echo "Error: mktemp failed for the thread directory of series '$series'; no persona was launched." >&2
+    exit 1
+}
+render_err="$(python3 "$script_dir/lkml-render.py" --text "$ledger_root/$series" 2>&1 >"$thread_dir/thread.txt")"
+render_rc=$?
+if (( render_rc != 0 )) || [[ ! -s "$thread_dir/thread.txt" ]]; then
+    echo "Error: could not render the thread for series '$series' (${render_err:-empty render}); every seat reads it at /thread/thread.txt, so no persona was launched." >&2
+    rm -rf -- "$thread_dir"
+    exit 1
+fi
+
 for persona in "${personas[@]}"; do
     persona="${persona#"${persona%%[![:space:]]*}"}"
     persona="${persona%"${persona##*[![:space:]]}"}"
@@ -734,21 +759,6 @@ for persona in "${personas[@]}"; do
     thinking="${seat_thinking[$persona]}"
     network="${seat_network[$persona]}"
 
-    # The secretary summarizes the discussion instead of reviewing the
-    # diff, so unlike the reviewer seats it needs the message bodies.
-    # Its sandbox cannot read the mailbox (fork-sandbox.sh binds only
-    # its own run dir under /var/tmp/claude-scratch/forks/), so the
-    # handoff carries the thread: the --text render of the mailbox,
-    # which the seat would otherwise have no way to obtain.
-    thread_text=""
-    if [[ "$persona" == "secretary" ]]; then
-        thread_text="$(python3 "$script_dir/lkml-render.py" --text "$ledger_root/$series" 2>/dev/null)" || thread_text=""
-        if [[ -z "$thread_text" ]]; then
-            echo "Error: could not render the thread bodies for series '$series'; refusing to launch secretary '$persona' who cannot summarize without them." >&2
-            launch_failed=1
-            continue
-        fi
-    fi
     # Created only after every refusal above, so a refused seat leaves
     # no empty handoff behind.
     mkdir -p -- /var/tmp/claude-scratch
@@ -757,7 +767,7 @@ for persona in "${personas[@]}"; do
         launch_failed=1
         continue
     }
-    build_handoff "$persona_file" "$cover_text" "$tree_text" "$thread_text" > "$handoff_file"
+    build_handoff "$persona_file" "$cover_text" "$tree_text" > "$handoff_file"
 
     branch="lkml/${series}-v${version}-round-${persona}-$(date +%s)"
     task_meta="$(jq -nc --arg series "$series" --arg persona "$persona" \
@@ -824,7 +834,7 @@ for persona in "${personas[@]}"; do
         # pi (and a translated pi-local) seat is wired to the endpoint;
         # a claude seat runs against its own per-run proxy and is not.
         [[ "$harness" == "pi" ]] && submit_argv+=(--endpoint "$endpoint")
-        submit_argv+=("$project" "$handoff_file")
+        submit_argv+=(--thread-dir "$thread_dir" "$project" "$handoff_file")
 
         echo "fork-sandbox lkml-round: submitting $persona ($harness${model:+/$model}$thinking_note) to the cluster as $branch..." >&2
         submit_out="$(fork-sandbox-k8s.sh "${submit_argv[@]}" 2>&1)"
@@ -859,7 +869,7 @@ for persona in "${personas[@]}"; do
     launch_out="$(fork-sandbox.sh --harness "$harness_spec" \
         "${network_args[@]}" --checkout "$checkout_ref" \
         "${pi_args[@]}" "${trust_args[@]}" "${context_ro_args[@]}" \
-        --branch "$branch" --task-meta "$task_meta" "$project" "$handoff_file" 2>&1)"
+        --thread-dir "$thread_dir" --branch "$branch" --task-meta "$task_meta" "$project" "$handoff_file" 2>&1)"
     rc=$?
     run_dir="$(printf '%s\n' "$launch_out" | sed -n 's/^  run dir:  *//p' | head -n1)"
     if (( rc != 0 )) || [[ -z "$run_dir" ]]; then

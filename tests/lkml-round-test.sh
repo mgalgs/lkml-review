@@ -436,11 +436,11 @@ if (( rc4 != 0 )); then ok "ambiguous checkout ref exits non-zero"; else no "amb
 contains "ambiguous checkout ref is rejected as a mismatched commit" "$out4" \
     "matches no recorded version branch"
 
-printf '\n== secretary handoff carries the whole thread ==\n'
-# The secretary summarizes the discussion instead of reviewing the diff,
-# and its sandbox cannot read the mailbox, so its handoff must carry the
-# thread's message bodies (the --text render). Reviewer seats do not get
-# it: their handoff is cover + tree and they read the diff in the clone.
+printf '\n== every seat mounts the thread at /thread; no handoff inlines bodies ==\n'
+# The thread is one --text render per round, mounted read-only on every
+# seat via --thread-dir. Handoffs carry the current message and a pointer
+# to /thread/thread.txt, never the bodies.
+thread_dir_of() { awk '{ for (i = 1; i < NF; i++) if ($i == "--thread-dir") print $(i+1) }' "$1"; }
 cp -- "$repo_dir/skills/lkml-mode/personas/secretary.md" "$work/secretary.md"
 cap_sec="$(mktemp -d)"; tmpdirs+=("$cap_sec")
 out_sec="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_sec" STUB_RUN_PREFIX="$run_prefix_dir" \
@@ -452,33 +452,60 @@ if (( rc_sec == 0 )); then ok "secretary round exits 0 against the stub"; else n
 sec_handoff="$cap_sec/secretary.handoff.md"
 if [[ -f "$sec_handoff" ]]; then ok "secretary's launch captured a handoff"; else no "secretary's launch captured a handoff"; fi
 sec_text="$(cat -- "$sec_handoff" 2>/dev/null)"
-contains "secretary handoff has the thread section" "$sec_text" "## The thread's messages, bodies included"
-# core's reply body landed in the mailbox during the harvest section:
-# it is not in the tree (subjects only) or the cover, so its presence
-# means the handoff carries message bodies, not just the tree.
-contains "secretary handoff carries a reply body, not just the tree" "$sec_text" "Looks fine now."
-contains "secretary handoff names the version the round is about" "$sec_text" 'widget-frob v1'
-contains "secretary handoff carries the other version as context" "$sec_text" 'widget-frob v2'
 core_handoff="$(cat -- "$cap_sec/core.handoff.md" 2>/dev/null)"
+core_thread_dir="$(thread_dir_of "$cap_sec/core.argv")"
+sec_thread_dir="$(thread_dir_of "$cap_sec/secretary.argv")"
+for seat in core secretary; do
+    seat_thread_dir="$(thread_dir_of "$cap_sec/$seat.argv")"
+    if [[ "$seat_thread_dir" == /var/tmp/claude-scratch/lkml-round-thread-* && -d "$seat_thread_dir" ]]; then
+        ok "$seat is launched with --thread-dir under the scratch root"
+    else
+        no "$seat is launched with --thread-dir under the scratch root" "got '$seat_thread_dir'"
+    fi
+    if [[ -s "$seat_thread_dir/thread.txt" ]]; then ok "$seat's thread dir holds a non-empty thread.txt"; else no "$seat's thread dir holds a non-empty thread.txt"; fi
+    # core's reply body landed in the mailbox during the harvest section:
+    # it is not in the tree (subjects only) or the cover, so its presence
+    # means the render carries message bodies.
+    contains "$seat's thread.txt carries a reply body, not just the tree" "$(cat -- "$seat_thread_dir/thread.txt" 2>/dev/null)" "Looks fine now."
+done
+check "both seats mount the same rendered thread" "$core_thread_dir" "$sec_thread_dir"
+thread_txt="$(cat -- "$core_thread_dir/thread.txt" 2>/dev/null)"
+contains "thread.txt names the version the round is about" "$thread_txt" 'widget-frob v1'
+contains "thread.txt carries the other version as context" "$thread_txt" 'widget-frob v2'
 contains "reviewer handoff still has the tree" "$core_handoff" "## The full thread tree so far"
+for seat in core secretary; do
+    seat_text="$(cat -- "$cap_sec/$seat.handoff.md" 2>/dev/null)"
+    contains "$seat handoff has the rest-of-thread section" "$seat_text" "## The rest of the thread"
+    contains "$seat handoff points at /thread/thread.txt" "$seat_text" "/thread/thread.txt"
+    case "$seat_text" in
+        *"Looks fine now."*) no "$seat handoff does not carry message bodies" ;;
+        *) ok "$seat handoff does not carry message bodies" ;;
+    esac
+done
+contains "secretary is told the thread file is its primary input" "$sec_text" "primary input: read it in full"
 case "$core_handoff" in
-    *"Looks fine now."*) no "reviewer handoff does not carry message bodies" ;;
-    *) ok "reviewer handoff does not carry message bodies" ;;
+    *"primary input"*) no "a reviewer is not told the thread file is its primary input" ;;
+    *) ok "a reviewer is not told the thread file is its primary input" ;;
 esac
+# shellcheck disable=SC2016  # the backticks are literal markdown
+contains "reviewer handoff carries the quoting rule's cut marker" "$core_handoff" '`[...]`'
+contains "reviewer handoff says to interleave and bottom-post" "$core_handoff" "interleaved, bottom-posted, never top-posted"
+contains "reviewer handoff forbids quoting a whole message" "$core_handoff" "Never"$'\n'"  quote a whole message or a whole patch"
 
-printf '\n== a failed thread render refuses only the secretary seat ==\n'
-# An empty render is treated as a failure too (the secretary would
-# otherwise be launched with no thread and silently summarize nothing).
+printf '\n== a failed thread render refuses the whole round ==\n'
+# An empty render is treated as a failure too: every seat depends on the
+# mount, and a seat without it would silently review degraded.
 # Stub python3 to fail so lkml-render.py never runs -- same "stub the
 # external command on PATH" pattern as fork-sandbox.sh above.
 render_fail_bin="$(mktemp -d)"; tmpdirs+=("$render_fail_bin")
 cat > "$render_fail_bin/python3" <<'STUB'
 #!/usr/bin/env bash
+echo "render exploded" >&2
 exit 1
 STUB
 chmod +x "$render_fail_bin/python3"
 cap_sec_fail="$(mktemp -d)"; tmpdirs+=("$cap_sec_fail")
-empty_handoffs() { find /var/tmp/claude-scratch -maxdepth 1 -name 'lkml-round-*.md' -empty 2>/dev/null | sort; }
+empty_handoffs() { find /var/tmp/claude-scratch -maxdepth 1 \( -name 'lkml-round-*.md' -empty -o -name 'lkml-round-thread-*' \) 2>/dev/null | sort; }
 empty_before="$(empty_handoffs)"
 out_sec_fail="$(PATH="$render_fail_bin:$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_sec_fail" STUB_RUN_PREFIX="$run_prefix_dir" \
     STUB_REPLY_TO="$patch_id" STUB_REPLY_TO_BRACKETED="$patch_id_bracketed" \
@@ -486,28 +513,25 @@ out_sec_fail="$(PATH="$render_fail_bin:$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_s
     --personas core,secretary --personas-dir "$work" 2>&1)"
 rc_sec_fail=$?
 if (( rc_sec_fail != 0 )); then
-    ok "the round reports a launch failure when the secretary's render fails"
+    ok "a failed render fails the round"
 else
-    no "the round reports a launch failure when the secretary's render fails" "exit 0: $out_sec_fail"
+    no "a failed render fails the round" "exit 0: $out_sec_fail"
 fi
-contains "the refusal names the secretary seat" "$out_sec_fail" "secretary"
 contains "the refusal names the series" "$out_sec_fail" "widget-frob"
-if [[ -f "$cap_sec_fail/secretary.handoff.md" ]]; then
-    no "the secretary was not launched"
-else
-    ok "the secretary was not launched"
-fi
-if [[ -f "$cap_sec_fail/core.handoff.md" ]]; then
-    ok "core still launched even though the secretary's render failed"
-else
-    no "core still launched even though the secretary's render failed"
-fi
+contains "the refusal carries the renderer's reason" "$out_sec_fail" "render exploded"
+for seat in core secretary; do
+    if [[ -f "$cap_sec_fail/$seat.handoff.md" ]]; then
+        no "$seat was not launched after a failed render"
+    else
+        ok "$seat was not launched after a failed render"
+    fi
+done
 leaked="$(comm -13 <(printf '%s\n' "$empty_before") <(empty_handoffs) | grep -v '^$' || true)"
 if [[ -z "$leaked" ]]; then
-    ok "the refused secretary left no empty handoff file behind"
+    ok "the refused round left no thread dir or empty handoff file behind"
 else
-    no "the refused secretary left no empty handoff file behind" "$leaked"
-    printf '%s\n' "$leaked" | xargs -r rm -f --
+    no "the refused round left no thread dir or empty handoff file behind" "$leaked"
+    printf '%s\n' "$leaked" | xargs -r rm -rf --
 fi
 
 printf '\n== post-round summarize ==\n'
@@ -790,6 +814,14 @@ case "$pi_submit_argv" in
     *) ok "pi-local is translated to pi on the cluster path" ;;
 esac
 contains "the translated pi seat is wired to the endpoint" "$pi_submit_argv" "--endpoint test-endpoint"
+for seat in core security pi-local; do
+    k8s_thread_dir="$(thread_dir_of "$cap_k8s/$seat.submit.argv")"
+    if [[ "$k8s_thread_dir" == /var/tmp/claude-scratch/lkml-round-thread-* && -s "$k8s_thread_dir/thread.txt" ]]; then
+        ok "the $seat cluster submit carries --thread-dir with a rendered thread.txt"
+    else
+        no "the $seat cluster submit carries --thread-dir with a rendered thread.txt" "got '$k8s_thread_dir'"
+    fi
+done
 # `submit` has no --pi-args option, so the persona's thinking: cannot be
 # forwarded to the cluster: the seat must be submitted WITHOUT it (the old
 # code appended it and submit hard-refused the whole submit) and the drop
