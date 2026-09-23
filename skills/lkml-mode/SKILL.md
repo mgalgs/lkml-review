@@ -71,7 +71,11 @@ scheduling, not reading, and the reviewers' job is reading.
   it the round refuses at startup if `lkml-summarize.sh` is not on PATH,
   before any persona launches.
 - **`lkml-revise.sh`** — launches the author persona to answer open review
-  (fixing code and/or replying) and post the next version. A large series'
+  (fixing code and/or replying) and post the next version. The default
+  `author` persona respins the series, rebasing or amending its commits. When
+  the series is someone else's published pull request, pass `--author
+  pr-author` instead: it only adds new commits on top of the tip it was
+  given, so the PR's own commits are never rewritten. A large series'
   revision round is a single long sandboxed run with no mid-run checkpoint
   today; a run that can resume itself from a hand-off in its own outbox
   (see the fork-sandbox skill and `fork-sandbox.sh`'s docs once that lands)
