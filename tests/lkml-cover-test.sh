@@ -194,7 +194,17 @@ out="$(PATH="$stub_bin:$PATH" "$cover" widget-frob --project "$real_repo" \
     --checkout cover-branch --base "$base_sha" --patches "$patches_dir" 2>&1)"
 rc=$?
 check "posts v1 when lkml-series already recorded it" "0" "$rc"
-check "existing v1 ledger remains one line" "1" "$(wc -l < "$LKML_MAILBOX_ROOT/widget-frob/versions.jsonl" | tr -d '[:space:]')"
+# lkml-series.sh's bare {version, branch} row must be ENRICHED here, not
+# skipped -- init's own --base-sha/--upstream-head are the only place
+# those ever reach the ledger for a series that never calls init fresh.
+check "the pre-recorded row gains a second, enriched line" "2" \
+    "$(wc -l < "$LKML_MAILBOX_ROOT/widget-frob/versions.jsonl" | tr -d '[:space:]')"
+check "the enriched line carries the checkout's sha" "$checkout_sha" \
+    "$(tail -n1 "$LKML_MAILBOX_ROOT/widget-frob/versions.jsonl" | jq -r '.sha')"
+check "the enriched line carries the resolved base sha" "$base_sha" \
+    "$(tail -n1 "$LKML_MAILBOX_ROOT/widget-frob/versions.jsonl" | jq -r '.base')"
+check "the original bare row is left untouched" '{"version":1,"branch":"cover-branch"}' \
+    "$(head -n1 "$LKML_MAILBOX_ROOT/widget-frob/versions.jsonl")"
 
 printf '\n== refusal: no cover letter was written ==\n'
 export LKML_MAILBOX_ROOT; LKML_MAILBOX_ROOT="$(mktemp -d)"; tmpdirs+=("$LKML_MAILBOX_ROOT")

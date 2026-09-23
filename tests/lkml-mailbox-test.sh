@@ -127,10 +127,30 @@ contains "outside a git repo, the diagnostic still names the branch" "$notgit_ou
 check "outside a git repo, nothing is posted" "0" \
     "$(find "$LKML_MAILBOX_ROOT/ledger-notgit" -name '*.msg' 2>/dev/null | wc -l)"
 
+# lkml-series.sh's own post-hoc flow: it appends a bare {version, branch}
+# row before lkml-cover.sh's init call ever runs. init must still enrich
+# that row with sha/base/upstream_head -- an exists-at-all dedup would
+# leave the ledger permanently missing what the cover message itself
+# carries, and future versions would have nothing to inherit from.
 mkdir -p "$LKML_MAILBOX_ROOT/ledger-same"
 printf '{"version":1,"branch":"lkml/widget-frob"}\n' > "$LKML_MAILBOX_ROOT/ledger-same/versions.jsonl"
 (cd "$ledger_repo" && "$mailbox" init ledger-same --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author --checkout lkml/widget-frob >/dev/null)
-check "same version and branch is not duplicated" "1" "$(wc -l < "$LKML_MAILBOX_ROOT/ledger-same/versions.jsonl" | tr -d ' ')"
+check "a pre-seeded bare row is enriched, not skipped" "2" "$(wc -l < "$LKML_MAILBOX_ROOT/ledger-same/versions.jsonl" | tr -d ' ')"
+check "enriched row keeps the recorded branch" "lkml/widget-frob" \
+    "$(tail -n1 "$LKML_MAILBOX_ROOT/ledger-same/versions.jsonl" | jq -r '.branch')"
+check "enriched row carries the checkout's sha" "$ledger_sha" \
+    "$(tail -n1 "$LKML_MAILBOX_ROOT/ledger-same/versions.jsonl" | jq -r '.sha')"
+check "the pre-seeded bare row itself is untouched" '{"version":1,"branch":"lkml/widget-frob"}' \
+    "$(head -n1 "$LKML_MAILBOX_ROOT/ledger-same/versions.jsonl")"
+
+# A row that already matches exactly what init would append is not
+# re-appended -- the ledger does not grow on a byte-identical retry.
+mkdir -p "$LKML_MAILBOX_ROOT/ledger-exact"
+exact_row="$(jq -nc --argjson version 1 --arg branch "lkml/widget-frob" --arg sha "$ledger_sha" \
+    '{version:$version, branch:$branch, sha:$sha}')"
+printf '%s\n' "$exact_row" > "$LKML_MAILBOX_ROOT/ledger-exact/versions.jsonl"
+(cd "$ledger_repo" && "$mailbox" init ledger-exact --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author --checkout lkml/widget-frob >/dev/null)
+check "a byte-identical row is not duplicated" "1" "$(wc -l < "$LKML_MAILBOX_ROOT/ledger-exact/versions.jsonl" | tr -d ' ')"
 
 mkdir -p "$LKML_MAILBOX_ROOT/ledger-conflict"
 printf '{"version":1,"branch":"lkml/other"}\n' > "$LKML_MAILBOX_ROOT/ledger-conflict/versions.jsonl"

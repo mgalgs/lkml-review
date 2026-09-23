@@ -785,33 +785,39 @@ cmd_init() {
         echo "fork-sandbox lkml: posted patch ${id:0:7} as v$version $n/$m" >&2
     done
     if [[ -n "$checkout" ]]; then
-        local recorded=0
+        # upstream_head is inherited from the highest earlier row that
+        # has one -- it names the PR head the whole series is stacked
+        # on, which does not change version to version unless told to.
+        local effective_upstream_head="$upstream_head"
+        if [[ -z "$effective_upstream_head" && -f "$dir/versions.jsonl" ]]; then
+            effective_upstream_head="$(jq -rs 'map(select((.upstream_head|type)=="string")) | sort_by(.version) | last | .upstream_head // empty' "$dir/versions.jsonl")"
+        fi
+        local -a jq_args=(--argjson version "$version" --arg branch "$checkout" --arg sha "$checkout_sha")
+        # shellcheck disable=SC2016 # jq's own $vars, not bash's -- must stay unexpanded.
+        local jq_filter='{version:$version, branch:$branch, sha:$sha}'
+        if [[ -n "$base_sha" ]]; then
+            jq_args+=(--arg base "$base_sha")
+            jq_filter="$jq_filter + {base:\$base}"
+        fi
+        if [[ -n "$effective_upstream_head" ]]; then
+            jq_args+=(--arg upstream_head "$effective_upstream_head")
+            jq_filter="$jq_filter + {upstream_head:\$upstream_head}"
+        fi
+        local candidate_row; candidate_row="$(jq -nc "${jq_args[@]}" "$jq_filter")"
+        # Readers already treat the LAST row for a (version, branch) as
+        # current (lkml-forklift.sh/-round.sh/-summarize.sh), so appending
+        # is always safe -- including when lkml-series.sh pre-seeded a bare
+        # {version, branch} row before this init call, which the old
+        # exists-at-all dedup check left un-enriched forever. Only skip
+        # when the candidate is byte-identical to what is already last, so
+        # a retried init does not spam the ledger.
+        local last_row=""
         if [[ -f "$dir/versions.jsonl" ]]; then
-            while IFS=$'\t' read -r ledger_version ledger_branch; do
-                [[ "$ledger_version" == "$version" && "$ledger_branch" == "$checkout" ]] && recorded=1
-            done < <(jq -r 'select((.version|type)=="number" and (.branch|type)=="string") | [.version,.branch] | @tsv' "$dir/versions.jsonl")
+            last_row="$(jq -c --argjson version "$version" --arg branch "$checkout" \
+                'select((.version|type)=="number" and (.branch|type)=="string") | select(.version == $version and .branch == $branch)' \
+                "$dir/versions.jsonl" | tail -n1)"
         fi
-        if (( ! recorded )); then
-            # upstream_head is inherited from the highest earlier row that
-            # has one -- it names the PR head the whole series is stacked
-            # on, which does not change version to version unless told to.
-            local effective_upstream_head="$upstream_head"
-            if [[ -z "$effective_upstream_head" && -f "$dir/versions.jsonl" ]]; then
-                effective_upstream_head="$(jq -rs 'map(select((.upstream_head|type)=="string")) | sort_by(.version) | last | .upstream_head // empty' "$dir/versions.jsonl")"
-            fi
-            local -a jq_args=(--argjson version "$version" --arg branch "$checkout" --arg sha "$checkout_sha")
-            # shellcheck disable=SC2016 # jq's own $vars, not bash's -- must stay unexpanded.
-            local jq_filter='{version:$version, branch:$branch, sha:$sha}'
-            if [[ -n "$base_sha" ]]; then
-                jq_args+=(--arg base "$base_sha")
-                jq_filter="$jq_filter + {base:\$base}"
-            fi
-            if [[ -n "$effective_upstream_head" ]]; then
-                jq_args+=(--arg upstream_head "$effective_upstream_head")
-                jq_filter="$jq_filter + {upstream_head:\$upstream_head}"
-            fi
-            jq -nc "${jq_args[@]}" "$jq_filter" >> "$dir/versions.jsonl"
-        fi
+        [[ "$last_row" == "$candidate_row" ]] || printf '%s\n' "$candidate_row" >> "$dir/versions.jsonl"
     fi
     printf '%s\n' "$cover_id"
 }
