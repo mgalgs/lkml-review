@@ -986,6 +986,127 @@ check "--seats with --send exits 0" "0" "$rc_seats_send"
 seats_send_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
 contains "--send carries the X-Seats header through to the real command" "$seats_send_argv" "X-Seats: @ci"
 
+printf '\n== grant flags: --allow-namespace/--reach-probe/--context-ro forwarded to the cover only ==\n'
+grant_ctx_dir="$work/grant-ctx"
+mkdir -p -- "$grant_ctx_dir"
+
+rm -f -- "$capture_dir/argv"
+PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' \
+    --allow-namespace 'example-ns' --allow-namespace 'other-ns:8001' \
+    --reach-probe 'svc-a.example-ns.svc.cluster.local:8001' \
+    --context-ro "$grant_ctx_dir" --send >/dev/null 2>&1
+rc_grant_send=$?
+check "--send with grant flags exits 0" "0" "$rc_grant_send"
+grant_send_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
+n_grant_send_sent="$(grep -c -- '^mail send' <<<"$grant_send_argv")"
+check "--send with grant flags posts exactly one cover" "1" "$n_grant_send_sent"
+contains "the sent cover argv carries all three grant flags, in order, before --subject" \
+    "$grant_send_argv" \
+    "--allow-namespace example-ns --allow-namespace other-ns:8001 --reach-probe svc-a.example-ns.svc.cluster.local:8001 --context-ro $grant_ctx_dir --subject"
+
+rm -f -- "$capture_dir/argv"
+PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' \
+    --allow-namespace 'example-ns' --reach-probe 'svc-a.example-ns.svc.cluster.local:8001' \
+    --context-ro "$grant_ctx_dir" --patches --send >/dev/null 2>&1
+rc_grant_patches_send=$?
+check "--send --patches with grant flags exits 0" "0" "$rc_grant_patches_send"
+grant_patches_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
+cover_line_grant="$(grep -m1 -- '^mail send' <<<"$grant_patches_argv")"
+contains "the posted cover carries --allow-namespace" "$cover_line_grant" "--allow-namespace example-ns"
+contains "the posted cover carries --reach-probe" "$cover_line_grant" "--reach-probe svc-a.example-ns.svc.cluster.local:8001"
+contains "the posted cover carries --context-ro" "$cover_line_grant" "--context-ro $grant_ctx_dir"
+reply_lines_grant="$(grep -- '^mail reply' <<<"$grant_patches_argv")"
+case "$reply_lines_grant" in
+    *"--allow-namespace"*|*"--reach-probe"*|*"--context-ro"*) no "no per-patch reply carries any grant flag" "$reply_lines_grant" ;;
+    *) ok "no per-patch reply carries any grant flag" ;;
+esac
+
+out_grant_print="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' \
+    --allow-namespace 'example-ns' --reach-probe 'svc-a.example-ns.svc.cluster.local:8001' \
+    --context-ro "$grant_ctx_dir" --patches 2>&1)"
+rc_grant_print=$?
+check "print-only mode with grant flags and --patches exits 0" "0" "$rc_grant_print"
+cover_print_line="$(grep -m1 -- 'cover_id=\$(' <<<"$out_grant_print")"
+contains "the printed cover carries --allow-namespace" "$cover_print_line" "--allow-namespace"
+contains "the printed cover carries --reach-probe" "$cover_print_line" "--reach-probe"
+contains "the printed cover's --context-ro is the absolute path" "$cover_print_line" "--context-ro $grant_ctx_dir"
+reply_print_lines="$(grep -- '^fork-sandbox mail reply' <<<"$out_grant_print")"
+case "$reply_print_lines" in
+    *"--allow-namespace"*|*"--reach-probe"*|*"--context-ro"*) no "no printed per-patch reply carries any grant flag" "$reply_print_lines" ;;
+    *) ok "no printed per-patch reply carries any grant flag" ;;
+esac
+
+printf '\n== --context-ro resolves a relative path to absolute ==\n'
+out_grant_relative="$(cd "$work" && PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --context-ro "grant-ctx" 2>&1)"
+rc_grant_relative=$?
+check "a relative --context-ro composes" "0" "$rc_grant_relative"
+contains "a relative --context-ro is forwarded as an absolute path" "$out_grant_relative" "--context-ro $grant_ctx_dir"
+
+printf '\n== --context-ro validation ==\n'
+missing_ctx_dir="$work/does-not-exist"
+rm -f -- "$capture_dir/argv"
+out_grant_missing="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' \
+    --context-ro "$missing_ctx_dir" --send 2>&1)"
+rc_grant_missing=$?
+if (( rc_grant_missing != 0 )); then ok "a missing --context-ro directory refuses"; else no "a missing --context-ro directory refuses" "exit 0: $out_grant_missing"; fi
+contains "the missing --context-ro refusal names the path" "$out_grant_missing" "$missing_ctx_dir"
+contains "the missing --context-ro refusal states the reason" "$out_grant_missing" "not an existing directory"
+if [[ -f "$capture_dir/argv" ]]; then
+    no "a refused --context-ro ran no fork-sandbox command" "$(cat "$capture_dir/argv")"
+else
+    ok "a refused --context-ro ran no fork-sandbox command"
+fi
+
+out_grant_duplicate="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' \
+    --context-ro "$grant_ctx_dir" --context-ro "$grant_ctx_dir" 2>&1)"
+rc_grant_duplicate=$?
+if (( rc_grant_duplicate != 0 )); then ok "a second --context-ro is a usage error"; else no "a second --context-ro is a usage error" "exit 0: $out_grant_duplicate"; fi
+
+printf '\n== grant flags refuse against a focused (${FOCUS}) template ==\n'
+out_grant_focus_print="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject '[PATCH v3 0/2] improve the thing' \
+    --focus 'patch 2 only' --template "$focused_template" \
+    --reach-probe 'svc-a.example-ns.svc.cluster.local:8001' 2>&1)"
+rc_grant_focus_print=$?
+if (( rc_grant_focus_print != 0 )); then ok "a focused template with a grant flag refuses in print-only mode"; else no "a focused template with a grant flag refuses in print-only mode" "exit 0: $out_grant_focus_print"; fi
+contains "the focused+grant refusal names mail grant" "$out_grant_focus_print" "fork-sandbox mail grant"
+contains "the focused+grant refusal states the reply-vs-thread reason" "$out_grant_focus_print" "reply inside an existing thread"
+
+rm -f -- "$capture_dir/argv"
+out_grant_focus_send="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject '[PATCH v3 0/2] improve the thing' \
+    --focus 'patch 2 only' --template "$focused_template" \
+    --reach-probe 'svc-a.example-ns.svc.cluster.local:8001' --send 2>&1)"
+rc_grant_focus_send=$?
+if (( rc_grant_focus_send != 0 )); then ok "a focused template with a grant flag refuses with --send too"; else no "a focused template with a grant flag refuses with --send too" "exit 0: $out_grant_focus_send"; fi
+contains "the focused+grant --send refusal names mail grant" "$out_grant_focus_send" "fork-sandbox mail grant"
+if [[ -f "$capture_dir/argv" ]]; then
+    no "a refused focused+grant --send ran no fork-sandbox command" "$(cat "$capture_dir/argv")"
+else
+    ok "a refused focused+grant --send ran no fork-sandbox command"
+fi
+
+printf '\n== no grant flags: cover argv is unchanged (regression guard) ==\n'
+rm -f -- "$capture_dir/argv"
+PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --send >/dev/null 2>&1
+no_grant_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
+body_path_no_grant="$(grep -oE -- '--body [^ ]+' <<<"$no_grant_argv" | awk '{print $2}')"
+expected_no_grant_argv="mail send --from @author --to @lkml-panel --subject [PATCH v1 0/2] subj --body $body_path_no_grant"
+check "the cover argv carries no grant flags and no stray empty tokens when none are given" \
+    "$expected_no_grant_argv" "$no_grant_argv"
+
 printf '\n== kickoff templates keep the no-attachment guard on the author reply ==\n'
 # A wake's harvested reply carries no attachment path (the postmaster
 # builds `mail reply` without --attach), so the "Next version" sections

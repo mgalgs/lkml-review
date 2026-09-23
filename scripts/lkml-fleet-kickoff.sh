@@ -7,7 +7,8 @@
 #            [--focus <text>] [--template <file>] [--hops <n>]
 #            [--ci-first <ci-addr>] [--version <n>]
 #            [--allow-ambiguous-version] [--patches] [--seats <addr-list>]
-#            [--send]
+#            [--allow-namespace <ns[:port]>]... [--reach-probe <host:port>]...
+#            [--context-ro <dir>] [--send]
 #
 # <repo>       path to a local git repository.
 # <range>      a revision range passed straight to `git format-patch`
@@ -169,6 +170,25 @@
 #              or wrong roster. Optional: omitted, nothing changes for
 #              existing callers. Never added to the per-patch replies
 #              --patches posts; those are not review seats.
+# --allow-namespace NS[:PORT]
+#              forwarded, repeatable, order preserved, to the cover's
+#              `fork-sandbox mail send`, which attaches a k8s egress grant
+#              to the NEW thread it creates. fork-sandbox validates the
+#              value, not this script. For `backend: k8s` seats only.
+#              Never added to the per-patch replies --patches posts, and
+#              refused (see --focus above) alongside a focused (${FOCUS})
+#              template: a grant belongs to the thread being created, and
+#              a focused round is a reply into one that already exists.
+# --reach-probe HOST:PORT
+#              same forwarding, repeatability, and restrictions as
+#              --allow-namespace.
+# --context-ro DIR
+#              same forwarding and restrictions as --allow-namespace, but
+#              a single value: a second --context-ro is a usage error.
+#              Forwarded as an absolute path (resolved with
+#              `realpath -e --`) so a printed, not sent, command still
+#              works when pasted from another directory. A DIR that does
+#              not exist is refused before anything else is composed.
 # --send       actually run the composed `fork-sandbox mail send`
 #              command. Without it, the command is printed, shell-quoted,
 #              and nothing is sent.
@@ -209,10 +229,14 @@ version=""
 version_given=0
 allow_ambiguous_version=0
 seats=""
+allow_namespace=()
+reach_probe=()
+context_ro=""
+context_ro_given=0
 
 while (( $# > 0 )); do
     case "$1" in
-        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats)
+        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats|--allow-namespace|--reach-probe|--context-ro)
             (( $# >= 2 )) || { echo "Error: $1 requires a value. See --help." >&2; exit 1; }
             ;;
     esac
@@ -228,6 +252,11 @@ while (( $# > 0 )); do
         --ci-first) ci_first="$2"; shift 2 ;;
         --version) version="$2"; version_given=1; shift 2 ;;
         --seats) seats="$2"; shift 2 ;;
+        --allow-namespace) allow_namespace+=("$2"); shift 2 ;;
+        --reach-probe) reach_probe+=("$2"); shift 2 ;;
+        --context-ro)
+            (( ! context_ro_given )) || { echo "Error: --context-ro may only be given once. See --help." >&2; exit 1; }
+            context_ro="$2"; context_ro_given=1; shift 2 ;;
         --allow-ambiguous-version) allow_ambiguous_version=1; shift ;;
         --patches) post_patches=1; shift ;;
         --attach) post_patches=1; echo "Warning: --attach is a deprecated alias for --patches; attachments are never posted -- this now posts one mail reply per patch instead. Use --patches." >&2; shift ;;
@@ -252,6 +281,13 @@ fi
 if [[ -n "$ci_first" && -n "$cc" ]]; then
     echo "Error: --cc is incompatible with --ci-first: the kickoff must address the CI seat alone so Cc recipients are not woken before its results." >&2
     exit 1
+fi
+context_ro_abs=""
+if (( context_ro_given )); then
+    if ! context_ro_abs="$(realpath -e -- "$context_ro" 2>/dev/null)" || [[ ! -d "$context_ro_abs" ]]; then
+        echo "Error: --context-ro '$context_ro' is not an existing directory." >&2
+        exit 1
+    fi
 fi
 
 ci_first_refusal() {
@@ -403,6 +439,19 @@ body="$(awk '
 # template gets the same refusal.
 if [[ -z "$focus" && "$body" == *'${FOCUS}'* ]]; then
     echo "Error: template '$template' contains \${FOCUS} but --focus was not given; a focused round with nothing to concentrate on wakes the whole panel for nothing. Pass --focus <text>." >&2
+    exit 1
+fi
+# shellcheck disable=SC2016  # ${FOCUS} is the literal placeholder text
+# being searched for in the stripped body, not a variable to expand.
+# A grant flag creates the grant on the thread `mail send` is about to
+# start; a focused template is a reply into a thread that already
+# exists, so no new grant can be attached there. Checked before any
+# composing (git format-patch, version stamping, etc.) even runs, and
+# unconditionally on --send -- the print-only path would otherwise
+# print a `mail send ... --allow-namespace ...` command a caller could
+# paste and believe is the right way to grant an existing thread.
+if [[ "$body" == *'${FOCUS}'* ]] && { (( ${#allow_namespace[@]} > 0 )) || (( ${#reach_probe[@]} > 0 )) || (( context_ro_given )); }; then
+    echo "Error: grant flags create a thread's grant, but a focused round is a reply inside an existing thread. Set the grant on that thread with \`fork-sandbox mail grant <thread-id> ...\` and compose without the grant flags." >&2
     exit 1
 fi
 
@@ -812,6 +861,13 @@ cover_cmd=(fork-sandbox mail send --from "$from" --to "$to")
 [[ -n "$cc" ]] && cover_cmd+=(--cc "$cc")
 [[ -n "$hops" ]] && cover_cmd+=(--hops "$hops")
 [[ -n "$seats_header" ]] && cover_cmd+=(--header "X-Seats: $seats_header")
+for grant_ns in "${allow_namespace[@]}"; do
+    cover_cmd+=(--allow-namespace "$grant_ns")
+done
+for grant_probe in "${reach_probe[@]}"; do
+    cover_cmd+=(--reach-probe "$grant_probe")
+done
+(( context_ro_given )) && cover_cmd+=(--context-ro "$context_ro_abs")
 cover_cmd+=(--subject "$subject" --body "$body_file")
 
 if (( send )); then
