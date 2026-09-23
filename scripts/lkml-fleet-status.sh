@@ -48,8 +48,25 @@
 #              opposite states.
 #   hop and spawns  the lowest and newest X-Hops values, plus the router's
 #              resettable spawn budget and never-reset sequence. A router
-#              stop is printed loudly with its reason; absent router state
-#              is distinguished from an exhausted budget.
+#              stop is printed loudly with its reason, followed by the
+#              postmaster's per-agent retry state for the thread (pending,
+#              exhausted, or recovered), when it holds any. The line under
+#              NEEDS OPERATOR is not fixed text: it is chosen from a retry
+#              record only when that record explains the CURRENT flag --
+#              its LAST_FAILED_RUN appears in the flag's reason, or (for an
+#              exhausted record) the reason reads "wake for <agent> failed
+#              after ... trigger <t8>". The flag file holds only the latest
+#              reason, and most reasons (hops, budget, spawn failure) have
+#              nothing to do with a retry, so retry history alone must not
+#              speak for them. Among explaining records: pending ("may
+#              restart on its own") beats exhausted at the newest message
+#              ("will not restart until someone mails into it"), which
+#              beats exhausted since moved on, which beats recovered ("the
+#              flag is stale"); ties go to the first agent by sorted name.
+#              With no explaining record, any unknown record (or an
+#              unreadable retries dir) says the state is unknown; otherwise
+#              the line is the original "will not restart". Absent router
+#              state is distinguished from an exhausted budget.
 #   cost per agent  completed router runs, grouped by agent. Runs without a
 #              summary stay visible as "no summary", summaries with no
 #              usable cost field (absent, null, or the wrong JSON type)
@@ -285,7 +302,135 @@ router_line_count() {
 # Router state is intentionally read as files instead of through a
 # postmaster command: this reporter remains useful where that command is
 # absent.  A partial or unreadable state is reported as unknown, never as a
-# plausible-looking zero.
+# plausible-looking zero. The same applies to the postmaster's per-agent
+# retry files below: never guess a state from a malformed line.
+
+# Prints the value of the LAST line matching ^KEY= in a postmaster
+# retry-state file, or nothing if that key never appears. The file is
+# data, not shell -- parsed line by line, never sourced.
+retry_field() {
+    local file="$1" key="$2" line value found=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        case "$line" in
+            "$key"=*) value="${line#"$key"=}"; found=1 ;;
+        esac
+    done < "$file"
+    (( found )) && printf '%s' "$value"
+    return 0
+}
+
+# Computes one agent's retry line from $MAIL_ROOT/.postmaster/retries/
+# <thread>/<agent>. Sets RETRY_LINE (empty if this agent has no retry
+# history -- a file holding only FAILS= is normal) and RETRY_CATEGORY
+# (one of pending, exhausted-newest, exhausted-other, recovered, unknown),
+# plus RETRY_T8, RETRY_RUN (LAST_FAILED_RUN) and RETRY_HHMM (due time for
+# pending, recovery time for recovered) for the consequence line.
+# Every read and lookup is guarded: a malformed file becomes "state
+# unknown", never an abort and never a guessed state.
+RETRY_LINE=""; RETRY_CATEGORY=""; RETRY_T8=""; RETRY_RUN=""; RETRY_HHMM=""
+compute_retry_agent() {
+    local agent="$1" file="$2"
+    local state trigger t8 attempt max not_before recovered_at hhmm idx j k
+    RETRY_LINE=""; RETRY_CATEGORY=""; RETRY_T8=""; RETRY_RUN=""; RETRY_HHMM=""
+
+    if [[ ! -r "$file" ]]; then
+        RETRY_LINE="retry @$agent: state unknown (unreadable)"
+        RETRY_CATEGORY="unknown"
+        return 0
+    fi
+
+    state="$(retry_field "$file" STATE)"
+    [[ -n "$state" ]] || return 0
+
+    case "$state" in
+        pending|exhausted|recovered) ;;
+        *)
+            RETRY_LINE="retry @$agent: state unknown (STATE=$state)"
+            RETRY_CATEGORY="unknown"
+            return 0 ;;
+    esac
+
+    trigger="$(retry_field "$file" TRIGGER)"
+    if [[ -z "$trigger" ]]; then
+        RETRY_LINE="retry @$agent: state unknown (TRIGGER missing)"
+        RETRY_CATEGORY="unknown"
+        return 0
+    fi
+    t8="${trigger:0:8}"
+    RETRY_T8="$t8"
+    RETRY_RUN="$(retry_field "$file" LAST_FAILED_RUN)"
+
+    attempt="$(retry_field "$file" ATTEMPT)"
+    if [[ ! "$attempt" =~ ^[0-9]+$ ]]; then
+        RETRY_LINE="retry @$agent: state unknown (ATTEMPT missing)"
+        RETRY_CATEGORY="unknown"
+        return 0
+    fi
+    max="$(retry_field "$file" MAX)"
+    if [[ ! "$max" =~ ^[0-9]+$ ]]; then
+        RETRY_LINE="retry @$agent: state unknown (MAX missing)"
+        RETRY_CATEGORY="unknown"
+        return 0
+    fi
+
+    case "$state" in
+        pending)
+            not_before="$(retry_field "$file" NOT_BEFORE)"
+            if [[ ! "$not_before" =~ ^[0-9]+$ ]]; then
+                RETRY_LINE="retry @$agent: state unknown (NOT_BEFORE missing)"
+                RETRY_CATEGORY="unknown"
+                return 0
+            fi
+            hhmm="$(date -d "@$not_before" +%H:%M 2>/dev/null)"
+            if [[ -z "$hhmm" ]]; then
+                RETRY_LINE="retry @$agent: state unknown (NOT_BEFORE unparseable)"
+                RETRY_CATEGORY="unknown"
+                return 0
+            fi
+            RETRY_LINE="retry @$agent: pending, retry $(( 10#$attempt + 1 ))/$max due $hhmm (trigger $t8) -- mailing into the thread cancels it"
+            RETRY_CATEGORY="pending"
+            RETRY_HHMM="$hhmm"
+            ;;
+        exhausted)
+            idx=-1
+            for (( j = 0; j < n; j++ )); do
+                if [[ "${MSG_ID[$j]}" == "$trigger" ]]; then
+                    idx=$j
+                    break
+                fi
+            done
+            if (( idx == -1 )); then
+                RETRY_LINE="retry @$agent: exhausted, $attempt/$max retries spent (trigger $t8) -- trigger not found in this thread; state unclear"
+                RETRY_CATEGORY="exhausted-other"
+            elif (( idx == n - 1 )); then
+                RETRY_LINE="retry @$agent: exhausted, $attempt/$max retries spent (trigger $t8) -- will not restart until someone mails in"
+                RETRY_CATEGORY="exhausted-newest"
+            else
+                k=$(( n - 1 - idx ))
+                RETRY_LINE="retry @$agent: exhausted, $attempt/$max retries spent (trigger $t8) -- $k newer message(s) since; check whether one re-woke @$agent"
+                RETRY_CATEGORY="exhausted-other"
+            fi
+            ;;
+        recovered)
+            recovered_at="$(retry_field "$file" RECOVERED_AT)"
+            if [[ ! "$recovered_at" =~ ^[0-9]+$ ]]; then
+                RETRY_LINE="retry @$agent: state unknown (RECOVERED_AT missing)"
+                RETRY_CATEGORY="unknown"
+                return 0
+            fi
+            hhmm="$(date -d "@$recovered_at" +%H:%M 2>/dev/null)"
+            if [[ -z "$hhmm" ]]; then
+                RETRY_LINE="retry @$agent: state unknown (RECOVERED_AT unparseable)"
+                RETRY_CATEGORY="unknown"
+                return 0
+            fi
+            RETRY_LINE="retry @$agent: recovered at $hhmm (trigger $t8, after $attempt/$max retries) -- the flag may be stale"
+            RETRY_CATEGORY="recovered"
+            RETRY_HHMM="$hhmm"
+            ;;
+    esac
+}
+
 print_hop_and_spawns() {
     local i hop lowest="" newest="${MSG_HOPS[$(( n - 1 ))]}"
     local pm spawn_file seq_file flag_file spawns seq reason
@@ -310,6 +455,39 @@ print_hop_and_spawns() {
         return 0
     fi
 
+    # Retry state is computed before any flag line is printed: the
+    # consequence line under NEEDS OPERATOR is chosen from it.
+    local retries_dir="$pm/retries/$RESOLVED"
+    local retries_dir_broken=0 any_unknown=0
+    local agent_file agent_name consequence
+    local -A R_CAT=() R_LINE=() R_RUN=() R_T8=() R_HHMM=()
+
+    if [[ -e "$retries_dir" ]]; then
+        if [[ -d "$retries_dir" && -r "$retries_dir" ]]; then
+            for agent_file in "$retries_dir"/*; do
+                [[ -e "$agent_file" ]] || continue
+                agent_name="${agent_file##*/}"
+                compute_retry_agent "$agent_name" "$agent_file"
+                [[ -n "$RETRY_LINE" ]] || continue
+                R_CAT[$agent_name]="$RETRY_CATEGORY"
+                R_LINE[$agent_name]="$RETRY_LINE"
+                R_RUN[$agent_name]="$RETRY_RUN"
+                R_T8[$agent_name]="$RETRY_T8"
+                R_HHMM[$agent_name]="$RETRY_HHMM"
+                [[ "$RETRY_CATEGORY" == unknown ]] && any_unknown=1
+            done
+        else
+            retries_dir_broken=1
+            any_unknown=1
+        fi
+    fi
+    local -a retry_agents=()
+    if (( ${#R_CAT[@]} > 0 )); then
+        while IFS= read -r agent_name; do
+            retry_agents+=("$agent_name")
+        done < <(printf '%s\n' "${!R_CAT[@]}" | sort)
+    fi
+
     spawn_file="$pm/spawns/$RESOLVED"
     seq_file="$pm/seq/$RESOLVED"
     flag_file="$pm/needs-operator/$RESOLVED"
@@ -320,8 +498,52 @@ print_hop_and_spawns() {
         else
             reason='unknown reason (flag unreadable)'
         fi
+
+        # The flag file holds only the latest reason, so the consequence is
+        # derived only from a retry record that matches that reason.
+        local explained_pending="" explained_exhausted_newest=""
+        local explained_exhausted_other="" explained_recovered="" explains
+        for agent_name in "${retry_agents[@]}"; do
+            explains=0
+            case "${R_CAT[$agent_name]}" in
+                unknown) continue ;;
+                exhausted-*)
+                    [[ "$reason" == *"wake for $agent_name failed after"* &&
+                       "$reason" == *"trigger ${R_T8[$agent_name]}"* ]] && explains=1 ;;
+            esac
+            [[ -n "${R_RUN[$agent_name]}" && "$reason" == *"${R_RUN[$agent_name]}"* ]] && explains=1
+            (( explains )) || continue
+            case "${R_CAT[$agent_name]}" in
+                pending) : "${explained_pending:=$agent_name}" ;;
+                exhausted-newest) : "${explained_exhausted_newest:=$agent_name}" ;;
+                exhausted-other) : "${explained_exhausted_other:=$agent_name}" ;;
+                recovered) : "${explained_recovered:=$agent_name}" ;;
+            esac
+        done
+
+        if [[ -n "$explained_pending" ]]; then
+            consequence="A retry of the wake behind this flag is pending (@$explained_pending, due ${R_HHMM[$explained_pending]}); this thread may restart on its own."
+        elif [[ -n "$explained_exhausted_newest" ]]; then
+            consequence='This thread will not restart until someone mails into it.'
+        elif [[ -n "$explained_exhausted_other" ]]; then
+            consequence='Retries exhausted; the thread has moved on since -- check whether it restarted.'
+        elif [[ -n "$explained_recovered" ]]; then
+            consequence="The wake behind this flag has since recovered (@$explained_recovered at ${R_HHMM[$explained_recovered]}); the flag is stale."
+        elif (( any_unknown )); then
+            consequence='Retry state unknown; check fork-sandbox postmaster status before assuming it is stuck.'
+        else
+            consequence='This thread will not restart until someone mails into it.'
+        fi
         printf 'NEEDS OPERATOR: %s\n' "$reason"
-        echo 'This thread will not restart until someone mails into it.'
+        printf '%s\n' "$consequence"
+    fi
+
+    if (( retries_dir_broken )); then
+        echo 'retry state unknown (retries directory unreadable)'
+    else
+        for agent_name in "${retry_agents[@]}"; do
+            printf '%s\n' "${R_LINE[$agent_name]}"
+        done
     fi
 
     if [[ ! -r "$spawn_file" || ! -r "$seq_file" ]]; then

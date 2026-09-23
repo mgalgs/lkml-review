@@ -369,6 +369,25 @@ write_msg "$root" "$t8" 001 j0010000-0000-4000-8000-000000000001 "$(D 28)" \
     '@author' '@panel' '' 'Sub-5e-7 aggregate fixture' 8 '' \
     'No patches here either.'
 
+# thread t9: dedicated fixture for postmaster retry state (pending,
+# exhausted, recovered, and malformed retry files). Its id deliberately
+# does not start with "99999999" -- that prefix is already claimed by
+# the "unknown thread-id" fixture above, and colliding with it would
+# turn that negative test into an accidental match. Three messages give
+# a genuine oldest/middle/newest spread so "trigger is the newest
+# message" and "K newer messages since" are both real, not vacuous.
+t9="9c9c9c9c-0000-4000-8000-000000000000"
+mkdir -p -- "$root/threads/$t9"
+write_msg "$root" "$t9" 001 k0010000-0000-4000-8000-000000000001 "$(D 29)" \
+    '@author' '@panel' '' 'Retry-state fixture' 8 '' \
+    'Cover message for the retry-state fixture.'
+write_msg "$root" "$t9" 002 k0020000-0000-4000-8000-000000000002 "$(D 30)" \
+    '@review-one' '@author' '' 'Re: Retry-state fixture' 7 k0010000-0000-4000-8000-000000000001 \
+    'First reply.'
+write_msg "$root" "$t9" 003 k0030000-0000-4000-8000-000000000003 "$(D 31)" \
+    '@author' '@review-one' '' 'Re: Retry-state fixture' 6 k0020000-0000-4000-8000-000000000002 \
+    'Second reply, the newest message in this thread.'
+
 # Stub fork-sandbox: only the one call the script is allowed to make.
 stub_bin="$work/stub"; mkdir -p -- "$stub_bin"
 cat > "$stub_bin/fork-sandbox" <<'STUB'
@@ -420,7 +439,7 @@ contains "missing mail root names the path it wanted" "$OUT" "$work/no-such-root
 printf '\n== --list: one line per thread ==\n'
 OUT="$(PATH="$STUB_PATH" "$status" --list --mail-root "$root" 2>&1)"; RC=$?
 check "--list exits 0" "0" "$RC"
-check "--list prints one line per thread" "7" "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')"
+check "--list prints one line per thread" "8" "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')"
 contains "--list shows t1's short id" "$OUT" "1111111"
 contains "--list shows t2's root Subject" "$OUT" "Unrelated thread"
 contains "--list shows t1's root Subject" "$OUT" "[PATCH v1 0/2] Improve the thing"
@@ -480,6 +499,236 @@ check "failed-first-wake screen exits 0" "0" "$RC"
 contains "failed-first-wake reports the required warning" "$OUT" "NEEDS OPERATOR: failed to launch first wake"
 contains "failed-first-wake states the restart consequence" "$OUT" "will not restart until someone mails into it"
 contains "failed-first-wake still identifies missing budget state" "$OUT" "router state unknown -- missing or unreadable budget files"
+
+printf '\n== retry state ==\n'
+rt="$pm/retries/$t9"
+mkdir -p -- "$rt"
+
+# case: pending -- the consequence line says the thread may restart on
+# its own, distinct from the fixed "will not restart" line.
+rm -f -- "$rt"/*; rm -f -- "$pm/needs-operator/$t9"
+NOT_BEFORE=1751000000
+EXP_HHMM="$(date -d "@$NOT_BEFORE" +%H:%M)"
+printf 'FAILS=2\nSTATE=pending\nTRIGGER=k0020000-0000-4000-8000-000000000002\nATTEMPT=1\nMAX=3\nNOT_BEFORE=%s\nLAST_FAILED_RUN=run-p1\n' "$NOT_BEFORE" > "$rt/retry-pending"
+printf 'wake for retry-pending exited 1 (run run-p1); outbox may be incomplete\n' > "$pm/needs-operator/$t9"
+OUT="$(PATH="$STUB_PATH" "$status" "$t9" --mail-root "$root" 2>&1)"; RC=$?
+check "retry: pending screen exits 0" "0" "$RC"
+contains "retry: pending line" "$OUT" "retry @retry-pending: pending, retry 2/3 due $EXP_HHMM (trigger k0020000) -- mailing into the thread cancels it"
+contains "retry: pending consequence" "$OUT" "A retry of the wake behind this flag is pending (@retry-pending, due $EXP_HHMM); this thread may restart on its own."
+
+# case: exhausted, trigger is the thread's newest message
+rm -f -- "$rt"/*; rm -f -- "$pm/needs-operator/$t9"
+printf 'STATE=exhausted\nTRIGGER=k0030000-0000-4000-8000-000000000003\nATTEMPT=3\nMAX=3\n' > "$rt/retry-exhausted-newest"
+printf 'wake for retry-exhausted-newest failed after 3 retries (trigger k0030000)\n' > "$pm/needs-operator/$t9"
+OUT="$(PATH="$STUB_PATH" "$status" "$t9" --mail-root "$root" 2>&1)"; RC=$?
+check "retry: exhausted-at-newest screen exits 0" "0" "$RC"
+contains "retry: exhausted-at-newest line" "$OUT" "retry @retry-exhausted-newest: exhausted, 3/3 retries spent (trigger k0030000) -- will not restart until someone mails in"
+contains "retry: exhausted-at-newest consequence" "$OUT" "This thread will not restart until someone mails into it."
+
+# case: exhausted, trigger is an older message -- K newer messages follow
+rm -f -- "$rt"/*; rm -f -- "$pm/needs-operator/$t9"
+printf 'STATE=exhausted\nTRIGGER=k0020000-0000-4000-8000-000000000002\nATTEMPT=2\nMAX=3\n' > "$rt/retry-exhausted-older"
+printf 'wake for retry-exhausted-older failed after 2 retries (trigger k0020000)\n' > "$pm/needs-operator/$t9"
+OUT="$(PATH="$STUB_PATH" "$status" "$t9" --mail-root "$root" 2>&1)"; RC=$?
+check "retry: exhausted-older screen exits 0" "0" "$RC"
+contains "retry: exhausted-older line names the newer-message count" "$OUT" "retry @retry-exhausted-older: exhausted, 2/3 retries spent (trigger k0020000) -- 1 newer message(s) since; check whether one re-woke @retry-exhausted-older"
+contains "retry: exhausted-older consequence" "$OUT" "Retries exhausted; the thread has moved on since -- check whether it restarted."
+
+# case: exhausted, trigger not found in this thread at all
+rm -f -- "$rt"/*; rm -f -- "$pm/needs-operator/$t9"
+printf 'STATE=exhausted\nTRIGGER=zzzzzzzz-0000-4000-8000-000000000000\nATTEMPT=1\nMAX=2\n' > "$rt/retry-exhausted-missing"
+printf 'wake for retry-exhausted-missing failed after 1 retries (trigger zzzzzzzz)\n' > "$pm/needs-operator/$t9"
+OUT="$(PATH="$STUB_PATH" "$status" "$t9" --mail-root "$root" 2>&1)"; RC=$?
+check "retry: exhausted-trigger-missing screen exits 0" "0" "$RC"
+contains "retry: exhausted trigger not found in thread" "$OUT" "retry @retry-exhausted-missing: exhausted, 1/2 retries spent (trigger zzzzzzzz) -- trigger not found in this thread; state unclear"
+contains "retry: exhausted-trigger-missing consequence" "$OUT" "Retries exhausted; the thread has moved on since -- check whether it restarted."
+
+# case: recovered only -- the flag may be stale
+rm -f -- "$rt"/*; rm -f -- "$pm/needs-operator/$t9"
+RECOVERED_AT=1751003600
+EXP_HHMM_REC="$(date -d "@$RECOVERED_AT" +%H:%M)"
+printf 'STATE=recovered\nTRIGGER=k0020000-0000-4000-8000-000000000002\nATTEMPT=1\nMAX=2\nRECOVERED_AT=%s\nLAST_FAILED_RUN=run-r1\n' "$RECOVERED_AT" > "$rt/retry-recovered"
+printf 'wake never produced summary.json: run-r1\n' > "$pm/needs-operator/$t9"
+OUT="$(PATH="$STUB_PATH" "$status" "$t9" --mail-root "$root" 2>&1)"; RC=$?
+check "retry: recovered-only screen exits 0" "0" "$RC"
+contains "retry: recovered line" "$OUT" "retry @retry-recovered: recovered at $EXP_HHMM_REC (trigger k0020000, after 1/2 retries) -- the flag may be stale"
+contains "retry: recovered-only consequence" "$OUT" "The wake behind this flag has since recovered (@retry-recovered at $EXP_HHMM_REC); the flag is stale."
+
+# case: FAILS-only file -- normal, holds no retry history at all
+rm -f -- "$rt"/*; rm -f -- "$pm/needs-operator/$t9"
+printf 'FAILS=1\n' > "$rt/retry-fails-only"
+printf 'reason for flag\n' > "$pm/needs-operator/$t9"
+OUT="$(PATH="$STUB_PATH" "$status" "$t9" --mail-root "$root" 2>&1)"; RC=$?
+check "retry: FAILS-only screen exits 0" "0" "$RC"
+not_contains "retry: FAILS-only file prints no retry line" "$OUT" "retry @retry-fails-only"
+contains "retry: FAILS-only falls back to the case-6 consequence" "$OUT" "This thread will not restart until someone mails into it."
+
+# case: STATE holds a value that is none of the three known states
+rm -f -- "$rt"/*; rm -f -- "$pm/needs-operator/$t9"
+printf 'STATE=bogus\nTRIGGER=k0020000-0000-4000-8000-000000000002\nATTEMPT=1\nMAX=2\n' > "$rt/retry-bogus"
+printf 'hops exhausted at k0030000\n' > "$pm/needs-operator/$t9"
+OUT="$(PATH="$STUB_PATH" "$status" "$t9" --mail-root "$root" 2>&1)"; RC=$?
+check "retry: STATE=bogus screen exits 0" "0" "$RC"
+contains "retry: unrecognized STATE value is reported unknown" "$OUT" "retry @retry-bogus: state unknown (STATE=bogus)"
+contains "retry: unknown-state consequence" "$OUT" "Retry state unknown; check fork-sandbox postmaster status before assuming it is stuck."
+
+# case: pending missing NOT_BEFORE -- never guess a state
+rm -f -- "$rt"/*; rm -f -- "$pm/needs-operator/$t9"
+printf 'STATE=pending\nTRIGGER=k0020000-0000-4000-8000-000000000002\nATTEMPT=1\nMAX=3\n' > "$rt/retry-pending-broken"
+printf 'reason for flag\n' > "$pm/needs-operator/$t9"
+OUT="$(PATH="$STUB_PATH" "$status" "$t9" --mail-root "$root" 2>&1)"; RC=$?
+check "retry: pending-missing-NOT_BEFORE screen exits 0" "0" "$RC"
+contains "retry: pending missing NOT_BEFORE is reported unknown" "$OUT" "retry @retry-pending-broken: state unknown (NOT_BEFORE missing)"
+contains "retry: pending-missing-NOT_BEFORE consequence" "$OUT" "Retry state unknown; check fork-sandbox postmaster status before assuming it is stuck."
+
+# case: two agents, one pending and one exhausted -- pending wins the
+# consequence, both lines print, sorted by agent name (not file order)
+rm -f -- "$rt"/*; rm -f -- "$pm/needs-operator/$t9"
+NOT_BEFORE2=1751007200
+EXP_HHMM2="$(date -d "@$NOT_BEFORE2" +%H:%M)"
+printf 'STATE=exhausted\nTRIGGER=k0030000-0000-4000-8000-000000000003\nATTEMPT=3\nMAX=3\n' > "$rt/alpha-exhausted"
+printf 'STATE=pending\nTRIGGER=k0020000-0000-4000-8000-000000000002\nATTEMPT=0\nMAX=3\nNOT_BEFORE=%s\nLAST_FAILED_RUN=run-z1\n' "$NOT_BEFORE2" > "$rt/zeta-pending"
+printf 'wake for alpha-exhausted failed after 3 retries (trigger k0030000); wake for zeta-pending exited 1 (run run-z1)\n' > "$pm/needs-operator/$t9"
+OUT="$(PATH="$STUB_PATH" "$status" "$t9" --mail-root "$root" 2>&1)"; RC=$?
+check "retry: two-agent screen exits 0" "0" "$RC"
+contains "retry: two agents, exhausted line present" "$OUT" "retry @alpha-exhausted: exhausted, 3/3 retries spent (trigger k0030000) -- will not restart until someone mails in"
+contains "retry: two agents, pending line present" "$OUT" "retry @zeta-pending: pending, retry 1/3 due $EXP_HHMM2 (trigger k0020000) -- mailing into the thread cancels it"
+contains "retry: two agents, pending wins the consequence" "$OUT" "A retry of the wake behind this flag is pending (@zeta-pending, due $EXP_HHMM2); this thread may restart on its own."
+case "$OUT" in
+    *"@alpha-exhausted"*"@zeta-pending"*) ok "retry: two agents printed sorted by agent name" ;;
+    *) no "retry: two agents printed sorted by agent name" "expected @alpha-exhausted before @zeta-pending in: $OUT" ;;
+esac
+
+# cases: the consequence line follows the retry that explains the CURRENT
+# flag, not retry history alone. The flag holds only the latest reason, and
+# most reasons (hops, budget, ...) have nothing to do with a retry.
+# consequence_case <label> <flag reason> -- runs t9 and leaves OUT set.
+consequence_case() {
+    printf '%s\n' "$2" > "$pm/needs-operator/$t9"
+    OUT="$(PATH="$STUB_PATH" "$status" "$t9" --mail-root "$root" 2>&1)"; RC=$?
+    check "$1: screen exits 0" "0" "$RC"
+}
+has_line() {
+    if grep -Fxq -- "$3" <<<"$2"; then ok "$1"; else no "$1" "line '$3' not found in: $2"; fi
+}
+RULE6='This thread will not restart until someone mails into it.'
+RULE5='Retry state unknown; check fork-sandbox postmaster status before assuming it is stuck.'
+RID_HHMM_P="$(date -d "@1751021600" +%H:%M)"
+RID_HHMM_R="$(date -d "@1751025200" +%H:%M)"
+
+rm -f -- "$rt"/*
+printf 'STATE=recovered\nTRIGGER=k0020000-0000-4000-8000-000000000002\nATTEMPT=1\nMAX=2\nRECOVERED_AT=1751025200\n' > "$rt/a"
+consequence_case "retry: hops flag over a recovered record" "hops exhausted at k0030000"
+has_line "retry: hops flag over a recovered record gets the original line" "$OUT" "$RULE6"
+not_contains "retry: hops flag over a recovered record is not called stale" "$OUT" "the flag is stale."
+
+rm -f -- "$rt"/*
+printf 'STATE=pending\nTRIGGER=k0020000-0000-4000-8000-000000000002\nATTEMPT=1\nMAX=3\nNOT_BEFORE=1751021600\nLAST_FAILED_RUN=RID-A\n' > "$rt/a"
+consequence_case "retry: budget flag over a pending record" "thread budget 20 exhausted"
+has_line "retry: budget flag over a pending record gets the original line" "$OUT" "$RULE6"
+not_contains "retry: budget flag over a pending record does not promise a restart" "$OUT" "may restart"
+
+consequence_case "retry: pending record named by run" "wake for @a exited 1 (run RID-A); outbox may be incomplete"
+has_line "retry: pending record named by run is rule 1" "$OUT" "A retry of the wake behind this flag is pending (@a, due $RID_HHMM_P); this thread may restart on its own."
+
+consequence_case "retry: pending record with a different run" "wake for @a exited 1 (run RID-OTHER); outbox may be incomplete"
+has_line "retry: pending record for a different run falls to the original line" "$OUT" "$RULE6"
+not_contains "retry: pending record for a different run does not promise a restart" "$OUT" "may restart"
+
+rm -f -- "$rt"/*
+printf 'STATE=exhausted\nTRIGGER=k0030000-0000-4000-8000-000000000003\nATTEMPT=2\nMAX=2\n' > "$rt/a"
+consequence_case "retry: exhausted flag at the newest message" "wake for a failed after 2 retries (trigger k0030000)"
+has_line "retry: exhausted flag at the newest message is rule 2" "$OUT" "$RULE6"
+consequence_case "retry: exhausted record, flag names another trigger" "wake for a failed after 2 retries (trigger k0020000)"
+has_line "retry: exhausted flag for another trigger falls to the original line" "$OUT" "$RULE6"
+consequence_case "retry: exhausted record, flag names another agent" "wake for b failed after 2 retries (trigger k0030000)"
+has_line "retry: exhausted flag for another agent falls to the original line" "$OUT" "$RULE6"
+
+# Rule 2 and rule 6 print the same line, so an exhausted-at-newest record is
+# paired with an unknown one: if it explains the flag it wins (the original
+# line); if it does not, the unknown record makes it rule 5.
+printf 'STATE=bogus\nTRIGGER=k0020000-0000-4000-8000-000000000002\nATTEMPT=1\nMAX=2\n' > "$rt/b"
+consequence_case "retry: exhausted-newest matching flag beside an unknown record" "wake for a failed after 2 retries (trigger k0030000)"
+has_line "retry: exhausted-newest matching flag outranks an unknown record" "$OUT" "$RULE6"
+consequence_case "retry: exhausted-newest record under a hops flag beside an unknown record" "hops exhausted at k0030000"
+has_line "retry: exhausted-newest record does not explain a hops flag" "$OUT" "$RULE5"
+consequence_case "retry: exhausted-newest record, flag names another trigger, beside an unknown record" "wake for a failed after 2 retries (trigger k0020000)"
+has_line "retry: exhausted-newest record does not explain another trigger's flag" "$OUT" "$RULE5"
+consequence_case "retry: exhausted-newest record, flag names another agent, beside an unknown record" "wake for c failed after 2 retries (trigger k0030000)"
+has_line "retry: exhausted-newest record does not explain another agent's flag" "$OUT" "$RULE5"
+
+# Rule 3: an exhausted record whose trigger is not the newest message.
+MOVED_ON='Retries exhausted; the thread has moved on since -- check whether it restarted.'
+rm -f -- "$rt"/*
+printf 'STATE=exhausted\nTRIGGER=k0020000-0000-4000-8000-000000000002\nATTEMPT=2\nMAX=2\n' > "$rt/a"
+consequence_case "retry: exhausted-other record, flag names it" "wake for a failed after 2 retries (trigger k0020000)"
+has_line "retry: exhausted-other record naming the flag is rule 3" "$OUT" "$MOVED_ON"
+for reason in "hops exhausted at k0030000" "thread budget 20 exhausted" \
+              "wake for b failed after 2 retries (trigger k0020000)" \
+              "wake for a failed after 2 retries (trigger k0030000)"; do
+    consequence_case "retry: exhausted-other record under flag '$reason'" "$reason"
+    has_line "retry: exhausted-other record does not explain flag '$reason'" "$OUT" "$RULE6"
+    not_contains "retry: exhausted-other record under flag '$reason' is not called moved on" "$OUT" "moved on since"
+done
+
+rm -f -- "$rt"/*
+printf 'STATE=recovered\nTRIGGER=k0020000-0000-4000-8000-000000000002\nATTEMPT=1\nMAX=2\nRECOVERED_AT=1751025200\nLAST_FAILED_RUN=RID-B\n' > "$rt/a"
+consequence_case "retry: recovered record named by run" "wake never produced summary.json: RID-B"
+has_line "retry: recovered record named by run is rule 4" "$OUT" "The wake behind this flag has since recovered (@a at $RID_HHMM_R); the flag is stale."
+printf 'STATE=bogus\nTRIGGER=k0020000-0000-4000-8000-000000000002\nATTEMPT=1\nMAX=2\nLAST_FAILED_RUN=RID-B\n' > "$rt/b"
+consequence_case "retry: explaining record beside an unknown one" "wake never produced summary.json: RID-B"
+has_line "retry: an explaining record outranks an unknown one" "$OUT" "The wake behind this flag has since recovered (@a at $RID_HHMM_R); the flag is stale."
+
+rm -f -- "$rt"/*
+printf 'STATE=bogus\nTRIGGER=k0020000-0000-4000-8000-000000000002\nATTEMPT=1\nMAX=2\nLAST_FAILED_RUN=RID-C\n' > "$rt/a"
+consequence_case "retry: hops flag over an unknown record" "hops exhausted"
+has_line "retry: hops flag over an unknown record is rule 5" "$OUT" "$RULE5"
+consequence_case "retry: an unknown record never explains a flag" "wake for a exited 1 (run RID-C)"
+has_line "retry: unknown record naming the run still gives rule 5" "$OUT" "$RULE5"
+
+rm -f -- "$rt"/*
+printf 'STATE=pending\nTRIGGER=k0020000-0000-4000-8000-000000000002\nATTEMPT=0\nMAX=3\nNOT_BEFORE=1751021600\nLAST_FAILED_RUN=RID-S\n' > "$rt/zz"
+printf 'STATE=pending\nTRIGGER=k0020000-0000-4000-8000-000000000002\nATTEMPT=0\nMAX=3\nNOT_BEFORE=1751025200\nLAST_FAILED_RUN=RID-S\n' > "$rt/aa"
+consequence_case "retry: two pending records explain one flag" "wake for aa exited 1 (run RID-S); wake for zz exited 1 (run RID-S)"
+has_line "retry: the first explaining agent by sorted name is used" "$OUT" "A retry of the wake behind this flag is pending (@aa, due $RID_HHMM_R); this thread may restart on its own."
+
+# case: an unflagged thread still reports retry state, with no NEEDS
+# OPERATOR block and no consequence line to hang off of
+rm -f -- "$rt"/*; rm -f -- "$pm/needs-operator/$t9"
+RECOVERED_AT2=1751010800
+EXP_HHMM_REC2="$(date -d "@$RECOVERED_AT2" +%H:%M)"
+printf 'STATE=recovered\nTRIGGER=k0020000-0000-4000-8000-000000000002\nATTEMPT=1\nMAX=2\nRECOVERED_AT=%s\n' "$RECOVERED_AT2" > "$rt/retry-recovered-unflagged"
+OUT="$(PATH="$STUB_PATH" "$status" "$t9" --mail-root "$root" 2>&1)"; RC=$?
+check "retry: unflagged-recovered screen exits 0" "0" "$RC"
+not_contains "retry: unflagged thread has no NEEDS OPERATOR block" "$OUT" "NEEDS OPERATOR"
+contains "retry: unflagged thread still prints the retry line" "$OUT" "retry @retry-recovered-unflagged: recovered at $EXP_HHMM_REC2 (trigger k0020000, after 1/2 retries) -- the flag may be stale"
+not_contains "retry: unflagged thread prints no consequence line" "$OUT" "has since recovered"
+
+# case: pending ATTEMPT with a leading zero -- bash arithmetic reads a
+# leading-zero numeral as octal, so this must be read as decimal instead.
+# An 8/9 digit after the leading zero (invalid octal) must not abort the
+# screen, and a valid-octal value (e.g. 010) must not silently print the
+# wrong number.
+rm -f -- "$rt"/*; rm -f -- "$pm/needs-operator/$t9"
+NOT_BEFORE3=1751014400
+EXP_HHMM3="$(date -d "@$NOT_BEFORE3" +%H:%M)"
+printf 'STATE=pending\nTRIGGER=k0020000-0000-4000-8000-000000000002\nATTEMPT=08\nMAX=13\nNOT_BEFORE=%s\n' "$NOT_BEFORE3" > "$rt/leading-zero-invalid-octal"
+printf 'reason for flag\n' > "$pm/needs-operator/$t9"
+OUT="$(PATH="$STUB_PATH" "$status" "$t9" --mail-root "$root" 2>&1)"; RC=$?
+check "retry: ATTEMPT=08 screen exits 0" "0" "$RC"
+contains "retry: ATTEMPT=08 is read as decimal, not octal" "$OUT" "retry @leading-zero-invalid-octal: pending, retry 9/13 due $EXP_HHMM3 (trigger k0020000) -- mailing into the thread cancels it"
+contains "retry: ATTEMPT=08 still reports the rest of the screen" "$OUT" "router state unknown -- missing or unreadable budget files"
+
+rm -f -- "$rt"/*; rm -f -- "$pm/needs-operator/$t9"
+NOT_BEFORE4=1751018000
+EXP_HHMM4="$(date -d "@$NOT_BEFORE4" +%H:%M)"
+printf 'STATE=pending\nTRIGGER=k0020000-0000-4000-8000-000000000002\nATTEMPT=010\nMAX=13\nNOT_BEFORE=%s\n' "$NOT_BEFORE4" > "$rt/leading-zero-valid-octal"
+printf 'reason for flag\n' > "$pm/needs-operator/$t9"
+OUT="$(PATH="$STUB_PATH" "$status" "$t9" --mail-root "$root" 2>&1)"; RC=$?
+check "retry: ATTEMPT=010 screen exits 0" "0" "$RC"
+contains "retry: ATTEMPT=010 is read as decimal 10, not octal 8" "$OUT" "retry @leading-zero-valid-octal: pending, retry 11/13 due $EXP_HHMM4 (trigger k0020000) -- mailing into the thread cancels it"
+
+rm -f -- "$rt"/*; rm -f -- "$pm/needs-operator/$t9"
 
 printf '\n== a thread that is not a patch series ==\n'
 OUT="$(PATH="$STUB_PATH" "$status" "$t3" --mail-root "$root2" 2>&1)"; RC=$?
