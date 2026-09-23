@@ -466,6 +466,41 @@ case "$core_handoff" in
     *) ok "reviewer handoff does not carry message bodies" ;;
 esac
 
+printf '\n== a failed thread render refuses only the secretary seat ==\n'
+# An empty render is treated as a failure too (the secretary would
+# otherwise be launched with no thread and silently summarize nothing).
+# Stub python3 to fail so lkml-render.py never runs -- same "stub the
+# external command on PATH" pattern as fork-sandbox.sh above.
+render_fail_bin="$(mktemp -d)"; tmpdirs+=("$render_fail_bin")
+cat > "$render_fail_bin/python3" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+chmod +x "$render_fail_bin/python3"
+cap_sec_fail="$(mktemp -d)"; tmpdirs+=("$cap_sec_fail")
+out_sec_fail="$(PATH="$render_fail_bin:$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_sec_fail" STUB_RUN_PREFIX="$run_prefix_dir" \
+    STUB_REPLY_TO="$patch_id" STUB_REPLY_TO_BRACKETED="$patch_id_bracketed" \
+    "$round" widget-frob --project "$project_dir" --checkout otherbranch --base otherbranch \
+    --personas core,secretary --personas-dir "$work" 2>&1)"
+rc_sec_fail=$?
+if (( rc_sec_fail != 0 )); then
+    ok "the round reports a launch failure when the secretary's render fails"
+else
+    no "the round reports a launch failure when the secretary's render fails" "exit 0: $out_sec_fail"
+fi
+contains "the refusal names the secretary seat" "$out_sec_fail" "secretary"
+contains "the refusal names the series" "$out_sec_fail" "widget-frob"
+if [[ -f "$cap_sec_fail/secretary.handoff.md" ]]; then
+    no "the secretary was not launched"
+else
+    ok "the secretary was not launched"
+fi
+if [[ -f "$cap_sec_fail/core.handoff.md" ]]; then
+    ok "core still launched even though the secretary's render failed"
+else
+    no "core still launched even though the secretary's render failed"
+fi
+
 printf '\n== post-round summarize ==\n'
 # The default-on round at the top harvested core's and security's replies,
 # so the stub summarizer must have been invoked with the round's own facts.

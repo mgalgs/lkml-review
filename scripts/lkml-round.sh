@@ -749,6 +749,11 @@ for persona in "${personas[@]}"; do
     thread_text=""
     if [[ "$persona" == "secretary" ]]; then
         thread_text="$(python3 "$script_dir/lkml-render.py" --text "$ledger_root/$series" 2>/dev/null)" || thread_text=""
+        if [[ -z "$thread_text" ]]; then
+            echo "Error: could not render the thread bodies for series '$series'; refusing to launch secretary '$persona' who cannot summarize without them." >&2
+            launch_failed=1
+            continue
+        fi
     fi
     build_handoff "$persona_file" "$cover_text" "$tree_text" "$thread_text" > "$handoff_file"
 
