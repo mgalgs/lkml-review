@@ -164,6 +164,46 @@ contains "v2 is posted as the whole series (v1's commit plus this round's fixup)
 contains "core's Changes-requested was answered with Reviewed-by" \
     "$("$mailbox" tree widget-frob)" "Reviewed-by"
 
+printf '\n== the author handoff carries thread bodies, not just subjects ==\n'
+# r1's body ("please fix the return value") lives in the message BODY --
+# tree/open only ever show subjects -- so its presence proves the handoff
+# carries rendered bodies, not just the tree lines.
+handoff_path="$(tail -n1 "$run_prefix_dir/last-args")"
+handoff_text="$(cat -- "$handoff_path" 2>/dev/null)"
+contains "handoff carries a reply body, not just the tree" "$handoff_text" "please fix the return value"
+contains "handoff has the thread-bodies section" "$handoff_text" "## The thread's messages, bodies included"
+tree_pos=$(printf '%s' "$handoff_text" | grep -bo '## The full thread tree' | head -n1 | cut -d: -f1)
+bodies_pos=$(printf '%s' "$handoff_text" | grep -bo "## The thread's messages, bodies included" | head -n1 | cut -d: -f1)
+open_pos=$(printf '%s' "$handoff_text" | grep -bo '## Open items' | head -n1 | cut -d: -f1)
+if [[ -n "$tree_pos" && -n "$bodies_pos" && -n "$open_pos" \
+    && "$tree_pos" -lt "$bodies_pos" && "$bodies_pos" -lt "$open_pos" ]]; then
+    ok "bodies section sits between the tree and open items"
+else
+    no "bodies section sits between the tree and open items" "tree=$tree_pos bodies=$bodies_pos open=$open_pos"
+fi
+
+printf '\n== a failed thread render refuses the launch, nothing is spent ==\n'
+# Stub python3 to fail so lkml-render.py never runs, the same
+# "stub the external command on PATH" pattern as fork-sandbox.sh above.
+render_fail_bin="$(mktemp -d)"; tmpdirs+=("$render_fail_bin")
+cat > "$render_fail_bin/python3" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+chmod +x "$render_fail_bin/python3"
+n_runs_before=$(find "$run_prefix_dir" -maxdepth 1 -name 'run.*' | wc -l)
+out_render="$(PATH="$render_fail_bin:$stub_bin:$PATH" "$revise" widget-frob --project "$real_repo" \
+    --checkout somebranch --version 1 --base "$series_base_sha" 2>&1)"
+rc_render=$?
+if (( rc_render != 0 )); then
+    ok "exits non-zero when the thread render fails"
+else
+    no "exits non-zero when the thread render fails" "exit 0: $out_render"
+fi
+contains "names the render failure" "$out_render" "could not render the thread bodies"
+n_runs_after=$(find "$run_prefix_dir" -maxdepth 1 -name 'run.*' | wc -l)
+check "no run was launched when the render fails" "$n_runs_before" "$n_runs_after"
+
 printf '\n== stop condition: commits == 0 ==\n'
 write_stub 0 true 0 1
 out="$(PATH="$stub_bin:$PATH" "$revise" widget-frob --project "$real_repo" \

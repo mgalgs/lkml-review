@@ -58,8 +58,9 @@
 #             run dir named in the error.
 #
 # Unlike lkml-round.sh, this run is allowed to commit -- that is the whole
-# point. The handoff hands the author the full thread tree and everything
-# `lkml-mailbox.sh open` flags, and asks it to, for each open item, either
+# point. The handoff hands the author the full thread tree, every message's
+# body, and everything `lkml-mailbox.sh open` flags, and asks it to, for
+# each open item, either
 # fix the code (and commit, one logical change per commit rather than one
 # squash) or reply on-thread explaining why not, then write the new cover
 # letter to `.git/lkml-out/cover-letter.md` before finishing -- under
@@ -228,6 +229,21 @@ tree_text="$("$mailbox" tree "$series" 2>/dev/null)" || {
 }
 open_text="$("$mailbox" open "$series" --version "$version" 2>/dev/null)"
 
+# The author's sandbox cannot read the mailbox any more than a reviewer
+# seat's can (fork-sandbox.sh binds only its own run dir under
+# /var/tmp/claude-scratch/forks/), and `tree`/`open` above are one line per
+# message -- id, persona, tags, subject, never a body. Without the render
+# below the author cannot see a single review comment, so this is a
+# precondition for launching at all, checked before the handoff (and
+# before anything is spent on a run) is even built. Same render
+# lkml-round.sh's secretary seat uses, same series directory resolution.
+ledger_root="${LKML_MAILBOX_ROOT:-/var/tmp/claude-scratch/lkml}"
+thread_text="$(python3 "$script_dir/lkml-render.py" --text "$ledger_root/$series" 2>/dev/null)" || thread_text=""
+if [[ -z "$thread_text" ]]; then
+    echo "Error: could not render the thread bodies for series '$series'; refusing to launch an author who cannot read the review." >&2
+    exit 1
+fi
+
 mkdir -p -- /var/tmp/claude-scratch
 handoff_file="$(mktemp /var/tmp/claude-scratch/lkml-revise-XXXXXX.md)" || {
     echo "Error: mktemp failed for the handoff file." >&2
@@ -237,6 +253,13 @@ handoff_file="$(mktemp /var/tmp/claude-scratch/lkml-revise-XXXXXX.md)" || {
     cat -- "$persona_file"
     printf '\n---\n\n# You are revising %s, currently at v%s\n\n%s\n' "$series" "$version" "$cover_text"
     printf '\n## The full thread tree\n\n%s\n' "$tree_text"
+    printf "\n## The thread's messages, bodies included\n\n"
+    printf 'The tree above is one line per message: id, persona, harness/model,\n'
+    printf 'tags and subject. This is the same thread with every message body,\n'
+    printf 'in thread order -- [PATCH] bodies keep the commit message and the\n'
+    printf 'diffstat, their diff is omitted (the patches are in this clone).\n'
+    printf 'You are revising v%s -- the section headed \"%s v%s\"; earlier\n' "$version" "$series" "$version"
+    printf 'versions are there as context.\n\n%s\n' "$thread_text"
     printf '\n## Open items -- these are what review has not resolved yet\n\n%s\n' "$open_text"
     cat <<RULES
 
@@ -340,8 +363,8 @@ if (( rc != 0 )) || [[ -z "$run_dir" ]]; then
 fi
 echo "fork-sandbox lkml-revise: $run_dir" >&2
 
-# Same cost ledger lkml-round.sh appends to -- see its comment.
-ledger_root="${LKML_MAILBOX_ROOT:-/var/tmp/claude-scratch/lkml}"
+# Same cost ledger lkml-round.sh appends to -- see its comment. ledger_root
+# was already resolved above, for the thread-body render.
 mkdir -p -- "$ledger_root/$series"
 jq -nc --arg persona "$author_persona" --arg run_dir "$run_dir" --arg kind implement \
     '{persona:$persona, run_dir:$run_dir, kind:$kind}' >> "$ledger_root/$series/runs.jsonl"
