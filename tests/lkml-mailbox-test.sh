@@ -81,6 +81,7 @@ git -C "$ledger_repo" commit --allow-empty -qm base
 git -C "$ledger_repo" branch lkml/widget-frob
 git -C "$ledger_repo" branch lkml/other
 git -C "$ledger_repo" tag ledger-tag
+ledger_sha="$(git -C "$ledger_repo" rev-parse lkml/widget-frob)"
 fixture_cover "$work/ledger-cover.txt"
 fixture_patches "$work/ledger-patches"
 export LKML_MAILBOX_ROOT; LKML_MAILBOX_ROOT="$(new_root)"
@@ -88,9 +89,9 @@ export LKML_MAILBOX_ROOT; LKML_MAILBOX_ROOT="$(new_root)"
 out="$(cd "$ledger_repo" && "$mailbox" init ledger-auto --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author --checkout lkml/widget-frob 2>"$work/ledger-diag.txt")"
 rc=$?
 check "init --checkout exits 0" "0" "$rc"
-check "checkout writes one compact v1 ledger entry" '{"version":1,"branch":"lkml/widget-frob"}' "$(<"$LKML_MAILBOX_ROOT/ledger-auto/versions.jsonl")"
+check "checkout writes one compact v1 ledger entry" "{\"version\":1,\"branch\":\"lkml/widget-frob\",\"sha\":\"$ledger_sha\"}" "$(<"$LKML_MAILBOX_ROOT/ledger-auto/versions.jsonl")"
 out="$(cd "$ledger_repo" && "$mailbox" init ledger-auto --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author --checkout lkml/widget-frob 2>/dev/null)"
-check "auto-computed v2 is recorded" '{"version":2,"branch":"lkml/widget-frob"}' "$(tail -n1 "$LKML_MAILBOX_ROOT/ledger-auto/versions.jsonl")"
+check "auto-computed v2 is recorded" "{\"version\":2,\"branch\":\"lkml/widget-frob\",\"sha\":\"$ledger_sha\"}" "$(tail -n1 "$LKML_MAILBOX_ROOT/ledger-auto/versions.jsonl")"
 
 # Branch names are Git refnames, not a hand-written JSON-safe subset.  In
 # particular, quotes need JSON escaping and non-ASCII names must round-trip.
@@ -157,7 +158,7 @@ check "non-decimal version leaves no messages" "0" "$(find "$LKML_MAILBOX_ROOT/l
 check "non-decimal version leaves no ledger" "0" "$(find "$LKML_MAILBOX_ROOT/ledger-bad-version" -name versions.jsonl 2>/dev/null | wc -l)"
 
 out="$(cd "$ledger_repo" && "$mailbox" init ledger-normal-version --cover "$work/ledger-cover.txt" --patches "$work/ledger-patches" --from author --version 001 --checkout lkml/widget-frob 2>/dev/null)"
-check "leading-zero version is normalized in ledger" '{"version":1,"branch":"lkml/widget-frob"}' "$(<"$LKML_MAILBOX_ROOT/ledger-normal-version/versions.jsonl")"
+check "leading-zero version is normalized in ledger" "{\"version\":1,\"branch\":\"lkml/widget-frob\",\"sha\":\"$ledger_sha\"}" "$(<"$LKML_MAILBOX_ROOT/ledger-normal-version/versions.jsonl")"
 
 printf '== init ==\n'
 
@@ -686,6 +687,148 @@ else
         "timed out or failed -- the emptiness check may have regressed to a glob substitution"
 fi
 rm -f -- "$big_body"
+
+printf '\n== review-target headers ==\n'
+
+rt_repo="$(mktemp -d)"; tmpdirs+=("$rt_repo")
+git -C "$rt_repo" init -q
+git -C "$rt_repo" config user.email author@example.com
+git -C "$rt_repo" config user.name Author
+git -C "$rt_repo" commit --allow-empty -qm base
+rt_base_sha="$(git -C "$rt_repo" rev-parse HEAD)"
+git -C "$rt_repo" commit --allow-empty -qm upstream
+rt_upstream_sha="$(git -C "$rt_repo" rev-parse HEAD)"
+git -C "$rt_repo" commit --allow-empty -qm tip
+rt_tip_sha="$(git -C "$rt_repo" rev-parse HEAD)"
+git -C "$rt_repo" branch rt-branch
+
+export LKML_MAILBOX_ROOT; LKML_MAILBOX_ROOT="$(new_root)"
+fixture_cover cover.txt
+fixture_patches patches
+
+rt_out="$(cd "$rt_repo" && "$mailbox" init rt-series --cover "$work/cover.txt" --patches "$work/patches" \
+    --from author --checkout rt-branch --review-target-set "rt-branch $rt_tip_sha" \
+    --base-sha "$rt_base_sha" --upstream-head "$rt_upstream_sha" 2>"$work/rt-diag.txt")"
+rt_rc=$?
+check "review-target init exits 0" "0" "$rt_rc"
+rt_cover_id="$rt_out"
+rt_tree="$("$mailbox" tree rt-series)"
+rt_patch_id="$(printf '%s\n' "$rt_tree" | awk 'NR==3{print $1}')"
+
+rt_cover_raw="$("$mailbox" show rt-series "${rt_cover_id:0:7}")"
+contains "cover carries X-Review-Target-Set" "$rt_cover_raw" "X-Review-Target-Set: rt-branch $rt_tip_sha"
+contains "cover carries X-Review-Target (same value)" "$rt_cover_raw" "X-Review-Target: rt-branch $rt_tip_sha"
+contains "cover carries X-Base" "$rt_cover_raw" "X-Base: $rt_base_sha"
+contains "cover carries X-Upstream-Head" "$rt_cover_raw" "X-Upstream-Head: $rt_upstream_sha"
+
+rt_patch_raw="$("$mailbox" show rt-series "${rt_patch_id:0:7}")"
+contains "patch carries X-Review-Target" "$rt_patch_raw" "X-Review-Target: rt-branch $rt_tip_sha"
+contains "patch carries X-Base" "$rt_patch_raw" "X-Base: $rt_base_sha"
+contains "patch carries X-Upstream-Head" "$rt_patch_raw" "X-Upstream-Head: $rt_upstream_sha"
+case "$rt_patch_raw" in
+    *"X-Review-Target-Set:"*) no "patch does NOT carry X-Review-Target-Set" "$rt_patch_raw" ;;
+    *) ok "patch does NOT carry X-Review-Target-Set" ;;
+esac
+
+rt_ledger="$(<"$LKML_MAILBOX_ROOT/rt-series/versions.jsonl")"
+check "ledger row carries sha/base/upstream_head" \
+    "{\"version\":1,\"branch\":\"rt-branch\",\"sha\":\"$rt_tip_sha\",\"base\":\"$rt_base_sha\",\"upstream_head\":\"$rt_upstream_sha\"}" \
+    "$rt_ledger"
+
+rt_out2="$(cd "$rt_repo" && "$mailbox" init rt-series-noheaders --cover "$work/cover.txt" --patches "$work/patches" \
+    --from author --no-checkout 2>/dev/null)"
+rt_raw2="$("$mailbox" show rt-series-noheaders "${rt_out2:0:7}")"
+case "$rt_raw2" in
+    *"X-Review-Target"*|*"X-Base:"*|*"X-Upstream-Head:"*) no "no review-target headers when flags are absent" "$rt_raw2" ;;
+    *) ok "no review-target headers when flags are absent" ;;
+esac
+
+rt_bad_rc=0
+(cd "$rt_repo" && "$mailbox" init rt-bad-sha --cover "$work/cover.txt" --patches "$work/patches" \
+    --from author --no-checkout --base-sha "nothex") >/dev/null 2>&1 || rt_bad_rc=$?
+check "invalid --base-sha is refused with rc 2" "2" "$rt_bad_rc"
+check "invalid --base-sha writes no messages" "0" \
+    "$(find "$LKML_MAILBOX_ROOT/rt-bad-sha" -name '*.msg' 2>/dev/null | wc -l)"
+
+rt_bad_rc2=0
+(cd "$rt_repo" && "$mailbox" init rt-bad-target --cover "$work/cover.txt" --patches "$work/patches" \
+    --from author --no-checkout --review-target "nobranch-no-sha") >/dev/null 2>&1 || rt_bad_rc2=$?
+check "invalid --review-target is refused with rc 2" "2" "$rt_bad_rc2"
+check "invalid --review-target writes no messages" "0" \
+    "$(find "$LKML_MAILBOX_ROOT/rt-bad-target" -name '*.msg' 2>/dev/null | wc -l)"
+
+echo "lgtm" > rt-reply.txt
+rt_reply_id="$("$mailbox" post rt-series --from reviewer --reply-to "${rt_cover_id:0:7}" --file rt-reply.txt \
+    --tags Reviewed-by --review-target "rt-branch $rt_tip_sha" --base-sha "$rt_base_sha" \
+    --upstream-head "$rt_upstream_sha" 2>/dev/null)"
+rt_reply_raw="$("$mailbox" show rt-series "${rt_reply_id:0:7}")"
+contains "post: reply carries X-Review-Target" "$rt_reply_raw" "X-Review-Target: rt-branch $rt_tip_sha"
+contains "post: reply carries X-Base" "$rt_reply_raw" "X-Base: $rt_base_sha"
+contains "post: reply carries X-Upstream-Head" "$rt_reply_raw" "X-Upstream-Head: $rt_upstream_sha"
+case "$rt_reply_raw" in
+    *"X-Review-Target-Set:"*) no "post never writes X-Review-Target-Set" "$rt_reply_raw" ;;
+    *) ok "post never writes X-Review-Target-Set" ;;
+esac
+
+rt_post_bad_rc=0
+"$mailbox" post rt-series --from reviewer --reply-to "${rt_cover_id:0:7}" --file rt-reply.txt \
+    --base-sha "shortsha" >/dev/null 2>&1 || rt_post_bad_rc=$?
+check "post: invalid --base-sha is refused with rc 2" "2" "$rt_post_bad_rc"
+
+# A second version omitting --upstream-head inherits it from v1's ledger row
+# -- the header is NOT retroactively inherited, only the ledger's own record
+# of "what PR head is this series stacked on" is.
+git -C "$rt_repo" commit --allow-empty -qm v2-tip
+rt_tip2_sha="$(git -C "$rt_repo" rev-parse HEAD)"
+git -C "$rt_repo" branch -f rt-branch
+rt_out3="$(cd "$rt_repo" && "$mailbox" init rt-series --cover "$work/cover2.txt" --patches "$work/patches2" \
+    --from author --checkout rt-branch --review-target-set "rt-branch $rt_tip2_sha" \
+    --base-sha "$rt_base_sha" 2>/dev/null)"
+rt_ledger_v2="$(tail -n1 "$LKML_MAILBOX_ROOT/rt-series/versions.jsonl")"
+check "v2 ledger row inherits upstream_head from v1" \
+    "{\"version\":2,\"branch\":\"rt-branch\",\"sha\":\"$rt_tip2_sha\",\"base\":\"$rt_base_sha\",\"upstream_head\":\"$rt_upstream_sha\"}" \
+    "$rt_ledger_v2"
+rt_cover2_raw="$("$mailbox" show rt-series "${rt_out3:0:7}")"
+case "$rt_cover2_raw" in
+    *"X-Upstream-Head:"*) no "v2 cover header omits X-Upstream-Head (only the ledger inherits)" "$rt_cover2_raw" ;;
+    *) ok "v2 cover header omits X-Upstream-Head (only the ledger inherits)" ;;
+esac
+
+printf '\n== render/tally unaffected by the new headers ==\n'
+
+export LKML_MAILBOX_ROOT; LKML_MAILBOX_ROOT="$(new_root)"
+fixture_cover cover.txt
+fixture_patches patches
+unaffected_repo="$(mktemp -d)"; tmpdirs+=("$unaffected_repo")
+git -C "$unaffected_repo" init -q
+git -C "$unaffected_repo" config user.email author@example.com
+git -C "$unaffected_repo" config user.name Author
+git -C "$unaffected_repo" commit --allow-empty -qm base
+unaffected_sha="$(git -C "$unaffected_repo" rev-parse HEAD)"
+git -C "$unaffected_repo" branch unaffected-branch
+
+plain_id="$(cd "$unaffected_repo" && "$mailbox" init plain-series --cover "$work/cover.txt" --patches "$work/patches" \
+    --from author --checkout unaffected-branch 2>/dev/null)"
+headered_id="$(cd "$unaffected_repo" && "$mailbox" init headered-series --cover "$work/cover.txt" --patches "$work/patches" \
+    --from author --checkout unaffected-branch --review-target-set "unaffected-branch $unaffected_sha" \
+    --base-sha "$unaffected_sha" --upstream-head "$unaffected_sha" 2>/dev/null)"
+
+echo "lgtm" > unaffected-reply.txt
+"$mailbox" post plain-series --from core --reply-to "${plain_id:0:7}" --file unaffected-reply.txt \
+    --tags Reviewed-by >/dev/null 2>&1
+"$mailbox" post headered-series --from core --reply-to "${headered_id:0:7}" --file unaffected-reply.txt \
+    --tags Reviewed-by --review-target "unaffected-branch $unaffected_sha" --base-sha "$unaffected_sha" \
+    --upstream-head "$unaffected_sha" >/dev/null 2>&1
+
+plain_tally="$("$mailbox" tally plain-series --version 1 | sed -E 's/^Series: [^ ]+/Series: SERIES/')"
+headered_tally="$("$mailbox" tally headered-series --version 1 | sed -E 's/^Series: [^ ]+/Series: SERIES/')"
+check "tally output is identical whether or not the new headers are present" "$plain_tally" "$headered_tally"
+
+normalize_tree() { sed -E 's/^([[:space:]]*)[0-9a-f]{7}/\1ID/'; }
+plain_tree="$("$mailbox" tree plain-series | normalize_tree)"
+headered_tree="$("$mailbox" tree headered-series | normalize_tree)"
+check "tree render is identical (modulo ids) whether or not the new headers are present" \
+    "$plain_tree" "$headered_tree"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 (( fail == 0 )) || exit 1

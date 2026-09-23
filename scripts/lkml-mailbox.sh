@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # lkml-mailbox.sh — A Maildir-like message store for one lkml-mode series
 #
-# Usage: lkml-mailbox.sh init <series> --cover <file> --patches <dir> --from <persona> (--checkout <branch> | --no-checkout) [--display <name>] [--version <n>] [--harness <h>] [--model <m>] [--network <pinned|sealed>] [--attach <file>]... [--diffstat <range>] [--smoke <file>]
-#        lkml-mailbox.sh post <series> --from <persona> --reply-to <id> --file <file|-> [--display <name>] [--subject <s>] [--tags <t1,t2>] [--harness <h>] [--model <m>] [--network <pinned|sealed>] [--attach <file>]...
+# Usage: lkml-mailbox.sh init <series> --cover <file> --patches <dir> --from <persona> (--checkout <branch> | --no-checkout) [--display <name>] [--version <n>] [--harness <h>] [--model <m>] [--network <pinned|sealed>] [--attach <file>]... [--diffstat <range>] [--smoke <file>] [--review-target "<branch> <sha>"] [--review-target-set "<branch> <sha>"] [--base-sha <sha>] [--upstream-head <sha>]
+#        lkml-mailbox.sh post <series> --from <persona> --reply-to <id> --file <file|-> [--display <name>] [--subject <s>] [--tags <t1,t2>] [--harness <h>] [--model <m>] [--network <pinned|sealed>] [--attach <file>]... [--review-target "<branch> <sha>"] [--base-sha <sha>] [--upstream-head <sha>]
 #        lkml-mailbox.sh tree <series> [--version <n>]
 #        lkml-mailbox.sh cover <series> [--version <n>]
 #        lkml-mailbox.sh show <series> <id>
@@ -26,10 +26,22 @@
 # --checkout records the posted version and its local branch in
 # <series>/versions.jsonl. The branch is resolved under refs/heads/ (like
 # lkml-round.sh resolves the ledger), and JSON encoding preserves any branch
-# name Git permits.
+# name Git permits. The ledger row also carries the checkout's resolved
+# sha, --base-sha (if given) and upstream_head (if given, else inherited
+# from the highest earlier row that has one) -- old rows without these
+# keys still read fine, since every reader treats them as optional.
 # One of --checkout and --no-checkout is mandatory: the former makes a later
 # round's checkout cross-check possible; the latter explicitly acknowledges
 # that lkml-round.sh will refuse this deliberately branchless series.
+#
+# --review-target, --review-target-set, --base-sha and --upstream-head
+# stamp the X-Review-Target[-Set]/X-Base/X-Upstream-Head headers -- see
+# skills/lkml-mode/SKILL.md for what each means. Every sha given must be
+# full 40-hex lowercase, and a target is "<branch> <40-hex sha>"; anything
+# else is refused with rc 2 and nothing is written. A flag that is not
+# given writes no header at all. --review-target-set is init-only: it
+# also sets X-Review-Target to the same value on the cover (patches get
+# X-Review-Target only, never -Set).
 #
 # Attachments. --attach <file> may repeat on `init` (attaches to the cover
 # letter) or `post` (attaches to that one reply). Each file is copied into
@@ -211,6 +223,20 @@ lkml_default_display() {
     printf '%s' "${p^}"
 }
 
+# Full 40-hex lowercase sha only -- never a ref name, never a prefix. The
+# point of stamping shas at all is that a later push cannot change what an
+# old message claims, which a ref name would defeat.
+lkml_validate_sha40() {
+    [[ "$1" =~ ^[0-9a-f]{40}$ ]]
+}
+
+# "<branch token> <40-hex sha>" -- the branch half is shape-checked only
+# (no embedded whitespace), never git-resolved: this script takes no
+# --project flag, so it has no repo to resolve it against.
+lkml_validate_review_target() {
+    [[ "$1" =~ ^[^[:space:]]+\ [0-9a-f]{40}$ ]]
+}
+
 lkml_validate_tags() {
     local tags="$1" t
     [[ -z "$tags" ]] && return 0
@@ -242,12 +268,15 @@ lkml_validate_tags() {
 # X-Attachment header per name, it does not touch the filesystem beyond the
 # message file itself. $16 is the seat's network mode ("pinned" or
 # "sealed"); harness alone cannot tell a sealed pi seat from a networked
-# one, so this is the only permanent record of that fact.
+# one, so this is the only permanent record of that fact. $17-$20 are the
+# review-target headers (skills/lkml-mode/SKILL.md has what each means),
+# each written only when non-empty.
 lkml_post_raw() {
     local series="$1" id="$2" parent_id="$3" references="$4" version="$5" depth="$6"
     local persona="$7" display_override="$8" harness="$9" model="${10}"
     local subject="${11}" tags="${12}" body="${13}" attachments="${14:-}" misthreaded="${15:-}"
     local network="${16:-unknown}"
+    local review_target="${17:-}" review_target_set="${18:-}" base_sha="${19:-}" upstream_head="${20:-}"
     local dir; dir="$(lkml_series_dir "$series")/cur"
     local display="${display_override:-$(lkml_default_display "$persona")}"
     local email="${persona}.ai@lkml.local"
@@ -272,6 +301,10 @@ lkml_post_raw() {
         printf 'X-Depth: %s\n' "$depth"
         printf 'X-Tags: %s\n' "$tags"
         [[ -n "$misthreaded" ]] && printf 'X-Misthreaded: %s\n' "$misthreaded"
+        [[ -n "$review_target_set" ]] && printf 'X-Review-Target-Set: %s\n' "$review_target_set"
+        [[ -n "$review_target" ]] && printf 'X-Review-Target: %s\n' "$review_target"
+        [[ -n "$base_sha" ]] && printf 'X-Base: %s\n' "$base_sha"
+        [[ -n "$upstream_head" ]] && printf 'X-Upstream-Head: %s\n' "$upstream_head"
         if [[ -n "$attachments" ]]; then
             local _att_name
             local -a _att_names=()
@@ -577,6 +610,7 @@ cmd_init() {
     local cover="" patches="" from="" display="" version="" harness="unknown" model="unknown"
     local network="unknown"
     local diffstat_range="" smoke_file="" checkout="" no_checkout=0
+    local review_target="" review_target_set="" base_sha="" upstream_head=""
     local -a attach_files=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -593,10 +627,30 @@ cmd_init() {
             --smoke) smoke_file="${2:?--smoke requires a file}"; shift 2 ;;
             --checkout) checkout="${2:?--checkout requires a branch}"; shift 2 ;;
             --no-checkout) no_checkout=1; shift ;;
+            --review-target) review_target="${2:?--review-target requires "<branch> <sha>"}"; shift 2 ;;
+            --review-target-set) review_target_set="${2:?--review-target-set requires "<branch> <sha>"}"; shift 2 ;;
+            --base-sha) base_sha="${2:?--base-sha requires a sha}"; shift 2 ;;
+            --upstream-head) upstream_head="${2:?--upstream-head requires a sha}"; shift 2 ;;
             -h|--help) usage; exit 0 ;;
             *) echo "Error: init: unknown option '$1'." >&2; return 1 ;;
         esac
     done
+    if [[ -n "$review_target" ]] && ! lkml_validate_review_target "$review_target"; then
+        echo "Error: init: --review-target must be \"<branch> <40-hex sha>\", got '$review_target'." >&2
+        return 2
+    fi
+    if [[ -n "$review_target_set" ]] && ! lkml_validate_review_target "$review_target_set"; then
+        echo "Error: init: --review-target-set must be \"<branch> <40-hex sha>\", got '$review_target_set'." >&2
+        return 2
+    fi
+    if [[ -n "$base_sha" ]] && ! lkml_validate_sha40 "$base_sha"; then
+        echo "Error: init: --base-sha must be a 40-character lowercase hex sha, got '$base_sha'." >&2
+        return 2
+    fi
+    if [[ -n "$upstream_head" ]] && ! lkml_validate_sha40 "$upstream_head"; then
+        echo "Error: init: --upstream-head must be a 40-character lowercase hex sha, got '$upstream_head'." >&2
+        return 2
+    fi
     lkml_validate_series_name "$series" || return 1
     [[ -n "$from" ]] || { echo "Error: init: --from is required (the persona posting the cover letter)." >&2; return 1; }
     [[ -f "$cover" ]] || { echo "Error: init: --cover file '$cover' not found." >&2; return 1; }
@@ -620,13 +674,14 @@ cmd_init() {
             version="${version#0}"
         done
     fi
+    local checkout_sha=""
     if [[ -n "$checkout" ]]; then
         # git's own stderr is discarded, not just its stdout: outside a
         # repository rev-parse prints "fatal: not a git repository" BEFORE
         # the diagnostic below, so an operator's first line reads like the
         # tool crashed rather than like a branch that does not resolve.
         # --quiet suppresses the not-a-valid-ref message, not that one.
-        if ! git rev-parse --verify --quiet "refs/heads/$checkout^{commit}" >/dev/null 2>&1; then
+        if ! checkout_sha="$(git rev-parse --verify --quiet "refs/heads/$checkout^{commit}" 2>/dev/null)"; then
             echo "Error: init: --checkout '$checkout' is not a local branch in $(pwd)." >&2
             echo "The ledger records branch names, which lkml-round.sh resolves under" >&2
             echo "refs/heads/. Create it first, e.g.:" >&2
@@ -703,8 +758,13 @@ cmd_init() {
         [[ -f "$smoke_file" ]] || { echo "Error: init: --smoke file '$smoke_file' not found." >&2; return 1; }
         cover_body="$(printf '%s\n\n## Test results\n\n%s\n' "$cover_body" "$(cat -- "$smoke_file")")"
     fi
+    # Patches share the cover's target: --review-target-set implies the
+    # same value on X-Review-Target, since there is only one commit this
+    # init call is about.
+    local effective_target="${review_target:-$review_target_set}"
     lkml_post_raw "$series" "$cover_id" "" "" "$version" 0 \
-        "$from" "$display" "$harness" "$model" "$cover_subject" "" "$cover_body" "$attach_csv" "" "$network"
+        "$from" "$display" "$harness" "$model" "$cover_subject" "" "$cover_body" "$attach_csv" "" "$network" \
+        "$effective_target" "$review_target_set" "$base_sha" "$upstream_head"
     echo "fork-sandbox lkml: posted cover ${cover_id:0:7} as v$version 0/$m" >&2
 
     local n=0 pf subj body id pos
@@ -721,7 +781,7 @@ cmd_init() {
         id="$(lkml_new_uuid)"
         lkml_post_raw "$series" "$id" "$cover_id" "<$cover_id@lkml.local>" "$version" 1 \
             "$from" "$display" "$harness" "$model" "[PATCH v$version $pos/$m] $subj" "" "$body" \
-            "" "" "$network"
+            "" "" "$network" "$effective_target" "" "$base_sha" "$upstream_head"
         echo "fork-sandbox lkml: posted patch ${id:0:7} as v$version $n/$m" >&2
     done
     if [[ -n "$checkout" ]]; then
@@ -731,8 +791,27 @@ cmd_init() {
                 [[ "$ledger_version" == "$version" && "$ledger_branch" == "$checkout" ]] && recorded=1
             done < <(jq -r 'select((.version|type)=="number" and (.branch|type)=="string") | [.version,.branch] | @tsv' "$dir/versions.jsonl")
         fi
-        (( recorded )) || jq -nc --argjson version "$version" --arg branch "$checkout" \
-            '{version:$version, branch:$branch}' >> "$dir/versions.jsonl"
+        if (( ! recorded )); then
+            # upstream_head is inherited from the highest earlier row that
+            # has one -- it names the PR head the whole series is stacked
+            # on, which does not change version to version unless told to.
+            local effective_upstream_head="$upstream_head"
+            if [[ -z "$effective_upstream_head" && -f "$dir/versions.jsonl" ]]; then
+                effective_upstream_head="$(jq -rs 'map(select((.upstream_head|type)=="string")) | sort_by(.version) | last | .upstream_head // empty' "$dir/versions.jsonl")"
+            fi
+            local -a jq_args=(--argjson version "$version" --arg branch "$checkout" --arg sha "$checkout_sha")
+            # shellcheck disable=SC2016 # jq's own $vars, not bash's -- must stay unexpanded.
+            local jq_filter='{version:$version, branch:$branch, sha:$sha}'
+            if [[ -n "$base_sha" ]]; then
+                jq_args+=(--arg base "$base_sha")
+                jq_filter="$jq_filter + {base:\$base}"
+            fi
+            if [[ -n "$effective_upstream_head" ]]; then
+                jq_args+=(--arg upstream_head "$effective_upstream_head")
+                jq_filter="$jq_filter + {upstream_head:\$upstream_head}"
+            fi
+            jq -nc "${jq_args[@]}" "$jq_filter" >> "$dir/versions.jsonl"
+        fi
     fi
     printf '%s\n' "$cover_id"
 }
@@ -742,6 +821,7 @@ cmd_post() {
     shift
     local from="" display="" reply_to="" file="" subject_override="" tags="" harness="unknown" model="unknown"
     local network="unknown"
+    local review_target="" base_sha="" upstream_head=""
     local -a attach_files=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -755,10 +835,25 @@ cmd_post() {
             --model) model="${2:?--model requires a value}"; shift 2 ;;
             --network) network="${2:?--network requires a value}"; shift 2 ;;
             --attach) attach_files+=("${2:?--attach requires a file}"); shift 2 ;;
+            --review-target) review_target="${2:?--review-target requires "<branch> <sha>"}"; shift 2 ;;
+            --base-sha) base_sha="${2:?--base-sha requires a sha}"; shift 2 ;;
+            --upstream-head) upstream_head="${2:?--upstream-head requires a sha}"; shift 2 ;;
             -h|--help) usage; exit 0 ;;
             *) echo "Error: post: unknown option '$1'." >&2; return 1 ;;
         esac
     done
+    if [[ -n "$review_target" ]] && ! lkml_validate_review_target "$review_target"; then
+        echo "Error: post: --review-target must be \"<branch> <40-hex sha>\", got '$review_target'." >&2
+        return 2
+    fi
+    if [[ -n "$base_sha" ]] && ! lkml_validate_sha40 "$base_sha"; then
+        echo "Error: post: --base-sha must be a 40-character lowercase hex sha, got '$base_sha'." >&2
+        return 2
+    fi
+    if [[ -n "$upstream_head" ]] && ! lkml_validate_sha40 "$upstream_head"; then
+        echo "Error: post: --upstream-head must be a 40-character lowercase hex sha, got '$upstream_head'." >&2
+        return 2
+    fi
     [[ -n "$from" ]] || { echo "Error: post: --from is required." >&2; return 1; }
     [[ -n "$reply_to" ]] || { echo "Error: post: --reply-to is required." >&2; return 1; }
     [[ -n "$file" ]] || { echo "Error: post: --file is required." >&2; return 1; }
@@ -859,7 +954,7 @@ cmd_post() {
     (( LKML_FALLBACK )) && misthreaded="$reply_to"
     lkml_post_raw "$series" "$id" "$parent" "$newrefs" "$pversion" "$newdepth" \
         "$from" "$display" "$harness" "$model" "$subject" "$tags" "$body" "$attach_csv" "$misthreaded" \
-        "$network"
+        "$network" "$review_target" "" "$base_sha" "$upstream_head"
     echo "fork-sandbox lkml: posted ${id:0:7} as reply to ${parent:0:7} (depth $newdepth)" >&2
     printf '%s\n' "$id"
 }
