@@ -6,7 +6,7 @@
 # Usage: lkml-cover.sh <series> --project <path> --checkout <branch> --base <base>
 #            --patches <dir> [--attach <file>]... [--smoke <file>] [--narrative <file>]
 #            [--author <persona>] [--version <n>] [--personas-dir <dir>]
-#            [--model-override <harness/model>] [--timeout <seconds>]
+#            [--model-override <harness/model>] [--timeout <seconds>] [--upstream-head <ref>]
 #
 # <project>    the repo fork-sandbox.sh clones.
 # --checkout   the branch the patches already live on -- e.g. the branch
@@ -62,6 +62,11 @@
 #              was claude/opus)`; --model-override wins over the seats file
 #              silently.
 # --timeout    seconds to wait for the run to finish. Default 3600.
+# --upstream-head <ref> the commit the series is stacked on, resolved to a
+#              full sha and passed to `init` as this version's setter.
+#              Omit it to inherit whatever an earlier version recorded --
+#              see skills/lkml-mode/SKILL.md for what this and the other
+#              review-target headers mean.
 #
 # This run is NOT allowed to make commits -- same convention as
 # lkml-round.sh's reviewer runs. The handoff hands it the patches (embedded
@@ -92,10 +97,14 @@
 # consequence of lkml-mailbox.sh init posting immediately rather than
 # returning a body for further editing.
 #
-# The mailbox init call records {"version": <n>, "branch": "<checkout>"}
-# in <series>/versions.jsonl. The branch given via --checkout is the posted
-# version's branch here, since this run makes no commits and already exists
-# in the real repo from lkml-series.sh or lkml-revise.sh.
+# The mailbox init call records {"version": <n>, "branch": "<checkout>",
+# "sha": <checkout's resolved sha>, "base": <base's resolved sha>,
+# "upstream_head": <if known>} in <series>/versions.jsonl. The branch
+# given via --checkout is the posted version's branch here, since this
+# run makes no commits and already exists in the real repo from
+# lkml-series.sh or lkml-revise.sh. --review-target-set/--base-sha/
+# --upstream-head on the same call stamp the review-target headers --
+# see skills/lkml-mode/SKILL.md for what each means.
 
 set -uo pipefail
 
@@ -131,6 +140,7 @@ personas_dir="$default_personas_dir"
 model_override=""
 timeout=3600
 attach_files=()
+upstream_head_ref=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -146,6 +156,7 @@ while [[ $# -gt 0 ]]; do
         --personas-dir) personas_dir="${2:?--personas-dir requires a directory}"; shift 2 ;;
         --model-override) model_override="${2:?--model-override requires harness or harness/model}"; shift 2 ;;
         --timeout) timeout="${2:?--timeout requires seconds}"; shift 2 ;;
+        --upstream-head) upstream_head_ref="${2:?--upstream-head requires a ref}"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Error: unknown option '$1'." >&2; exit 1 ;;
     esac
@@ -161,18 +172,29 @@ fi
 command -v fork-sandbox.sh >/dev/null 2>&1 || { echo "Error: fork-sandbox.sh not found on PATH." >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "Error: jq not found on PATH." >&2; exit 1; }
 
-# Resolved up front, before the persona launch below, so a bad --base
-# refuses in seconds instead of after an up-to-3600s run -- --base's only
-# other use is inside the handoff text itself (a ref name, never resolved
-# there), so nothing before this needs $real_repo.
+# Resolved up front, before the persona launch below, so a bad --base,
+# --checkout or --upstream-head refuses in seconds instead of after an
+# up-to-3600s run -- also gives the review-target headers stamped on
+# init below (see skills/lkml-mode/SKILL.md) their full shas.
 real_repo="$(git -C "$project" rev-parse --show-toplevel 2>/dev/null)" || {
     echo "Error: '$project' is not inside a git repository." >&2
     exit 1
 }
-git -C "$real_repo" rev-parse --verify --quiet "${base_ref}^{commit}" >/dev/null || {
+base_sha="$(git -C "$real_repo" rev-parse --verify --quiet "${base_ref}^{commit}" 2>/dev/null)" || {
     echo "Error: --base '$base_ref' does not name a commit in $real_repo." >&2
     exit 1
 }
+checkout_sha="$(git -C "$real_repo" rev-parse --verify --quiet "${checkout_ref}^{commit}" 2>/dev/null)" || {
+    echo "Error: --checkout '$checkout_ref' does not name a commit in $real_repo." >&2
+    exit 1
+}
+upstream_head_sha=""
+if [[ -n "$upstream_head_ref" ]]; then
+    upstream_head_sha="$(git -C "$real_repo" rev-parse --verify --quiet "${upstream_head_ref}^{commit}" 2>/dev/null)" || {
+        echo "Error: --upstream-head '$upstream_head_ref' does not resolve in $real_repo." >&2
+        exit 1
+    }
+fi
 
 # Every path handed to the eventual `(cd "$real_repo" && "$mailbox" init
 # ...)` call must already be absolute, since that call changes directory
@@ -424,7 +446,9 @@ fi
 
 init_args=(init "$series" --cover "$completed_cover" --patches "$patches_dir" \
     --from "$author_persona" --display "$display" --harness "$harness" --model "$model" \
-    --network "$network" --diffstat "$base_ref..$checkout_ref" --checkout "$checkout_ref")
+    --network "$network" --diffstat "$base_ref..$checkout_ref" --checkout "$checkout_ref" \
+    --review-target-set "$checkout_ref $checkout_sha" --base-sha "$base_sha")
+[[ -n "$upstream_head_sha" ]] && init_args+=(--upstream-head "$upstream_head_sha")
 [[ -n "$version" ]] && init_args+=(--version "$version")
 [[ -n "$smoke_file" ]] && init_args+=(--smoke "$smoke_file")
 for f in "${attach_files[@]}"; do

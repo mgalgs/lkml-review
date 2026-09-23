@@ -52,9 +52,9 @@ scheduling, not reading, and the reviewers' job is reading.
   the commit the series' own commits are stacked on (a reviewed pull
   request's head, for example). Shas are always full 40-hex, resolved at
   the moment a ref is used — never a ref name, since a later push must not
-  change what an old message claims. `lkml-round.sh` and `lkml-revise.sh`
-  stamp these on every reply and version they post; see their own header
-  comments for which flags feed them.
+  change what an old message claims. `lkml-round.sh`, `lkml-revise.sh` and
+  `lkml-cover.sh` stamp these on every reply and version they post; see
+  their own header comments for which flags feed them.
 - **`scripts/lkml-render.py`** — renders a single-file HTML archive of the
   threads and review tally (typefaces load from the Google Fonts CDN; the
   local fallback stacks apply when there is no network): `lkml-render.py "$LKML_MAILBOX_ROOT/<series>" > threads.html`.

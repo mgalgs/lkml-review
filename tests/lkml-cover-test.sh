@@ -76,6 +76,7 @@ printf 'int frob(void) { return 0; }\n' > "$real_repo/frob.c"
 git -C "$real_repo" add frob.c
 git -C "$real_repo" commit -q -m "frob: add core"
 git -C "$real_repo" branch cover-branch -q
+checkout_sha="$(git -C "$real_repo" rev-parse --verify --quiet cover-branch)"
 
 work="$(mktemp -d)"; tmpdirs+=("$work")
 # The launcher resolves its seats file from $HOME by default -- pin a
@@ -163,11 +164,26 @@ contains "body carries a real Diffstat section" "$raw" "## Diffstat"
 contains "the diffstat names the changed file" "$raw" "frob.c"
 contains "body carries the Test results section" "$raw" "## Test results"
 contains "the Test results section carries the smoke file verbatim" "$raw" "all tests passed: 7/7"
+contains "the cover carries X-Review-Target-Set for the checkout branch and sha" "$raw" \
+    "X-Review-Target-Set: cover-branch $checkout_sha"
+contains "the cover carries X-Review-Target too" "$raw" "X-Review-Target: cover-branch $checkout_sha"
+contains "the cover carries X-Base for the resolved base sha" "$raw" "X-Base: $base_sha"
+
+patch_id="$(printf '%s\n' "$tree_out" | awk 'NR==3{print $1}')"
+patch_raw="$("$mailbox" show widget-frob "$patch_id")"
+contains "the patch carries X-Review-Target" "$patch_raw" "X-Review-Target: cover-branch $checkout_sha"
+if [[ "$patch_raw" != *"X-Review-Target-Set"* ]]; then
+    ok "the patch does not carry X-Review-Target-Set"
+else
+    no "the patch does not carry X-Review-Target-Set" "found X-Review-Target-Set in: $patch_raw"
+fi
 
 versions_file="$LKML_MAILBOX_ROOT/widget-frob/versions.jsonl"
 check "versions.jsonl gets exactly one line" "1" "$(wc -l < "$versions_file" | tr -d '[:space:]')"
 check "versions.jsonl records version 1" "1" "$(jq -r '.version' "$versions_file")"
 check "versions.jsonl records the --checkout branch" "cover-branch" "$(jq -r '.branch' "$versions_file")"
+check "versions.jsonl records the checkout's resolved sha" "$checkout_sha" "$(jq -r '.sha' "$versions_file")"
+check "versions.jsonl records the resolved base sha" "$base_sha" "$(jq -r '.base' "$versions_file")"
 
 printf '\n== existing v1 ledger ==\n'
 export LKML_MAILBOX_ROOT; LKML_MAILBOX_ROOT="$(mktemp -d)"; tmpdirs+=("$LKML_MAILBOX_ROOT")
@@ -235,6 +251,31 @@ if (( rc != 0 )); then ok "exits non-zero on a bad --base"; else no "exits non-z
 contains "names the bad --base" "$out" "no-such-ref"
 n_runs_after=$(find "$run_prefix_dir" -maxdepth 1 -name 'run.*' | wc -l)
 check "no run was launched" "$n_runs_before" "$n_runs_after"
+
+printf '\n== a bad --checkout is refused before the persona launches ==\n'
+export LKML_MAILBOX_ROOT; LKML_MAILBOX_ROOT="$(mktemp -d)"; tmpdirs+=("$LKML_MAILBOX_ROOT")
+write_stub 1
+n_runs_before=$(find "$run_prefix_dir" -maxdepth 1 -name 'run.*' | wc -l)
+out="$(PATH="$stub_bin:$PATH" "$cover" widget-frob --project "$real_repo" \
+    --checkout no-such-checkout --base "$base_sha" --patches "$patches_dir" 2>&1)"
+rc=$?
+if (( rc != 0 )); then ok "exits non-zero on a bad --checkout"; else no "exits non-zero on a bad --checkout" "exit 0"; fi
+contains "names the bad --checkout" "$out" "no-such-checkout"
+n_runs_after=$(find "$run_prefix_dir" -maxdepth 1 -name 'run.*' | wc -l)
+check "no run was launched" "$n_runs_before" "$n_runs_after"
+
+printf '\n== --upstream-head resolves and is stamped on the cover ==\n'
+export LKML_MAILBOX_ROOT; LKML_MAILBOX_ROOT="$(mktemp -d)"; tmpdirs+=("$LKML_MAILBOX_ROOT")
+write_stub 1
+out="$(PATH="$stub_bin:$PATH" "$cover" widget-frob --project "$real_repo" \
+    --checkout cover-branch --base "$base_sha" --patches "$patches_dir" \
+    --upstream-head cover-branch 2>&1)"
+rc=$?
+check "exits 0 with --upstream-head" "0" "$rc"
+uh_tree="$("$mailbox" tree widget-frob)"
+uh_cover_id="$(printf '%s\n' "$uh_tree" | awk 'NR==2{print $1}')"
+uh_raw="$("$mailbox" show widget-frob "$uh_cover_id")"
+contains "the cover carries X-Upstream-Head" "$uh_raw" "X-Upstream-Head: $checkout_sha"
 
 printf '\n== a pi-local author with an explicit pinned network is refused before any launch ==\n'
 # The pi-local + network: pinned contradiction is refused inside

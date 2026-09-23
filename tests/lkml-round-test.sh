@@ -489,6 +489,17 @@ contains "the refusal names the bad base ref" "$out_badbase" "nosuchbaseref"
 n_badbase_launches="$(find "$cap_badbase" -name '*.task-meta.json' | wc -l | tr -d '[:space:]')"
 check "no persona was launched when --base cannot resolve" "0" "$n_badbase_launches"
 
+printf '\n== an unresolvable --checkout refuses the round before any launch ==\n'
+cap_badcheckout="$(mktemp -d)"; tmpdirs+=("$cap_badcheckout")
+out_badcheckout="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_badcheckout" STUB_RUN_PREFIX="$run_prefix_dir" \
+    "$round" widget-base-check --project "$project_dir" --checkout nosuchcheckoutref --base somebranch \
+    --personas core --personas-dir "$work" 2>&1)"
+rc_badcheckout=$?
+if (( rc_badcheckout != 0 )); then ok "an unresolvable --checkout exits non-zero"; else no "an unresolvable --checkout exits non-zero" "exit 0: $out_badcheckout"; fi
+contains "the refusal names the bad checkout ref" "$out_badcheckout" "nosuchcheckoutref"
+n_badcheckout_launches="$(find "$cap_badcheckout" -name '*.task-meta.json' | wc -l | tr -d '[:space:]')"
+check "no persona was launched when --checkout cannot resolve" "0" "$n_badcheckout_launches"
+
 printf '\n== every seat mounts the thread at /thread; no handoff inlines bodies ==\n'
 # The thread is one --text render per round, mounted read-only on every
 # seat via --thread-dir. Handoffs carry the current message and a pointer
