@@ -60,7 +60,11 @@ scheduling, not reading, and the reviewers' job is reading.
   parallel, either reviewing the whole series fresh or replying to
   specific threads you name with `--reply-to`. Every run's replies are
   harvested back into the mailbox when it finishes; the runs themselves
-  make no commits. After the harvest, the round also runs
+  make no commits. Every seat gets the whole thread, bodies included, as
+  a read-only file at `/thread/thread.txt` (the sandbox cannot read the
+  mailbox), so a v2+ reviewer can see what it said and how the author
+  answered; a round whose thread render fails is refused before any seat
+  launches. After the harvest, the round also runs
   `lkml-summarize.sh` (resolved from PATH) with its own `--project`,
   resolved version and `--timeout`, so the thread's summary is current
   after every round instead of only when someone remembers to run it:
@@ -171,11 +175,7 @@ the series, and the `secretary` persona that summarizes it.
 in. It reads the whole thread and posts one structured summary (key
 takeaways, defects and their standing, notable exchanges, state of the
 series) as a reply to the cover letter, so someone not on the list can
-act on the discussion without reading it. The seat's sandbox cannot read
-the mailbox, so `lkml-round.sh` hands a `secretary` seat the whole thread
-in its handoff — the `--text` render of the mailbox, bodies included; the
-reviewer seats do not get it, they read the diff in their own clone.
-Running it alongside the panel
+act on the discussion without reading it. Running it alongside the panel
 defeats it: there is no thread to summarize yet.
 
 **`ci` runs first on every version.** It holds no opinions: it runs every
