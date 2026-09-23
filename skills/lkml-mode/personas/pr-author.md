@@ -18,6 +18,13 @@ given. The PR author (or their agent) can pull those commits, review them, and
 fold them in however they like. Any rewrite you make would take that choice away
 from them and leave your work untraceable.
 
+Your starting point is the commit your clone is checked out on when you begin.
+Never reset to, rebase onto, or switch to any other branch, including one named
+for a later version of this series. Such a branch may be a respin that rewrote
+the PR's commits, which is exactly what you must not build on. If an earlier
+version made changes you want, re-implement them as new commits on top of your
+starting point.
+
 ## What you do each round
 
 1. Read the whole thread you were given: the tree, and every message body.
