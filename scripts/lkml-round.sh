@@ -17,6 +17,11 @@
 # --base     the commit the patches are applied on top of. Told to a
 #            reviewer with no --reply-to, so it can `git diff <base>...HEAD`
 #            in its own clone instead of guessing the range.
+# --checkout and --base are resolved to full shas before any persona is
+#            launched, and every harvested reply is stamped with them (plus
+#            upstream_head from the version ledger, when recorded) as
+#            X-Review-Target/X-Base/X-Upstream-Head -- see
+#            skills/lkml-mode/SKILL.md for what each header means.
 # --personas comma-separated persona slugs, each naming a file
 #            <personas-dir>/<persona>.md. Every persona in the list gets
 #            launched, whatever the task -- see the lkml-mode skill for why
@@ -406,6 +411,20 @@ if [[ -n "$version" && "$version" != "$matched_version" ]]; then
     exit 1
 fi
 version="$matched_version"
+
+# base_sha and upstream_head are resolved/read HERE, before any persona is
+# launched, and reused verbatim at harvest: a seat reviewed what it was
+# spawned at, not whatever the branch points to once the round finishes.
+base_sha=""
+if [[ -n "$base_ref" ]]; then
+    base_sha="$(git -C "$project" rev-parse --verify --quiet "$base_ref^{commit}" 2>/dev/null)" || {
+        echo "Error: base '$base_ref' does not resolve in $project." >&2
+        exit 1
+    }
+fi
+upstream_head="$(jq -r --argjson v "$matched_version" \
+    'select((.version|type)=="number" and .version==$v and (.upstream_head|type)=="string") | .upstream_head' \
+    "$versions_file" | tail -n1)"
 
 # Every --reply-to id must resolve before ANY persona is launched -- a
 # typo'd id would otherwise only be caught when build_handoff calls
@@ -1048,6 +1067,7 @@ harvest_one() {
     # `network:` frontmatter key) means the ordinary networked default, not
     # "unknown" -- unlike model, which really can be unresolvable.
     local network="${6:-pinned}"
+    local review_target="$7" base_sha="$8" upstream_head="$9"
     local reply_to="" subject="" tags="" body_file in_headers=1 line
     body_file="$(mktemp)"
     : > "$body_file"
@@ -1078,6 +1098,9 @@ harvest_one() {
     local -a extra=()
     [[ -n "$subject" ]] && extra=(--subject "$subject")
     [[ -n "$tags" ]] && extra+=(--tags "$tags")
+    [[ -n "$review_target" ]] && extra+=(--review-target "$review_target")
+    [[ -n "$base_sha" ]] && extra+=(--base-sha "$base_sha")
+    [[ -n "$upstream_head" ]] && extra+=(--upstream-head "$upstream_head")
 
     local id rc=0
     id="$("$mailbox" post "$series" --from "$persona" --display "$display" \
@@ -1120,7 +1143,8 @@ if (( k8s )); then
         while IFS= read -r msgfile; do
             [[ -e "$msgfile" ]] || continue
             harvest_one "$persona" "${display_of[$persona]}" "${harness_of[$persona]}" \
-                "$model" "$msgfile" "${network_of[$persona]}" && harvested=$(( harvested + 1 ))
+                "$model" "$msgfile" "${network_of[$persona]}" \
+                "$checkout_ref $checkout_sha" "$base_sha" "$upstream_head" && harvested=$(( harvested + 1 ))
         done < <(find "$out_dir" -maxdepth 1 -name '*.msg' | sort -V)
     done
 else
@@ -1171,7 +1195,8 @@ else
         while IFS= read -r msgfile; do
             [[ -e "$msgfile" ]] || continue
             harvest_one "$persona" "${display_of[$persona]}" "${harness_of[$persona]}" \
-                "$model" "$msgfile" "${network_of[$persona]}" && harvested=$(( harvested + 1 ))
+                "$model" "$msgfile" "${network_of[$persona]}" \
+                "$checkout_ref $checkout_sha" "$base_sha" "$upstream_head" && harvested=$(( harvested + 1 ))
         done < <(find "$out_dir" -maxdepth 1 -name '*.msg' | sort -V)
     done
 fi

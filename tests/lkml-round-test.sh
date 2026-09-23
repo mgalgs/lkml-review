@@ -245,6 +245,13 @@ chmod 0600 -- "$LKML_MAILBOX_ROOT/widget-frob/personas/core.md"
 persona_sentinel_dir="$(mktemp -d)"; tmpdirs+=("$persona_sentinel_dir")
 ln "$LKML_MAILBOX_ROOT/widget-frob/personas/core.md" "$persona_sentinel_dir/core.md"
 
+# Captured before the round runs, so the harvest assertions below prove the
+# reply carries the sha resolved AT LAUNCH -- somebranch never moves in this
+# test, so this doubles as the value a re-resolution at harvest would also
+# produce, but it is the pre-launch capture that the invariant is about.
+somebranch_sha="$(git -C "$project_dir" rev-parse somebranch)"
+otherbranch_sha="$(git -C "$project_dir" rev-parse otherbranch)"
+
 out="$(umask 077; PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$capture_dir" STUB_RUN_PREFIX="$run_prefix_dir" \
     STUB_REPLY_TO="$patch_id" STUB_REPLY_TO_BRACKETED="$patch_id_bracketed" \
     "$round" widget-frob --project "$project_dir" --checkout somebranch \
@@ -326,6 +333,19 @@ contains "an empty outbox with no fallback directory warns of no replies" \
     "$out" "pi-local wrote no replies"
 contains "the no-replies warning names the outbox it checked" "$out" "/outbox, and"
 contains "the no-replies warning names the fallback it checked" "$out" ".git/lkml-out as a fallback"
+
+printf '\n== harvested replies carry the launch-time review-target ==\n'
+core_reply_msg="$("$mailbox" show widget-frob "$(printf '%s\n' "$tree_out" | grep -m1 Reviewed-by | awk '{print $1}')")"
+contains "core's harvested reply carries X-Review-Target for the launch checkout+sha" \
+    "$core_reply_msg" "X-Review-Target: somebranch $somebranch_sha"
+case "$core_reply_msg" in
+    *"X-Base:"*) no "no --base was given for this round; no X-Base should be stamped" ;;
+    *) ok "no --base was given for this round; no X-Base is stamped" ;;
+esac
+case "$core_reply_msg" in
+    *"X-Upstream-Head:"*) no "no upstream_head is recorded for v1; no X-Upstream-Head should be stamped" ;;
+    *) ok "no upstream_head is recorded for v1; no X-Upstream-Head is stamped" ;;
+esac
 
 printf '\n== persona archiving ==\n'
 check "persona archive replaces the destination without changing its sentinel" \
@@ -435,6 +455,39 @@ rc4=$?
 if (( rc4 != 0 )); then ok "ambiguous checkout ref exits non-zero"; else no "ambiguous checkout ref exits non-zero"; fi
 contains "ambiguous checkout ref is rejected as a mismatched commit" "$out4" \
     "matches no recorded version branch"
+
+printf '\n== --base and X-Base: a dedicated series avoids the shared mailbox\047s ambiguity ==\n'
+# A separate series, so the harvested reply below is the only one carrying
+# "Looks fine now." under it -- widget-frob already has one from the
+# harvest section above, and grep -m1 there would find the wrong one.
+mkdir base-check-patches
+printf 'Subject: [PATCH 1/1] frob: base check\n\ndiff\n' > base-check-patches/0001.patch
+"$mailbox" init widget-base-check --cover cover.txt --patches base-check-patches --from author \
+    --harness claude --model opus --no-checkout >/dev/null 2>&1
+printf '{"version":1,"branch":"somebranch"}\n' > "$LKML_MAILBOX_ROOT/widget-base-check/versions.jsonl"
+base_check_patch_id="$("$mailbox" tree widget-base-check | awk 'NR==3{print $1}')"
+cap_base="$(mktemp -d)"; tmpdirs+=("$cap_base")
+out_base="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_base" STUB_RUN_PREFIX="$run_prefix_dir" \
+    STUB_REPLY_TO="$base_check_patch_id" \
+    "$round" widget-base-check --project "$project_dir" --checkout somebranch --base somebranch \
+    --personas core --personas-dir "$work" 2>&1)"
+rc_base=$?
+if (( rc_base == 0 )); then ok "base-check round exits 0 against the stub"; else no "base-check round exits 0 against the stub" "exit $rc_base: $out_base"; fi
+base_check_tree="$("$mailbox" tree widget-base-check)"
+base_check_reply_msg="$("$mailbox" show widget-base-check "$(printf '%s\n' "$base_check_tree" | grep -m1 Reviewed-by | awk '{print $1}')" 2>/dev/null)"
+contains "a resolved --base stamps X-Base with its full sha" "$base_check_reply_msg" "X-Base: $somebranch_sha"
+contains "the same reply still carries X-Review-Target for the checkout" "$base_check_reply_msg" "X-Review-Target: somebranch $somebranch_sha"
+
+printf '\n== an unresolvable --base refuses the round before any launch ==\n'
+cap_badbase="$(mktemp -d)"; tmpdirs+=("$cap_badbase")
+out_badbase="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_badbase" STUB_RUN_PREFIX="$run_prefix_dir" \
+    "$round" widget-base-check --project "$project_dir" --checkout somebranch --base nosuchbaseref \
+    --personas core --personas-dir "$work" 2>&1)"
+rc_badbase=$?
+if (( rc_badbase != 0 )); then ok "an unresolvable --base exits non-zero"; else no "an unresolvable --base exits non-zero" "exit 0: $out_badbase"; fi
+contains "the refusal names the bad base ref" "$out_badbase" "nosuchbaseref"
+n_badbase_launches="$(find "$cap_badbase" -name '*.task-meta.json' | wc -l | tr -d '[:space:]')"
+check "no persona was launched when --base cannot resolve" "0" "$n_badbase_launches"
 
 printf '\n== every seat mounts the thread at /thread; no handoff inlines bodies ==\n'
 # The thread is one --text render per round, mounted read-only on every
@@ -877,6 +930,10 @@ check "security's reply is posted under security's persona, not another seat's" 
     "$(awk '{print $2}' <<<"$sec_reply_line")"
 check "security's reply is stamped with its own harness/model" "(claude/opus)" \
     "$(awk '{print $3}' <<<"$sec_reply_line")"
+
+contains "the k8s path also stamps X-Review-Target with the launch checkout+sha" \
+    "$("$mailbox" show widget-frob "$(awk '{print $1}' <<<"$core_reply_line")")" \
+    "X-Review-Target: otherbranch $otherbranch_sha"
 
 jq_expect() { # label, filter, json
     if jq -e "$2" >/dev/null <<<"$3"; then ok "$1"; else no "$1" "filter '$2' failed on: $3"; fi
