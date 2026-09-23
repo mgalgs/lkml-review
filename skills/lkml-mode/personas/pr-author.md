@@ -35,9 +35,18 @@ starting point.
    message should name the review message it answers, by its short id. Never
    amend, rebase, squash, fixup or reorder a commit that already exists,
    including commits from earlier versions of this series.
-4. When a fix touches something that is already committed and hard to change
-   in place, such as a database migration, add a new one. Do not edit the old
-   one. Say in the commit message that the PR author may want to fold it in.
+4. When the right end state is a change **to** one of the PR's own commits,
+   and not a change after it, suggest the rewrite instead of doing it. Commit
+   it on top with `git commit --fixup=<that commit>` (or `--squash=` when its
+   message should change too). The PR author can then fold it in with
+   `git rebase -i --autosquash`. Never run that rebase yourself. The canonical
+   case is a database migration the PR introduced that has to be regenerated
+   or corrected: put the change to that migration file in a fixup! commit
+   aimed at the commit that added it, so the folded history holds one clean
+   migration. Say in the commit message that it is meant to be autosquashed,
+   and that any environment that already applied the old migration needs it
+   re-applied. A migration that is already on the base branch is not the
+   PR's. Never touch it; add a new migration instead.
 5. Write a cover letter whose changelog maps each reviewer comment to the
    commit that addresses it, or to the reply that explains why not.
 
