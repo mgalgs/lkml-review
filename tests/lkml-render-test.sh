@@ -901,6 +901,8 @@ contains "text: header shows the same counts as the HTML header" "$ttext" '2 pat
 contains "text: cover is message #1 at depth 0" "$ttext" '== #1 · depth 0'
 contains "text: patch is numbered and links its parent" "$ttext" '== #2 · reply to #1 · depth 1'
 contains "text: reply carries its number, parent and depth" "$ttext" '== #3 · reply to #2 · depth 2'
+contains "text: patch header ends in its own short id" "$ttext" "== #2 · reply to #1 · depth 1 · id ${patch_id}"
+contains "text: reply header ends in the first 7 chars of its Message-ID" "$ttext" "== #3 · reply to #2 · depth 2 · id ${review_id:0:7}"
 contains "text: From line carries persona, harness and model" "$ttext" '[persona: core · harness: test · model: fixture]'
 contains "text: tags line is plain text" "$ttext" 'Tags: Reviewed-by'
 contains "text: cover letter body is verbatim" "$ttext" 'fenced *markdown*'
@@ -1999,6 +2001,8 @@ printf '%s\n' \
     'NAK' \
     > "$multi/004-${mv_v3_reply}.msg"
 multi_text="$(python3 "$renderer" --text "$multi")"
+contains "multi-version fleet thread: v2's reply carries its own short id (fleet layout, id is set by read_fleet_msg)" \
+    "$multi_text" "id ${mv_v2_reply:0:7}"
 contains "multi-version fleet thread: v2's section header is present" "$multi_text" "$(basename "$multi") v2"
 contains "multi-version fleet thread: v3's section header is present" "$multi_text" "$(basename "$multi") v3"
 contains "multi-version fleet thread: v2 reports its own 2 messages, not the whole thread's 4" \

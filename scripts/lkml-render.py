@@ -1870,7 +1870,10 @@ def text_body(m):
 
 
 def render_text_message(out, m, nums, depth, stop_ids=frozenset()):
-    """One message of the --text thread: separator, numbered header, the
+    """One message of the --text thread: separator, numbered header
+    ending in the message's own short id (the same 7-hex Message-ID
+    prefix the HTML render's line shows -- it goes last so every
+    existing substring match on the earlier fields still holds), the
     From/Subject/Tags lines, then the body. `nums` maps id to
     (number, parent number) from a pre-order walk, so this prints the
     thread in the same order the HTML render nests it in. stop_ids is
@@ -1881,7 +1884,7 @@ def render_text_message(out, m, nums, depth, stop_ids=frozenset()):
     num, parent_num = nums[m["id"]]
     rel = f" · reply to #{parent_num}" if parent_num else ""
     out.append("-" * 72)
-    out.append(f"== #{num}{rel} · depth {depth}")
+    out.append(f"== #{num}{rel} · depth {depth} · id {m['id'][:7]}")
     line = f"From: {m['from']}"
     meta = []
     if m["persona"]:
