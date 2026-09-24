@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # lkml-mailbox.sh — A Maildir-like message store for one lkml-mode series
 #
-# Usage: lkml-mailbox.sh init <series> --cover <file> --patches <dir> --from <persona> (--checkout <branch> | --no-checkout) [--display <name>] [--version <n>] [--harness <h>] [--model <m>] [--network <pinned|sealed>] [--attach <file>]... [--diffstat <range>] [--smoke <file>] [--review-target "<branch> <sha>"] [--review-target-set "<branch> <sha>"] [--base-sha <sha>] [--upstream-head <sha>]
+# Usage: lkml-mailbox.sh init <series> --cover <file> --patches <dir> --from <persona> (--checkout <branch> | --no-checkout) [--display <name>] [--version <n>] [--harness <h>] [--model <m>] [--network <pinned|sealed>] [--attach <file>]... [--diffstat <range>] [--smoke <file>] [--previous-tip <sha>] [--review-target "<branch> <sha>"] [--review-target-set "<branch> <sha>"] [--base-sha <sha>] [--upstream-head <sha>]
 #        lkml-mailbox.sh post <series> --from <persona> --reply-to <id> --file <file|-> [--display <name>] [--subject <s>] [--tags <t1,t2>] [--harness <h>] [--model <m>] [--network <pinned|sealed>] [--attach <file>]... [--review-target "<branch> <sha>"] [--base-sha <sha>] [--upstream-head <sha>]
 #        lkml-mailbox.sh tree <series> [--version <n>]
 #        lkml-mailbox.sh cover <series> [--version <n>]
@@ -22,6 +22,12 @@
 # that file's contents verbatim. Refuses cleanly if the range fails to diff
 # (e.g. cwd is not a git repo, or the range is nonsense) or the smoke file
 # does not exist.
+#
+# --previous-tip <sha>, on `init` only and requiring --checkout, appends
+# "## Since v<N-1>" naming the previous version's tip and this version's,
+# their full 40-hex `^{tree}` hashes, and whether the tree changed --
+# computed here because it can be (both tips exist in this repo), unlike
+# in a reviewer's clone, which holds only the new version's branch.
 #
 # --checkout records the posted version and its local branch in
 # <series>/versions.jsonl. The branch is resolved under refs/heads/ (like
@@ -609,7 +615,7 @@ cmd_init() {
     shift
     local cover="" patches="" from="" display="" version="" harness="unknown" model="unknown"
     local network="unknown"
-    local diffstat_range="" smoke_file="" checkout="" no_checkout=0
+    local diffstat_range="" smoke_file="" checkout="" no_checkout=0 previous_tip=""
     local review_target="" review_target_set="" base_sha="" upstream_head=""
     local -a attach_files=()
     while [[ $# -gt 0 ]]; do
@@ -625,6 +631,7 @@ cmd_init() {
             --attach) attach_files+=("${2:?--attach requires a file}"); shift 2 ;;
             --diffstat) diffstat_range="${2:?--diffstat requires a range}"; shift 2 ;;
             --smoke) smoke_file="${2:?--smoke requires a file}"; shift 2 ;;
+            --previous-tip) previous_tip="${2:?--previous-tip requires a sha}"; shift 2 ;;
             --checkout) checkout="${2:?--checkout requires a branch}"; shift 2 ;;
             --no-checkout) no_checkout=1; shift ;;
             --review-target) review_target="${2:?--review-target requires "<branch> <sha>"}"; shift 2 ;;
@@ -651,6 +658,10 @@ cmd_init() {
         echo "Error: init: --upstream-head must be a 40-character lowercase hex sha, got '$upstream_head'." >&2
         return 2
     fi
+    if [[ -n "$previous_tip" ]] && ! lkml_validate_sha40 "$previous_tip"; then
+        echo "Error: init: --previous-tip must be a 40-character lowercase hex sha, got '$previous_tip'." >&2
+        return 2
+    fi
     lkml_validate_series_name "$series" || return 1
     [[ -n "$from" ]] || { echo "Error: init: --from is required (the persona posting the cover letter)." >&2; return 1; }
     [[ -f "$cover" ]] || { echo "Error: init: --cover file '$cover' not found." >&2; return 1; }
@@ -661,6 +672,16 @@ cmd_init() {
         echo "which lkml-round.sh needs to launch a panel against it. Pass" >&2
         echo "--no-checkout only when this series is deliberately not tied to a" >&2
         echo "branch -- lkml-round.sh will refuse the version." >&2
+        return 1
+    fi
+    if [[ -n "$previous_tip" && "$no_checkout" == 1 ]]; then
+        echo "Error: init: --previous-tip requires --checkout -- the '## Since' section" >&2
+        echo "compares the previous version's tip against THIS version's checkout, so" >&2
+        echo "there is nothing to compare against --no-checkout." >&2
+        return 1
+    fi
+    if [[ -n "$previous_tip" ]] && ! git rev-parse --verify --quiet "${previous_tip}^{commit}" >/dev/null 2>&1; then
+        echo "Error: init: --previous-tip '$previous_tip' is not a commit in $(pwd)." >&2
         return 1
     fi
     if [[ -n "$version" ]]; then
@@ -710,6 +731,11 @@ cmd_init() {
             fi
         done
     fi
+    if [[ -n "$previous_tip" && "$version" -lt 2 ]]; then
+        echo "Error: init: --previous-tip names a previous version, but this is v$version --" >&2
+        echo "there is no vN-1 to compare against." >&2
+        return 1
+    fi
 
     if [[ -n "$checkout" && -f "$dir/versions.jsonl" ]]; then
         local ledger_version ledger_branch
@@ -758,6 +784,42 @@ cmd_init() {
         # shellcheck disable=SC2016 # literal markdown backticks, not a command substitution.
         cover_body="$(printf '%s\n\n## Diffstat\n\n`git diff --stat --diff-algorithm=myers %s`:\n\n%s\n' \
             "$cover_body" "$diffstat_range" "$diffstat_out")"
+    fi
+    if [[ -n "$previous_tip" ]]; then
+        local prev_version=$(( version - 1 ))
+        local prev_tree tip_tree since_verdict
+        prev_tree="$(git rev-parse "${previous_tip}^{tree}")"
+        tip_tree="$(git rev-parse "${checkout_sha}^{tree}")"
+        if [[ "$previous_tip" == "$checkout_sha" ]]; then
+            since_verdict="Same commit as v$prev_version."
+        elif [[ "$prev_tree" == "$tip_tree" ]]; then
+            since_verdict="Trees identical: v$version changes no file content relative to v$prev_version. Only history and commit messages differ."
+        else
+            local since_diffstat_out
+            # myers pinned: see the --diffstat comment above for why.
+            if ! since_diffstat_out="$(git diff --stat --diff-algorithm=myers "$previous_tip..$checkout_sha" 2>&1)"; then
+                echo "Error: init: --previous-tip diff '$previous_tip..$checkout_sha' failed:" >&2
+                echo "$since_diffstat_out" >&2
+                return 1
+            fi
+            # shellcheck disable=SC2016 # literal markdown backticks, not a command substitution.
+            since_verdict="$(printf 'Trees differ. `git diff --stat --diff-algorithm=myers %s..%s`:\n\n%s' \
+                "$previous_tip" "$checkout_sha" "$since_diffstat_out")"
+        fi
+        local since_section
+        since_section="$(cat <<SINCE
+## Since v$prev_version
+
+Computed on the host when v$version was posted. A reviewer's clone may not
+contain v$prev_version, so these values cannot be re-run there:
+
+    v$prev_version  $previous_tip  tree $prev_tree
+    v$version  $checkout_sha  tree $tip_tree
+
+$since_verdict
+SINCE
+)"
+        cover_body="$(printf '%s\n\n%s\n' "$cover_body" "$since_section")"
     fi
     if [[ -n "$smoke_file" ]]; then
         [[ -f "$smoke_file" ]] || { echo "Error: init: --smoke file '$smoke_file' not found." >&2; return 1; }

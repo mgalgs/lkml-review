@@ -667,6 +667,10 @@ contains "cover body gets a Diffstat section" "$raw_diffstat" "## Diffstat"
 contains "the diffstat section carries git's own output" "$raw_diffstat" "file.txt"
 contains "cover body gets a Test results section" "$raw_diffstat" "## Test results"
 contains "the Test results section carries the smoke file verbatim" "$raw_diffstat" "all tests passed: 42/42"
+case "$raw_diffstat" in
+    *"## Since"*) no "no '## Since' section without --previous-tip" "$raw_diffstat" ;;
+    *) ok "no '## Since' section without --previous-tip" ;;
+esac
 
 out="$(cd "$diffstat_repo" && "$mailbox" init widget-frob --cover "$work/cover.txt" --patches "$work/patches" \
     --from author --harness claude --model opus --smoke "$work/nosuchfile.txt" --no-checkout 2>&1)"
@@ -706,6 +710,95 @@ raw_algo="$("$mailbox" show algo-pin "${out:0:7}")"
 contains "the diffstat uses myers despite diff.algorithm=histogram" "$raw_algo" "2 insertions(+), 2 deletions(-)"
 contains "the diffstat names the command and range it ran" "$raw_algo" \
     "\`git diff --stat --diff-algorithm=myers $algo_base..$algo_tip\`:"
+
+printf '\n== init --previous-tip ==\n'
+
+since_repo="$(mktemp -d)"; tmpdirs+=("$since_repo")
+git -C "$since_repo" init -q
+git -C "$since_repo" config user.email t@fork-sandbox.invalid
+git -C "$since_repo" config user.name Tester
+printf 'base\n' > "$since_repo/file.txt"
+git -C "$since_repo" add file.txt
+git -C "$since_repo" commit -q -m "base"
+since_v1_sha="$(git -C "$since_repo" rev-parse --verify --quiet HEAD)"
+since_v1_tree="$(git -C "$since_repo" rev-parse --verify --quiet "HEAD^{tree}")"
+git -C "$since_repo" branch since-v1 "$since_v1_sha"
+
+# Same tree, different commit -- amend-style re-roll that changes no file content.
+since_same_tree_sha="$(git -C "$since_repo" commit-tree "$since_v1_tree" -p "$since_v1_sha" -m "reworded")"
+git -C "$since_repo" branch since-v2-same "$since_same_tree_sha"
+
+# A second re-roll from v1 that DOES change a file.
+printf 'base\nmore\n' > "$since_repo/file.txt"
+git -C "$since_repo" commit -q -am "add a line"
+since_diff_sha="$(git -C "$since_repo" rev-parse --verify --quiet HEAD)"
+git -C "$since_repo" branch since-v2-diff "$since_diff_sha"
+
+since_out_a="$(cd "$since_repo" && "$mailbox" init since-identical --cover "$work/cover.txt" --patches "$work/patches" \
+    --from author --version 2 --checkout since-v2-same --previous-tip "$since_v1_sha" --diffstat "$since_v1_sha..$since_same_tree_sha" \
+    --smoke "$work/smoke.txt" 2>"$work/since-a-diag.txt")"
+since_a_rc=$?
+check "init --previous-tip (identical trees) exits 0" "0" "$since_a_rc"
+since_a_raw="$("$mailbox" show since-identical "${since_out_a:0:7}")"
+contains "since section heading names vP" "$since_a_raw" "## Since v1"
+contains "since section carries vP's sha and tree" "$since_a_raw" "v1  $since_v1_sha  tree $since_v1_tree"
+contains "since section carries vN's sha and tree" "$since_a_raw" "v2  $since_same_tree_sha  tree $since_v1_tree"
+contains "since section verdict: trees identical" "$since_a_raw" \
+    "Trees identical: v2 changes no file content relative to v1. Only history and commit messages differ."
+
+printf '%s' "$since_a_raw" > "$work/since-a.txt"
+since_a_diffstat_line="$(grep -n '^## Diffstat$' "$work/since-a.txt" | head -n1 | cut -d: -f1)"
+since_a_since_line="$(grep -n '^## Since v1$' "$work/since-a.txt" | head -n1 | cut -d: -f1)"
+since_a_test_line="$(grep -n '^## Test results$' "$work/since-a.txt" | head -n1 | cut -d: -f1)"
+if [[ -n "$since_a_diffstat_line" && -n "$since_a_since_line" && -n "$since_a_test_line" ]] \
+        && (( since_a_diffstat_line < since_a_since_line && since_a_since_line < since_a_test_line )); then
+    ok "## Since vN comes after Diffstat and before Test results"
+else
+    no "## Since vN comes after Diffstat and before Test results" \
+        "diffstat=$since_a_diffstat_line since=$since_a_since_line test=$since_a_test_line"
+fi
+
+since_out_b="$(cd "$since_repo" && "$mailbox" init since-differ --cover "$work/cover.txt" --patches "$work/patches" \
+    --from author --version 2 --checkout since-v2-diff --previous-tip "$since_v1_sha" 2>/dev/null)"
+since_b_raw="$("$mailbox" show since-differ "${since_out_b:0:7}")"
+contains "since section verdict: trees differ" "$since_b_raw" "Trees differ."
+contains "since section differ names the diffstat command" "$since_b_raw" \
+    "\`git diff --stat --diff-algorithm=myers $since_v1_sha..$since_diff_sha\`:"
+contains "since section differ diffstat names the changed file" "$since_b_raw" "file.txt"
+
+since_out_c="$(cd "$since_repo" && "$mailbox" init since-same-commit --cover "$work/cover.txt" --patches "$work/patches" \
+    --from author --version 2 --checkout since-v1 --previous-tip "$since_v1_sha" 2>/dev/null)"
+since_c_raw="$("$mailbox" show since-same-commit "${since_out_c:0:7}")"
+contains "since section verdict: same commit" "$since_c_raw" "Same commit as v1."
+
+since_bad1_rc=0
+(cd "$since_repo" && "$mailbox" init since-bad-sha --cover "$work/cover.txt" --patches "$work/patches" \
+    --from author --version 2 --checkout since-v2-same --previous-tip "nothex") >/dev/null 2>&1 || since_bad1_rc=$?
+check "non-40-hex --previous-tip is refused with rc 2" "2" "$since_bad1_rc"
+check "non-40-hex --previous-tip writes no messages" "0" \
+    "$(find "$LKML_MAILBOX_ROOT/since-bad-sha" -name '*.msg' 2>/dev/null | wc -l)"
+
+since_bad2_rc=0
+(cd "$since_repo" && "$mailbox" init since-bad-nocheckout --cover "$work/cover.txt" --patches "$work/patches" \
+    --from author --version 2 --no-checkout --previous-tip "$since_v1_sha") >/dev/null 2>&1 || since_bad2_rc=$?
+check "--previous-tip with --no-checkout is refused with rc 1" "1" "$since_bad2_rc"
+check "--previous-tip with --no-checkout writes no messages" "0" \
+    "$(find "$LKML_MAILBOX_ROOT/since-bad-nocheckout" -name '*.msg' 2>/dev/null | wc -l)"
+
+since_bad3_sha="dddddddddddddddddddddddddddddddddddddddd"
+since_bad3_rc=0
+(cd "$since_repo" && "$mailbox" init since-bad-notfound --cover "$work/cover.txt" --patches "$work/patches" \
+    --from author --version 2 --checkout since-v2-same --previous-tip "$since_bad3_sha") >/dev/null 2>&1 || since_bad3_rc=$?
+check "a 40-hex --previous-tip not in the repo is refused with rc 1" "1" "$since_bad3_rc"
+check "unresolvable --previous-tip writes no messages" "0" \
+    "$(find "$LKML_MAILBOX_ROOT/since-bad-notfound" -name '*.msg' 2>/dev/null | wc -l)"
+
+since_bad4_rc=0
+(cd "$since_repo" && "$mailbox" init since-bad-v1 --cover "$work/cover.txt" --patches "$work/patches" \
+    --from author --checkout since-v1 --previous-tip "$since_v1_sha") >/dev/null 2>&1 || since_bad4_rc=$?
+check "--previous-tip on a v1 init is refused with rc 1" "1" "$since_bad4_rc"
+check "--previous-tip on a v1 init writes no messages" "0" \
+    "$(find "$LKML_MAILBOX_ROOT/since-bad-v1" -name '*.msg' 2>/dev/null | wc -l)"
 
 printf '\n== large body performance ==\n'
 # post's emptiness check once ran a whole-string glob substitution that walked
