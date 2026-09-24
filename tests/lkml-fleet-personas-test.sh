@@ -408,6 +408,79 @@ else
     ok "author.md no longer instructs inlining the whole series into one reply"
 fi
 
+# The six reviewer seats carry one byte-identical section on who hears
+# their review and what verdict they cast. The panel protocol has no
+# orchestrator: the author acts only once every Panel seat has replied on
+# the current version, so a reviewer that does not reply -- or replies
+# without a verdict -- stalls or falsely greens the round. Compared
+# against each other AND pinned on content, for the same reason as the
+# sections above.
+extract_verdict_section() {
+    awk '/^## Who hears your review, and your verdict$/{ f = 1; print; next }
+         f && /^## / { exit }
+         f { print }' "$1"
+}
+reviewers="architecture core docs newcomer security tests"
+verdict_baseline=""
+for name in $reviewers; do
+    f="$personas_dir/$name.md"
+    section="$(extract_verdict_section "$f")"
+    if [[ -z "$section" ]]; then
+        no "$name carries the verdict section" "no '## Who hears your review, and your verdict' heading"
+        continue
+    fi
+    if [[ -z "$verdict_baseline" ]]; then
+        verdict_baseline="$section"
+        ok "$name carries the verdict section (comparison baseline)"
+    elif [[ "$section" == "$verdict_baseline" ]]; then
+        ok "$name's verdict section matches the baseline"
+    else
+        no "$name's verdict section matches the baseline" "section text diverges"
+    fi
+    # Placed right before Triage: the heading that follows it is Triage.
+    next_heading="$(awk '/^## Who hears your review, and your verdict$/{ f = 1; next }
+                         f && /^## / { print; exit }' "$f")"
+    if [[ "$next_heading" == "## Triage the wake first" ]]; then
+        ok "$name's verdict section sits right before Triage the wake first"
+    else
+        no "$name's verdict section sits right before Triage the wake first" "next heading: '$next_heading'"
+    fi
+done
+for name in ci author distiller secretary pr-author; do
+    if [[ -z "$(extract_verdict_section "$personas_dir/$name.md")" ]]; then
+        ok "$name.md does not carry the reviewer verdict section"
+    else
+        no "$name.md does not carry the reviewer verdict section" "found the heading"
+    fi
+done
+if [[ -n "$verdict_baseline" ]]; then
+    # The section is flattened to one line so a needle may span a wrap.
+    flat="$(tr '\n' ' ' <<<"$verdict_baseline" | sed 's/  */ /g')"
+    # shellcheck disable=SC2016  # literal backticks in the needles
+    for needle in \
+        '`Author:`' \
+        '`To:` the Author' \
+        'Never rely on reply-all' \
+        '`X-Review-Target`' \
+        '`git rev-parse HEAD`' \
+        'LAST non-empty line' \
+        '`Reviewed-by: <your' \
+        '`Acked-by: <your' \
+        '`Tested-by: <your' \
+        '`Changes-requested`' \
+        '`Question`' \
+        '`NAK`' \
+        'Having nothing to add is' \
+        'does not carry forward'
+    do
+        if grep -qF -- "$needle" <<<"$flat"; then
+            ok "verdict section pins: $needle"
+        else
+            no "verdict section pins: $needle" "not found"
+        fi
+    done
+fi
+
 # pr-author: the fleet's in-cluster PR author. Its wake checklist IS the
 # round protocol (no orchestrator drives the rounds), so the strings
 # that carry the protocol are pinned, not just the frontmatter.

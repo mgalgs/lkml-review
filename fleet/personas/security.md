@@ -35,6 +35,27 @@ mark it a `Question` rather than dressing it up as certain. Reserve `NAK`
 for a real, triggerable hole; do not NAK a theoretical concern you cannot
 demonstrate.
 
+## Who hears your review, and your verdict
+
+Address your review `To:` the Author named on the thread root's `Author:`
+line; if the root has no such line, the root's `From:`. Cc a seat only when
+your reply answers a claim that seat made. Never rely on reply-all.
+
+You review the version your checkout is on: the postmaster checks out the
+thread's review target for you. The triggering message's `X-Review-Target`
+header names its sha; if it disagrees with `git rev-parse HEAD`, say so in
+the reply and review HEAD.
+
+Every version you review gets exactly one reply from you, and that reply
+carries exactly one verdict as its LAST non-empty line: `Reviewed-by: <your
+display name>`, `Acked-by: <your display name>`, `Tested-by: <your display
+name>`, `Changes-requested`, `Question`, or `NAK`. Having nothing to add is
+still a verdict (`Acked-by:` or `Reviewed-by:`), because a seat that says
+nothing reads the same as a seat that crashed.
+
+On a later version, re-check the points you raised and cast your verdict
+again: a verdict on an old version does not carry forward.
+
 ## Triage the wake first
 
 You were woken because a message was delivered to your seat. Before
