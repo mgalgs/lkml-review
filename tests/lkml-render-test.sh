@@ -903,6 +903,13 @@ contains "text: patch is numbered and links its parent" "$ttext" '== #2 · reply
 contains "text: reply carries its number, parent and depth" "$ttext" '== #3 · reply to #2 · depth 2'
 contains "text: patch header ends in its own short id" "$ttext" "== #2 · reply to #1 · depth 1 · id ${patch_id}"
 contains "text: reply header ends in the first 7 chars of its Message-ID" "$ttext" "== #3 · reply to #2 · depth 2 · id ${review_id:0:7}"
+onever_out="$work/onever.txt"
+python3 "$renderer" --text --version 1 "$LKML_MAILBOX_ROOT/render-fixture" > "$onever_out"
+if cmp -s "$onever_out" "$text_out"; then
+    ok "--version 1 of a single-version series is byte-identical to the full render"
+else
+    no "--version 1 of a single-version series is byte-identical to the full render"
+fi
 contains "text: From line carries persona, harness and model" "$ttext" '[persona: core · harness: test · model: fixture]'
 contains "text: tags line is plain text" "$ttext" 'Tags: Reviewed-by'
 contains "text: cover letter body is verbatim" "$ttext" 'fenced *markdown*'
@@ -1056,6 +1063,84 @@ contains "text: real series header counts patches and replies separately" "$t2" 
 # Two series dirs must not run together: a blank line separates them,
 # like the one between version sections within a series.
 if [[ -z "$(grep -B1 '^s-two v1$' "$text2" | head -n1)" ]]; then ok "text: series are separated by a blank line"; else no "text: series are separated by a blank line"; fi
+
+printf '\n== text mode: --version flag combinations ==\n'
+if python3 "$renderer" --version 1 "$LKML_MAILBOX_ROOT/render-fixture" >/dev/null 2>"$work/version-no-text.err"; then
+    no "--version without --text is refused"
+else
+    ok "--version without --text is refused"
+fi
+if [[ -s "$work/version-no-text.err" ]]; then ok "--version without --text explains itself"; else no "--version without --text explains itself"; fi
+
+if python3 "$renderer" --text --version 1 "$LKML_MAILBOX_ROOT/render-fixture" "$LKML_MAILBOX_ROOT/s-two" >/dev/null 2>"$work/version-two-dirs.err"; then
+    no "--version with two series dirs is refused"
+else
+    ok "--version with two series dirs is refused"
+fi
+if [[ -s "$work/version-two-dirs.err" ]]; then ok "--version with two series dirs explains itself"; else no "--version with two series dirs explains itself"; fi
+
+if python3 "$renderer" --text --version 9 "$LKML_MAILBOX_ROOT/render-fixture" >/dev/null 2>"$work/version-unknown.err"; then
+    no "an unknown --version is refused"
+else
+    ok "an unknown --version is refused"
+fi
+contains "the unknown-version error names the versions that exist" "$(<"$work/version-unknown.err")" "versions present: 1)"
+
+printf '\n== text mode: --version late replies ==\n'
+"$mailbox" init verflag --cover "$work/cover.txt" --patches "$work/patches" \
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
+vf_tree="$("$mailbox" tree verflag)"
+vf_p1="$(printf '%s\n' "$vf_tree" | awk '/\[PATCH v1 1\/2\]/{print $1}')"
+printf '%s\n' 'EARLY REPLY BEFORE V2 EXISTS' > "$work/vf-early.txt"
+"$mailbox" post verflag --from core --reply-to "$vf_p1" --file "$work/vf-early.txt" \
+    --harness test --model fixture >/dev/null 2>/dev/null
+"$mailbox" init verflag --cover "$work/cover.txt" --patches "$work/patches" \
+    --from author --harness test --model fixture --version 2 --no-checkout >/dev/null 2>/dev/null
+printf '%s\n' 'LATE REPLY FILED DURING V2' > "$work/vf-late.txt"
+"$mailbox" post verflag --from core --reply-to "$vf_p1" --file "$work/vf-late.txt" \
+    --harness test --model fixture >/dev/null 2>/dev/null
+
+vf_v1_out="$(python3 "$renderer" --text --version 1 "$LKML_MAILBOX_ROOT/verflag")"
+vf_v2_out="$(python3 "$renderer" --text --version 2 "$LKML_MAILBOX_ROOT/verflag")"
+
+contains "v1's own section carries both replies (structural home, regardless of when posted)" \
+    "$vf_v1_out" 'EARLY REPLY BEFORE V2 EXISTS'
+contains "v1's own section carries the late-posted reply too" "$vf_v1_out" 'LATE REPLY FILED DURING V2'
+case "$vf_v1_out" in
+    *'late replies'*) no "v1 has no earlier version to file a late-replies block against" ;;
+    *) ok "v1 has no earlier version to file a late-replies block against" ;;
+esac
+contains "v2's late-replies block header names v2 and the earlier thread" \
+    "$vf_v2_out" "late replies (posted during v2, filed on earlier versions' threads)"
+contains "v2's late block carries the reply posted during v2's window" \
+    "$vf_v2_out" 'LATE REPLY FILED DURING V2'
+case "$vf_v2_out" in
+    *'EARLY REPLY BEFORE V2 EXISTS'*) no "a reply posted before v2's cover is not in v2's late block" ;;
+    *) ok "a reply posted before v2's cover is not in v2's late block" ;;
+esac
+contains "the late entry's header carries 'in v1 thread'" "$vf_v2_out" '== late · in v1 thread · reply to '
+contains "the late entry's header names its parent's short id" "$vf_v2_out" "reply to ${vf_p1} ·"
+
+"$mailbox" init verflag3 --cover "$work/cover.txt" --patches "$work/patches" \
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
+vf3_tree="$("$mailbox" tree verflag3)"
+vf3_p1="$(printf '%s\n' "$vf3_tree" | awk '/\[PATCH v1 1\/2\]/{print $1}')"
+"$mailbox" init verflag3 --cover "$work/cover.txt" --patches "$work/patches" \
+    --from author --harness test --model fixture --version 2 --no-checkout >/dev/null 2>/dev/null
+"$mailbox" init verflag3 --cover "$work/cover.txt" --patches "$work/patches" \
+    --from author --harness test --model fixture --version 3 --no-checkout >/dev/null 2>/dev/null
+printf '%s\n' 'REPLY FILED AFTER V3 COVER' > "$work/vf3-late.txt"
+"$mailbox" post verflag3 --from core --reply-to "$vf3_p1" --file "$work/vf3-late.txt" \
+    --harness test --model fixture >/dev/null 2>/dev/null
+
+vf3_v2_out="$(python3 "$renderer" --text --version 2 "$LKML_MAILBOX_ROOT/verflag3")"
+vf3_v3_out="$(python3 "$renderer" --text --version 3 "$LKML_MAILBOX_ROOT/verflag3")"
+case "$vf3_v2_out" in
+    *'REPLY FILED AFTER V3 COVER'*) no "a v1-thread reply posted after v3's cover is not in v2's late block" ;;
+    *) ok "a v1-thread reply posted after v3's cover is not in v2's late block" ;;
+esac
+contains "a v1-thread reply posted after v3's cover is in v3's late block" \
+    "$vf3_v3_out" 'REPLY FILED AFTER V3 COVER'
 
 printf '\n== text mode: a body cannot forge a message header ==\n'
 # The 72-dash separator and the '== #' header line sit at column 0, so

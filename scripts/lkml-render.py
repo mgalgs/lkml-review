@@ -4,6 +4,7 @@ single-file HTML page, or as plain text for agents.
 
 Usage: lkml-render.py <series-dir> [<series-dir> ...] > out.html
        lkml-render.py --text <series-dir> [<series-dir> ...] > out.txt
+       lkml-render.py --text --version N <series-dir> > out.txt
 
 The HTML is one file: all markup and styles are inlined. The only
 external dependency is the typefaces, loaded from the Google Fonts
@@ -38,6 +39,15 @@ message bodies cut at their first diff --git line, so the commit
 message and diffstat stay and the diff goes (it lives in the series
 branch). The HTML path may be redesigned freely; --text must not
 change out from under the panel scripts.
+
+--text --version N restricts the render to one version's own section
+(exactly what the whole-series --text render prints for that version,
+byte for byte) plus, only when any exist, a late-replies block:
+messages that structurally belong to an earlier version's thread but
+were posted while vN was current -- a reviewer answering a still-open
+point on an old thread rather than the new one. Valid only with --text
+and exactly one SERIES_DIR; an unknown N refuses, naming the versions
+that do exist.
 
 A series dir is either $LKML_MAILBOX_ROOT/<series> (it holds cur/*.msg,
 the old layout) or a fork-sandbox agent-mail thread dir,
@@ -1869,22 +1879,23 @@ def text_body(m):
     return out
 
 
-def render_text_message(out, m, nums, depth, stop_ids=frozenset()):
-    """One message of the --text thread: separator, numbered header
-    ending in the message's own short id (the same 7-hex Message-ID
-    prefix the HTML render's line shows -- it goes last so every
-    existing substring match on the earlier fields still holds), the
-    From/Subject/Tags lines, then the body. `nums` maps id to
-    (number, parent number) from a pre-order walk, so this prints the
-    thread in the same order the HTML render nests it in. stop_ids is
-    every OTHER version's cover id (empty for the old layout): a fleet
-    thread's later versions are nested replies in the same tree, and
-    each version's own section prints only up to the next one's cover,
-    not into it."""
-    num, parent_num = nums[m["id"]]
-    rel = f" · reply to #{parent_num}" if parent_num else ""
+def render_text_message_body(out, m, header_line):
+    """The part of a --text message block after its header line:
+    separator, the given header line verbatim, the From/Subject/Tags/
+    Attachments lines, then the body. Shared by a numbered thread
+    message (render_text_message) and a late-reply entry
+    (render_text_late_message) -- only the header line differs between
+    the two, so it is a parameter rather than built here.
+
+    The body is indented under its header: a message block here is
+    the 72-dash separator, the header line, the From/Subject/Tags
+    lines, then the body, and a body that carried a line of 72
+    dashes and its own header-shaped line would otherwise read as a
+    second message. Every body line is prefixed, so the header
+    grammar stays unforgeable from the body; the prefix is uniform,
+    so the diffstat's fixed-width alignment survives it."""
     out.append("-" * 72)
-    out.append(f"== #{num}{rel} · depth {depth} · id {m['id'][:7]}")
+    out.append(header_line)
     line = f"From: {m['from']}"
     meta = []
     if m["persona"]:
@@ -1911,22 +1922,45 @@ def render_text_message(out, m, nums, depth, stop_ids=frozenset()):
         out.append("Tags: " + ", ".join(m["tags"]))
     if m["attachments"]:
         out.append("Attachments: " + ", ".join(a["ref"] for a in m["attachments"]))
-    # The body is indented under its header: a message block here is
-    # the 72-dash separator, the '== #' line, the From/Subject/Tags
-    # lines, then the body, and a body that carried a line of 72
-    # dashes and its own '== #99 ...' line would otherwise read as a
-    # second message. Every body line is prefixed, so the header
-    # grammar stays unforgeable from the body; the prefix is uniform,
-    # so the diffstat's fixed-width alignment survives it.
     body = text_body(m)
     if body:
         out.extend("  " + ln for ln in body.split("\n"))
     else:
         out.append("")
+
+
+def render_text_message(out, m, nums, depth, stop_ids=frozenset()):
+    """One message of the --text thread: a numbered header ending in
+    the message's own short id (the same 7-hex Message-ID prefix the
+    HTML render's line shows -- it goes last so every existing
+    substring match on the earlier fields still holds), then its body
+    via render_text_message_body. `nums` maps id to (number, parent
+    number) from a pre-order walk, so this prints the thread in the
+    same order the HTML render nests it in. stop_ids is every OTHER
+    version's cover id (empty for the old layout): a fleet thread's
+    later versions are nested replies in the same tree, and each
+    version's own section prints only up to the next one's cover, not
+    into it."""
+    num, parent_num = nums[m["id"]]
+    rel = f" · reply to #{parent_num}" if parent_num else ""
+    render_text_message_body(out, m, f"== #{num}{rel} · depth {depth} · id {m['id'][:7]}")
     for c in m["children"]:
         if c["id"] in stop_ids:
             continue
         render_text_message(out, c, nums, depth + 1, stop_ids)
+
+
+def render_text_late_message(out, m, home_version):
+    """One late-reply entry under a --version block: same body grammar
+    as render_text_message via render_text_message_body, but the header
+    names the earlier version whose thread this message structurally
+    belongs to (home_version) and its parent's short id instead of a
+    thread-local number. No recursion into m['children'] -- each late
+    child is itself a late message, filed and printed independently by
+    the late-reply filter, never nested here."""
+    render_text_message_body(
+        out, m,
+        f"== late · in v{home_version} thread · reply to {m['parent'][:7]} · depth {m['depth']} · id {m['id'][:7]}")
 
 
 def fit_tally_label(label, budget):
@@ -2001,12 +2035,120 @@ def render_text_reviewers(out, name, series_dir, reviewer_entries):
             out.append(f"    brief: {name}/personas/{r['persona']}.md")
 
 
+def compute_version_sections(series_dir, assume_root_version=None):
+    """Everything a --text render needs per version, computed once: the
+    mailbox, the cover/version bookkeeping render_text_series and
+    render_text_one_version both need, and per-version tally/reviewer
+    data. Shared so --version reuses the exact same per-version
+    computation the whole-series render does, rather than slicing that
+    render's text."""
+    name, msgs, _roots, all_version_roots = build(series_dir, assume_root_version)
+    covers = [m for m in all_version_roots
+              if is_cover_subject(m["subject"]) or m.get("assumed_cover")]
+    require_fleet_covers(series_dir, msgs, covers)
+    fleet_cover_ids = {c["id"] for c in covers if c.get("fleet")}
+    # One section per DISTINCT version, the same dedup render_series
+    # does for the HTML backend: the old layout guarantees one cover per
+    # version (lkml-mailbox.sh's init refuses a second), but the fleet
+    # store enforces nothing of the kind -- `mail reply --subject` takes
+    # any string, so a resend or a reviewer echoing the cover subject
+    # verbatim can produce a second cover at a version already open.
+    # Iterating `covers` directly would render that version's whole
+    # section twice, once per cover, with tallies that disagree because
+    # each cover's own children differ -- worse than picking one.
+    versions = sorted({c["version"] for c in covers})
+    version_data = {}
+    rendered_ids = set()
+    for v in versions:
+        cover = next(c for c in covers if c["version"] == v)
+        version_roots = [r for r in all_version_roots if r["version"] == v]
+        version_msgs = [m for root in version_roots
+                        for m in subtree_before(root, fleet_cover_ids)]
+        rendered_ids.update(m["id"] for m in version_msgs)
+        rows, personas = tally(cover, fleet_cover_ids)
+        reviewer_entries = reviewer_rollup(version_msgs, cover["persona"], rows)
+        # One matrix column per reviewer the box lists, same set and
+        # (alphabetical) order as the HTML table.
+        pcols = sorted(set(personas) | {r["persona"] for r in reviewer_entries})
+        version_data[v] = {
+            "cover": cover, "version_roots": version_roots,
+            "version_msgs": version_msgs, "rows": rows,
+            "personas": personas, "reviewer_entries": reviewer_entries,
+            "pcols": pcols,
+        }
+    return name, msgs, versions, version_data, fleet_cover_ids, rendered_ids
+
+
+def render_text_version_lines(series_dir, name, v, d, fleet_cover_ids):
+    """One version's own section, exactly as the whole-series --text
+    render prints it: counts header, tally, reviewers, results block if
+    any, then the numbered thread. `d` is version_data[v] from
+    compute_version_sections. Shared by render_text_series (the
+    whole-thread render) and render_text_one_version (--version N), so
+    a version's section is byte-identical either way."""
+    rows = d["rows"]
+    version_msgs = d["version_msgs"]
+    # The same counts the HTML header shows, computed the same way:
+    # patches from the tally's targets, replies as everything at
+    # depth >= 1 that is not a patch.
+    n_replies = sum(1 for m in version_msgs if m["depth"] >= 1 and not is_patch(m))
+    n_patches = len(rows) - 1
+    reviewer_entries = d["reviewer_entries"]
+    lines = [f"{name} v{v}",
+             f"{n_patches} patches · {n_replies} replies · {len(reviewer_entries)} reviewers",
+             ""]
+    render_text_tally(lines, rows, d["pcols"])
+    lines.append("")
+    if reviewer_entries:
+        render_text_reviewers(lines, name, series_dir, reviewer_entries)
+        lines.append("")
+    # The Results card's sections as a text block in the same
+    # position: bare 'results' header, then the section labels
+    # ('# Summary', '# Details') and the verbatim bodies. The
+    # labels sit at column 0 -- like the 'results' header and the
+    # message headers -- while every body line carries its
+    # two-space prefix, so a body line that reads '# Summary' or
+    # '# Details' cannot forge a label (the same rule that keeps a
+    # body line from forging a message header). An empty section
+    # omits its label and body, the way the HTML card omits its
+    # empty details fold. No links in text mode.
+    res = read_results(series_dir, v)
+    if res is not None:
+        lines.append("results")
+        if res[0]:
+            lines.append("# Summary")
+            lines.extend("  " + ln for ln in res[0].split("\n"))
+        if res[1]:
+            if res[0]:
+                lines.append("")
+            lines.append("# Details")
+            lines.extend("  " + ln for ln in res[1].split("\n"))
+        lines.append("")
+    # Number the thread pre-order, matching the HTML nesting order.
+    nums = {}
+    counter = [0]
+
+    def assign(m, parent_id):
+        counter[0] += 1
+        nums[m["id"]] = (counter[0], parent_id and nums[parent_id][0])
+        for c in m["children"]:
+            if c["id"] in fleet_cover_ids:
+                continue
+            assign(c, m["id"])
+
+    for root in d["version_roots"]:
+        assign(root, None)
+    for root in d["version_roots"]:
+        render_text_message(lines, root, nums, 0, fleet_cover_ids)
+    return lines
+
+
 def render_text_series(series_dir, assume_root_version=None):
     """One series dir as plain text: a header with the same counts the
     HTML header shows, then every message in thread order."""
-    name, msgs, roots, all_version_roots = build(series_dir, assume_root_version)
+    name, msgs, versions, version_data, fleet_cover_ids, rendered_ids = \
+        compute_version_sections(series_dir, assume_root_version)
     sections = []
-    rendered_ids = set()
     # The whole-series results file, if any: a 'series-summary' block
     # at the very top, before the first version section, with the same
     # column-0 labels / two-space body rules as the per-version
@@ -2024,85 +2166,60 @@ def render_text_series(series_dir, assume_root_version=None):
             lines.append("# Details")
             lines.extend("  " + ln for ln in series_res[1].split("\n"))
         sections.append("\n".join(lines))
-    covers = [m for m in all_version_roots
-              if is_cover_subject(m["subject"]) or m.get("assumed_cover")]
-    require_fleet_covers(series_dir, msgs, covers)
-    fleet_cover_ids = {c["id"] for c in covers if c.get("fleet")}
-    # One section per DISTINCT version, the same dedup render_series
-    # does for the HTML backend: the old layout guarantees one cover per
-    # version (lkml-mailbox.sh's init refuses a second), but the fleet
-    # store enforces nothing of the kind -- `mail reply --subject` takes
-    # any string, so a resend or a reviewer echoing the cover subject
-    # verbatim can produce a second cover at a version already open.
-    # Iterating `covers` directly would render that version's whole
-    # section twice, once per cover, with tallies that disagree because
-    # each cover's own children differ -- worse than picking one.
-    versions = sorted({c["version"] for c in covers})
     for v in versions:
-        cover = next(c for c in covers if c["version"] == v)
-        version_roots = [r for r in all_version_roots if r["version"] == v]
-        version_msgs = [m for root in version_roots
-                        for m in subtree_before(root, fleet_cover_ids)]
-        rendered_ids.update(m["id"] for m in version_msgs)
-        rows, personas = tally(cover, fleet_cover_ids)
-        # The same counts the HTML header shows, computed the same way:
-        # patches from the tally's targets, replies as everything at
-        # depth >= 1 that is not a patch.
-        n_replies = sum(1 for m in version_msgs if m["depth"] >= 1 and not is_patch(m))
-        n_patches = len(rows) - 1
-        reviewer_entries = reviewer_rollup(version_msgs, cover["persona"], rows)
-        # One matrix column per reviewer the box lists, same set and
-        # (alphabetical) order as the HTML table.
-        pcols = sorted(set(personas) | {r["persona"] for r in reviewer_entries})
-        lines = [f"{name} v{v}",
-                 f"{n_patches} patches · {n_replies} replies · {len(reviewer_entries)} reviewers",
-                 ""]
-        render_text_tally(lines, rows, pcols)
-        lines.append("")
-        if reviewer_entries:
-            render_text_reviewers(lines, name, series_dir, reviewer_entries)
-            lines.append("")
-        # The Results card's sections as a text block in the same
-        # position: bare 'results' header, then the section labels
-        # ('# Summary', '# Details') and the verbatim bodies. The
-        # labels sit at column 0 -- like the 'results' header and the
-        # message headers -- while every body line carries its
-        # two-space prefix, so a body line that reads '# Summary' or
-        # '# Details' cannot forge a label (the same rule that keeps a
-        # body line from forging a message header). An empty section
-        # omits its label and body, the way the HTML card omits its
-        # empty details fold. No links in text mode.
-        res = read_results(series_dir, v)
-        if res is not None:
-            lines.append("results")
-            if res[0]:
-                lines.append("# Summary")
-                lines.extend("  " + ln for ln in res[0].split("\n"))
-            if res[1]:
-                if res[0]:
-                    lines.append("")
-                lines.append("# Details")
-                lines.extend("  " + ln for ln in res[1].split("\n"))
-            lines.append("")
-        # Number the thread pre-order, matching the HTML nesting order.
-        nums = {}
-        counter = [0]
-
-        def assign(m, parent_id):
-            counter[0] += 1
-            nums[m["id"]] = (counter[0], parent_id and nums[parent_id][0])
-            for c in m["children"]:
-                if c["id"] in fleet_cover_ids:
-                    continue
-                assign(c, m["id"])
-
-        for root in version_roots:
-            assign(root, None)
-        for root in version_roots:
-            render_text_message(lines, root, nums, 0, fleet_cover_ids)
-        sections.append("\n".join(lines))
+        sections.append("\n".join(render_text_version_lines(series_dir, name, v, version_data[v], fleet_cover_ids)))
     require_full_coverage(series_dir, msgs, rendered_ids)
     return "\n\n".join(sections) + ("\n" if sections else "")
+
+
+def render_text_late_replies(msgs, versions, version_data, home_version, v):
+    """Messages that render in an EARLIER version's section (their
+    structural home) but were posted while v was the current version:
+    seq > cover(v).seq and, when a later version exists, seq <
+    cover(v+1).seq. X-Seq is a nanosecond epoch stamped at post time
+    (old layout) or the file's arrival-order prefix (fleet layout, via
+    read_fleet_msg/build_fleet_layout) -- either way strictly
+    increasing within one mailbox, so seq order is post order."""
+    idx = versions.index(v)
+    lo = version_data[v]["cover"]["seq"]
+    hi = version_data[versions[idx + 1]]["cover"]["seq"] if idx + 1 < len(versions) else None
+    late = [m for m in msgs.values()
+            if home_version.get(m["id"]) is not None
+            and home_version[m["id"]] < v
+            and m["seq"] > lo
+            and (hi is None or m["seq"] < hi)]
+    late.sort(key=lambda m: m["seq"])
+    return late
+
+
+def render_text_one_version(series_dir, version, assume_root_version=None):
+    """--text --version N: that version's own section (byte-identical
+    to the corresponding slice of the full --text render), followed,
+    only when any exist, by a block of messages filed on an earlier
+    version's thread while N was current (render_text_late_replies) --
+    a reviewer answering a still-open point on an older thread files
+    its reply there, and dropping it would report a clean version that
+    is not clean."""
+    name, msgs, versions, version_data, fleet_cover_ids, rendered_ids = \
+        compute_version_sections(series_dir, assume_root_version)
+    if version not in version_data:
+        raise ValueError(
+            f"{series_dir}: no v{version} in this series (versions present: "
+            + ", ".join(str(v) for v in versions) + ")"
+        )
+    home_version = {}
+    for v in versions:
+        for m in version_data[v]["version_msgs"]:
+            home_version[m["id"]] = v
+    lines = render_text_version_lines(series_dir, name, version, version_data[version], fleet_cover_ids)
+    late = render_text_late_replies(msgs, versions, version_data, home_version, version)
+    if late:
+        lines.append("")
+        lines.append(f"late replies (posted during v{version}, filed on earlier versions' threads)")
+        for m in late:
+            render_text_late_message(lines, m, home_version[m["id"]])
+    require_full_coverage(series_dir, msgs, rendered_ids)
+    return "\n".join(lines) + "\n"
 
 
 
@@ -2125,14 +2242,26 @@ def main(argv=None):
                              "(for agents; bodies indented under their headers, and "
                              "[PATCH] bodies keep the commit message and diffstat, "
                              "the diff cut at the first diff --git line)")
+    parser.add_argument("--version", type=int, metavar="N",
+                        help="with --text and exactly one SERIES_DIR: print only "
+                             "that version's own section, plus, when any exist, "
+                             "the late-replies block for messages filed on an "
+                             "earlier version's thread during vN's window")
     args = parser.parse_args(argv)
+    if args.version is not None and not args.text:
+        parser.error("--version is only valid with --text")
     if args.text:
         # One flag, one backend: plain text to stdout, UTF-8, no ANSI.
         # -o is the HTML interface and is refused, not silently ignored;
         # --title is likewise ignored here.
         if args.output:
             parser.error("--text renders to stdout and cannot be combined with -o/--output")
+        if args.version is not None and len(args.series_dirs) != 1:
+            parser.error("--version takes exactly one SERIES_DIR")
         sys.stdout.reconfigure(encoding="utf-8")
+        if args.version is not None:
+            sys.stdout.write(render_text_one_version(args.series_dirs[0], args.version, args.assume_root_version))
+            return
         parts = [render_text_series(d, args.assume_root_version).rstrip("\n")
                  for d in args.series_dirs]
         # A blank line between series, like the one between version
