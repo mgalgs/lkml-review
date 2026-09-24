@@ -297,8 +297,21 @@ if [[ "${1-}" == "fleet" && "${2-}" == "expand" ]]; then
 fi
 if [[ "${1-}" == "mail" ]]; then
     printf '%s\n' "$*" >> "$STUB_CAPTURE_DIR/argv"
-    id="stub-$(printf '%s' "$*" | cksum | awk '{print $1}')-$$"
     verb="${2-}"; [[ "$verb" == "--remote" ]] && verb="${3-}"
+    if [[ "$verb" == "list" ]]; then
+        # STUB_LIST_EXIT/STUB_LIST_STDERR/STUB_LIST_JSON let a test pick
+        # the lookup's canned answer per call; unset STUB_LIST_EXIT (or
+        # 0) succeeds and prints STUB_LIST_JSON (default "[]", i.e. no
+        # match), a nonzero STUB_LIST_EXIT fails with STUB_LIST_STDERR
+        # on stderr and nothing on stdout.
+        if (( "${STUB_LIST_EXIT:-0}" != 0 )); then
+            printf '%s\n' "${STUB_LIST_STDERR:-stub: mail list failed}" >&2
+            exit "${STUB_LIST_EXIT}"
+        fi
+        printf '%s' "${STUB_LIST_JSON-[]}"
+        exit 0
+    fi
+    id="stub-$(printf '%s' "$*" | cksum | awk '{print $1}')-$$"
     [[ "$verb" == "send" || "$verb" == "reply" ]] || { echo "Error: unexpected stub mail verb: $*" >&2; exit 1; }
     if [[ "$verb" == "send" ]]; then
         echo "stub fork-sandbox: sent $id as a new thread" >&2
@@ -1117,6 +1130,7 @@ kick_range="master...topic"
 kick() {
     rm -f -- "$capture_dir/argv"
     k_out="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" STUB_EXPAND_LOG="$expand_log" \
+        STUB_LIST_JSON="${STUB_LIST_JSON-[]}" STUB_LIST_EXIT="${STUB_LIST_EXIT-0}" STUB_LIST_STDERR="${STUB_LIST_STDERR-}" \
         "$kickoff" "$project_dir" "$kick_range" "$@" 2>&1)"
     k_rc=$?
     k_argv="$(cat "$capture_dir/argv" 2>/dev/null || true)"
@@ -1127,6 +1141,20 @@ refused() {
     if (( k_rc != 0 )); then ok "$label: exits non-zero"; else no "$label: exits non-zero" "exit 0: $k_out"; fi
     contains "$label: says why" "$k_out" "$needle"
     if [[ -z "$k_argv" ]]; then ok "$label: ran no fork-sandbox command"; else no "$label: ran no fork-sandbox command" "$k_argv"; fi
+}
+# refused_after_lookup is refused()'s twin for a refusal that happens
+# AFTER the --unless-exists lookup itself ran (and so legitimately left
+# a `mail list` line in the captured argv): it asserts the same failure
+# and message, but that no `mail send`/`mail reply` line was posted,
+# rather than that argv is empty outright.
+refused_after_lookup() {
+    local label="$1" needle="$2"
+    if (( k_rc != 0 )); then ok "$label: exits non-zero"; else no "$label: exits non-zero" "exit 0: $k_out"; fi
+    contains "$label: says why" "$k_out" "$needle"
+    case "$k_argv" in
+        *"mail send"*|*"mail reply"*) no "$label: sent nothing" "$k_argv" ;;
+        *) ok "$label: sent nothing" ;;
+    esac
 }
 kick_base=(--from '@author' --to '@lkml-panel' --subject 'subj')
 rt_tip="$(git -C "$project_dir" rev-parse topic)"
@@ -1216,6 +1244,116 @@ refused "--unless-exists without --review-target" "--unless-exists requires --re
 kick "${kick_base[@]}" --subject '[PATCH v3 0/2] improve the thing' --focus 'patch 2 only' \
     --template "$focused_template" --review-target "topic:$rt_tip" --unless-exists --send
 refused "--unless-exists with a focused template refuses via the existing FOCUS+target check" "fork-sandbox mail grant"
+
+printf '\n== --unless-exists lookup: no match sends exactly as without the flag ==\n'
+# Each kick() run gets its own tmpdir, so the --body <path> token differs
+# between the two invocations even when the rest of the composed command
+# is identical; strip it (to a fixed placeholder) before comparing.
+strip_body_path() { sed -E 's/--body [^ ]+/--body BODY/' <<<"$1"; }
+STUB_LIST_JSON='[]'
+kick "${kick_base[@]}" --review-target "topic:$rt_tip" --send
+without_unless_send="$(strip_body_path "$(grep -- '^mail send' <<<"$k_argv")")"
+kick "${kick_base[@]}" --review-target "topic:$rt_tip" --unless-exists --send
+check "no match: exits 0" "0" "$k_rc"
+with_unless_send="$(strip_body_path "$(grep -- '^mail send' <<<"$k_argv")")"
+check "no match: the composed mail send argv is identical with and without --unless-exists" \
+    "$without_unless_send" "$with_unless_send"
+
+printf '\n== --unless-exists lookup: the filter argv sent to `fork-sandbox mail list` ==\n'
+kick "${kick_base[@]}" --header 'X-Preview-PR: 42' --review-target "topic:$rt_tip" --unless-exists --send
+list_line="$(grep -m1 -- '^mail list' <<<"$k_argv")"
+contains "the lookup argv opens with mail list --json" "$list_line" "mail list --json"
+contains "the lookup argv carries every --header given on the command line" "$list_line" "--header X-Preview-PR: 42"
+contains "the lookup argv carries X-Review-Target-Set: <branch> <sha>" "$list_line" "--header X-Review-Target-Set: topic $rt_tip"
+kick "${kick_base[@]}" --remote --review-target "topic:$rt_tip" --unless-exists --send
+list_line_remote="$(grep -m1 -- '^mail' <<<"$k_argv")"
+contains "--remote is passed through to the lookup in the same position as send" "$list_line_remote" "mail --remote list --json"
+contains "--remote is also passed through to the send" "$k_argv" "mail --remote send"
+
+printf '\n== --unless-exists lookup: one match skips the send ==\n'
+STUB_LIST_JSON="$(cat <<JSON
+[{"thread":"T1","messages":3,"subject":"s","from":"@author","date":"Mon, 01 Sep 2025 10:00:00 +0000","last_date":"Mon, 01 Sep 2025 10:00:00 +0000","root_headers":[["x-review-target-set","topic $rt_tip"]],"review_target":{"branch":"topic","sha":"$rt_tip","version":1}}]
+JSON
+)"
+rm -f -- "$capture_dir/argv"
+one_match_stderr_file="$work/one-match.stderr"
+one_match_out="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" STUB_EXPAND_LOG="$expand_log" \
+    STUB_LIST_JSON="$STUB_LIST_JSON" \
+    "$kickoff" "$project_dir" "$kick_range" "${kick_base[@]}" --review-target "topic:$rt_tip" --unless-exists --send \
+    2>"$one_match_stderr_file")"
+one_match_rc=$?
+one_match_stderr="$(cat "$one_match_stderr_file")"
+one_match_argv="$(cat "$capture_dir/argv" 2>/dev/null || true)"
+check "one match (case-insensitive header name): exits 0" "0" "$one_match_rc"
+check "one match: prints only the thread id, alone, on stdout" "T1" "$one_match_out"
+contains "one match: a Skipped line on stderr" "$one_match_stderr" "Skipped: thread T1 already exists for topic $rt_tip with the same headers; nothing sent."
+case "$one_match_argv" in
+    *"mail send"*|*"mail reply"*) no "one match: nothing sent" "$one_match_argv" ;;
+    *) ok "one match: nothing sent" ;;
+esac
+
+printf '\n== --unless-exists lookup: two matches choose the newest and warn about both ==\n'
+STUB_LIST_JSON="$(cat <<JSON
+[{"thread":"T-OLD","messages":1,"subject":"s","from":"@author","date":"Mon, 01 Sep 2025 09:00:00 +0000","last_date":"Mon, 01 Sep 2025 09:00:00 +0000","root_headers":[["X-Review-Target-Set","topic $rt_tip"]],"review_target":null},{"thread":"T-NEW","messages":1,"subject":"s","from":"@author","date":"Mon, 01 Sep 2025 12:00:00 +0000","last_date":"Mon, 01 Sep 2025 12:00:00 +0000","root_headers":[["X-Review-Target-Set","topic $rt_tip"]],"review_target":null}]
+JSON
+)"
+rm -f -- "$capture_dir/argv"
+two_match_stderr_file="$work/two-match.stderr"
+two_match_out="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" STUB_EXPAND_LOG="$expand_log" \
+    STUB_LIST_JSON="$STUB_LIST_JSON" \
+    "$kickoff" "$project_dir" "$kick_range" "${kick_base[@]}" --review-target "topic:$rt_tip" --unless-exists --send \
+    2>"$two_match_stderr_file")"
+two_match_rc=$?
+two_match_stderr="$(cat "$two_match_stderr_file")"
+two_match_argv="$(cat "$capture_dir/argv" 2>/dev/null || true)"
+check "two matches: exits 0" "0" "$two_match_rc"
+check "two matches: prints the newest thread id, alone, on stdout" "T-NEW" "$two_match_out"
+contains "two matches: the Warning line names T-OLD" "$two_match_stderr" "T-OLD"
+contains "two matches: the Warning line names T-NEW" "$two_match_stderr" "T-NEW"
+contains "two matches: the Skipped line names the chosen (newest) id" "$two_match_stderr" "Skipped: thread T-NEW"
+case "$two_match_argv" in
+    *"mail send"*|*"mail reply"*) no "two matches: nothing sent" "$two_match_argv" ;;
+    *) ok "two matches: nothing sent" ;;
+esac
+
+printf '\n== --unless-exists lookup: a thread missing a filter header means an old fork-sandbox -- refuse, never fall back to sending ==\n'
+STUB_LIST_JSON="$(cat <<JSON
+[{"thread":"T-STALE","messages":1,"subject":"s","from":"@author","date":"Mon, 01 Sep 2025 09:00:00 +0000","last_date":"Mon, 01 Sep 2025 09:00:00 +0000","root_headers":[["Subject","unrelated"]],"review_target":null}]
+JSON
+)"
+kick "${kick_base[@]}" --review-target "topic:$rt_tip" --unless-exists --send
+refused_after_lookup "a returned thread missing the requested headers" "the header filter is not supported by this fork-sandbox"
+
+printf '\n== --unless-exists lookup: non-JSON list output is refused, not treated as no-match ==\n'
+STUB_LIST_JSON='not json at all'
+kick "${kick_base[@]}" --review-target "topic:$rt_tip" --unless-exists --send
+refused_after_lookup "non-JSON list output" "did not print a JSON array"
+STUB_LIST_JSON='{"not":"an array"}'
+kick "${kick_base[@]}" --review-target "topic:$rt_tip" --unless-exists --send
+refused_after_lookup "valid JSON that is not an array" "did not print a JSON array"
+
+printf '\n== --unless-exists lookup: `mail list` exiting nonzero is refused, quoting its stderr ==\n'
+STUB_LIST_JSON=''
+STUB_LIST_EXIT=1
+STUB_LIST_STDERR='stub: mail store unreachable'
+kick "${kick_base[@]}" --review-target "topic:$rt_tip" --unless-exists --send
+refused_after_lookup "mail list exiting nonzero" "fork-sandbox mail list failed: stub: mail store unreachable"
+STUB_LIST_EXIT=0
+STUB_LIST_STDERR=''
+
+printf '\n== --unless-exists with --patches: a match sends no cover and no per-patch replies ==\n'
+STUB_LIST_JSON="$(cat <<JSON
+[{"thread":"T-PATCHES","messages":1,"subject":"s","from":"@author","date":"Mon, 01 Sep 2025 09:00:00 +0000","last_date":"Mon, 01 Sep 2025 09:00:00 +0000","root_headers":[["X-Review-Target-Set","topic $rt_tip"]],"review_target":null}]
+JSON
+)"
+kick "${kick_base[@]}" --review-target "topic:$rt_tip" --unless-exists --patches --send
+check "--unless-exists --patches with a match exits 0" "0" "$k_rc"
+contains "the lookup still ran with --patches" "$k_argv" "mail list --json"
+case "$k_argv" in
+    *"mail send"*|*"mail reply"*) no "--unless-exists --patches with a match: no cover, no per-patch replies" "$k_argv" ;;
+    *) ok "--unless-exists --patches with a match: no cover, no per-patch replies" ;;
+esac
+STUB_LIST_JSON='[]'
 
 printf '\n== --context-secret: forwarded to the cover only ==\n'
 kick "${kick_base[@]}" --allow-namespace example-ns --reach-probe 'svc-a.example-ns.svc.cluster.local:8001' \

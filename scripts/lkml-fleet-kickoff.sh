@@ -1291,6 +1291,110 @@ done
 cover_cmd+=(--subject "$subject" --body "$body_file")
 
 if (( send )); then
+    # --unless-exists: look up whether a thread already exists for this
+    # exact review before doing anything else. Run last, immediately
+    # before the send, so a kickoff that would be refused anyway is
+    # refused for its own reason rather than skipped by this check.
+    if (( unless_exists )); then
+        exists_filters=("${headers[@]}" "X-Review-Target-Set: $review_target_branch $review_target_sha")
+        exists_list_cmd=(fork-sandbox mail "${remote_args[@]}" list --json)
+        for exists_filter in "${exists_filters[@]}"; do
+            exists_list_cmd+=(--header "$exists_filter")
+        done
+        exists_err_file="$tmpdir/unless-exists-list-stderr"
+        if ! exists_json="$("${exists_list_cmd[@]}" 2>"$exists_err_file")"; then
+            echo "Error: fork-sandbox mail list failed: $(cat "$exists_err_file")" >&2
+            exit 1
+        fi
+        # The JSON parse and the header-carrying check both run here,
+        # inline, on stdin/argv only -- never by interpolating the
+        # lookup's output into Python source. Distrust is the point: an
+        # old fork-sandbox that ignores `list`'s filter arguments
+        # returns threads that do not actually carry every filter
+        # header, which must refuse rather than read as "no match" --
+        # a silent skip there is the false green CLAUDE.md warns about,
+        # a kickoff CI believes ran when it did not.
+        exists_result="$(python3 -c '
+import json, sys
+from email.utils import parsedate_to_datetime
+
+filters = []
+for raw in sys.argv[1:]:
+    name, _, value = raw.partition(": ")
+    filters.append((name.strip().lower(), value.strip()))
+
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("BADJSON")
+    sys.exit(0)
+if not isinstance(data, list):
+    print("BADJSON")
+    sys.exit(0)
+
+bad = False
+matches = []
+for elem in data:
+    if not isinstance(elem, dict):
+        bad = True
+        continue
+    hdr_map = {}
+    for pair in (elem.get("root_headers") or []):
+        if isinstance(pair, list) and len(pair) == 2:
+            key = str(pair[0]).strip().lower()
+            hdr_map.setdefault(key, []).append(str(pair[1]).strip())
+    ok = True
+    for name, value in filters:
+        if value not in hdr_map.get(name, []):
+            ok = False
+            break
+    if not ok:
+        bad = True
+        continue
+    matches.append(elem)
+
+if bad:
+    print("BADFILTER")
+    sys.exit(0)
+if not matches:
+    print("NOMATCH")
+    sys.exit(0)
+
+def sort_key(elem):
+    try:
+        return parsedate_to_datetime(str(elem.get("date") or "")).timestamp()
+    except Exception:
+        return float("-inf")
+
+matches.sort(key=sort_key, reverse=True)
+print("MATCH")
+for m in matches:
+    print(m.get("thread", ""))
+' "${exists_filters[@]}" <<<"$exists_json")"
+        exists_status="$(head -n1 <<<"$exists_result")"
+        case "$exists_status" in
+            BADJSON)
+                echo "Error: fork-sandbox mail list --json did not print a JSON array; nothing sent." >&2
+                exit 1 ;;
+            BADFILTER)
+                echo "Error: fork-sandbox mail list returned a thread without the requested headers; the header filter is not supported by this fork-sandbox (upgrade it). Nothing sent." >&2
+                exit 1 ;;
+            MATCH)
+                mapfile -t exists_threads < <(tail -n +2 <<<"$exists_result")
+                exists_chosen="${exists_threads[0]}"
+                if (( ${#exists_threads[@]} > 1 )); then
+                    exists_joined="$(IFS=', '; echo "${exists_threads[*]}")"
+                    echo "Warning: ${#exists_threads[@]} threads match --unless-exists for $review_target_branch $review_target_sha with the same headers: $exists_joined; choosing the newest, $exists_chosen." >&2
+                fi
+                printf '%s\n' "$exists_chosen"
+                echo "Skipped: thread $exists_chosen already exists for $review_target_branch $review_target_sha with the same headers; nothing sent." >&2
+                exit 0 ;;
+            NOMATCH) : ;;
+            *)
+                echo "Error: fork-sandbox mail list --json did not print a JSON array; nothing sent." >&2
+                exit 1 ;;
+        esac
+    fi
     if (( post_patches )); then
         # Command substitution only captures stdout, so the transport's
         # human-readable "sent ..." line on stderr still reaches the
