@@ -1385,6 +1385,202 @@ kickoff_header="$(sed -n '2,/^set -euo/p' "$kickoff")"
 contains "the LOCAL ONLY paragraph says --remote still never talks to GitHub" "$kickoff_header" "With --remote the script still never talks to"
 contains "the LOCAL ONLY paragraph says the mail client reaches the mail API" "$kickoff_header" "reaches the mail API"
 
+printf '\n== roster templates: fixtures ==\n'
+rdir="$work/roster"; mkdir -p -- "$rdir"
+cat > "$rdir/pr-review.md" <<'TPL'
+<!-- fixture roster template; ${PANEL} in this comment is not a placeholder use -->
+Author: ${AUTHOR}
+Panel: ${PANEL}
+Secretary: ${SECRETARY}
+Limit: ${VERSION_LIMIT}
+Frozen: ${FROZEN_HEAD}
+Branch: ${BRANCH} Base: ${BASE}
+Summary: ${SUMMARY}
+TPL
+cat > "$rdir/pr-review.roster" <<'RST'
+# fixture roster: defaults for pr-review.md
+
+AUTHOR=@ex-author
+PANEL=@rev-a, @rev-b,@rev-a,@rev-c
+SECRETARY=@ex-secretary
+  VERSION_LIMIT=3
+RST
+printf 'Panel: ${PANEL}\nSummary: ${SUMMARY}\n' > "$rdir/panel-only.md"
+printf 'Author: ${AUTHOR}\nPanel: ${PANEL}\n' > "$rdir/no-roster-file.md"
+printf 'Author: ${AUTHOR}\nPanel: ${PANEL}\n' > "$rdir/partial.md"
+printf 'PANEL=@rev-a\n' > "$rdir/partial.roster"
+printf 'Author: ${AUTHOR}\nSummary: ${SUMMARY}\n' > "$rdir/author-only.md"
+printf 'Frozen: ${FROZEN_HEAD}\nSummary: ${SUMMARY}\n' > "$rdir/frozen-only.md"
+printf '<!-- only a comment mentions ${PANEL} -->\nSummary: ${SUMMARY}\n' > "$rdir/comment-only.md"
+printf 'Panel: ${PANEL}\n' > "$rdir/bad-key.md"
+printf 'PANEL=@rev-a\nCOLOR=blue\n' > "$rdir/bad-key.roster"
+printf 'Panel: ${PANEL}\n' > "$rdir/bad-line.md"
+printf 'PANEL=@rev-a\nnot a roster line\n' > "$rdir/bad-line.roster"
+printf 'Panel: ${PANEL}\n' > "$rdir/dup-key.md"
+printf 'PANEL=@rev-a\nPANEL=@rev-b\n' > "$rdir/dup-key.roster"
+printf 'Panel: ${PANEL}\n' > "$rdir/not-sourced.md"
+printf 'PANEL=@rev-a$(touch %s/sourced-marker)\n' "$rdir" > "$rdir/not-sourced.roster"
+printf 'Panel: ${PANEL}\nAuthor: ${AUTHOR}\n' > "$rdir/no-md-suffix"
+printf 'PANEL=@rev-a\nAUTHOR=@ex-author\n' > "$rdir/no-md-suffix.roster"
+rt_arg="topic:$rt_tip"
+rkick=(--from '@ci-example' --subject 'subj')
+
+printf '\n== roster templates: defaults come from the .roster sibling ==\n'
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --summary 'sum text'
+check "a roster template composes with no --to" "0" "$k_rc"
+contains "the printed cover's --to is the de-duplicated panel, first-seen order" "$k_out" '--to @rev-a\,@rev-b\,@rev-c'
+contains "the printed cover is stamped X-Seats exactly as --seats would" "$k_out" 'X-Seats:\ @rev-a\,\ @rev-b\,\ @rev-c'
+r_body="$(cat "$(grep -o -- '--body [^ ]*' <<<"$k_out" | awk '{print $2}')" 2>/dev/null)"
+contains "\${AUTHOR} fills from the roster file" "$r_body" "Author: @ex-author"
+contains "\${PANEL} fills comma-space, de-duplicated" "$r_body" "Panel: @rev-a, @rev-b, @rev-c"
+contains "\${SECRETARY} fills from the roster file" "$r_body" "Secretary: @ex-secretary"
+contains "\${VERSION_LIMIT} fills from the roster file (indented line, trimmed)" "$r_body" "Limit: 3"
+contains "\${FROZEN_HEAD} fills with the --review-target sha" "$r_body" "Frozen: $rt_tip"
+contains "\${SUMMARY} still fills" "$r_body" "Summary: sum text"
+case "$r_body" in
+    *'${'*) no "the roster body has no leftover placeholders" "$r_body" ;;
+    *) ok "the roster body has no leftover placeholders" ;;
+esac
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --send
+check "--send with a roster template exits 0" "0" "$k_rc"
+contains "the sent cover: To: is the panel, X-Seats follows it, then the review target" "$k_argv" \
+    "mail send --from @ci-example --to @rev-a,@rev-b,@rev-c --header X-Seats: @rev-a, @rev-b, @rev-c --review-target $rt_arg --subject"
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --patches --send
+case "$(grep -- '^mail reply' <<<"$k_argv")" in
+    *"X-Seats"*|*"rev-a"*) no "no per-patch reply carries the roster" "$k_argv" ;;
+    *) ok "no per-patch reply carries the roster" ;;
+esac
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --remote --send
+contains "--remote composes with a roster template" "$k_argv" "mail --remote send --from @ci-example --to @rev-a,@rev-b,@rev-c"
+kick "${rkick[@]}" --template "$rdir/no-md-suffix" --review-target "$rt_arg"
+check "a template with no .md suffix looks for <template>.roster" "0" "$k_rc"
+
+printf '\n== roster templates: flags override the roster file ==\n'
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" \
+    --author '@new-author' --panel '@p1, @p2' --secretary '@new-sec' --version-limit 9
+check "a fully overridden roster composes" "0" "$k_rc"
+contains "--panel overrides To:" "$k_out" '--to @p1\,@p2 '
+contains "--panel overrides X-Seats" "$k_out" 'X-Seats:\ @p1\,\ @p2'
+r_body="$(cat "$(grep -o -- '--body [^ ]*' <<<"$k_out" | awk '{print $2}')" 2>/dev/null)"
+contains "--author overrides" "$r_body" "Author: @new-author"
+contains "--panel overrides" "$r_body" "Panel: @p1, @p2"
+contains "--secretary overrides" "$r_body" "Secretary: @new-sec"
+contains "--version-limit overrides" "$r_body" "Limit: 9"
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --version-limit 9
+r_body="$(cat "$(grep -o -- '--body [^ ]*' <<<"$k_out" | awk '{print $2}')" 2>/dev/null)"
+contains "an un-overridden key keeps its roster default" "$r_body" "Author: @ex-author"
+contains "the overridden key changes alone" "$r_body" "Limit: 9"
+kick "${rkick[@]}" --template "$rdir/no-roster-file.md" --author '@a1' --panel '@p1'
+check "no .roster sibling works when every needed value came from flags" "0" "$k_rc"
+kick "${rkick[@]}" --template "$rdir/panel-only.md" --panel '@p1'
+check "a \${PANEL}-only template needs only --panel" "0" "$k_rc"
+kick "${rkick[@]}" --template "$rdir/comment-only.md" --to '@x'
+check "a \${PANEL} that only a comment mentions is not a roster template" "0" "$k_rc"
+
+printf '\n== roster templates: refusals ==\n'
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --to '@lkml-panel' --send
+refused "--to with a roster template" "two sources for one roster"
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --seats '@ci' --send
+refused "--seats with a roster template" "--seats given but template"
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --ci-first '@ci' --send
+refused "--ci-first with a roster template" "--ci-first cannot be combined with roster template"
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --cc '@observer' --send
+refused "--cc with a roster template" "--cc cannot be combined with roster template"
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --author 'pr-author' --send
+refused "an address with no @" "roster AUTHOR 'pr-author' is not an address"
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --author '@Upper' --send
+refused "an uppercase address" "roster AUTHOR '@Upper' is not an address"
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --secretary '@-lead' --send
+refused "an address starting with a dash" "roster SECRETARY '@-lead' is not an address"
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --panel '@ok,not-an-addr' --send
+refused "a panel entry that is not an address" "roster PANEL entry 'not-an-addr' is not an address"
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --panel '@rev-a,,@rev-b' --send
+refused "an empty panel entry" "has an empty entry"
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --panel '@rev-a,@rev-b,' --send
+refused "a trailing comma in the panel" "has an empty entry"
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --panel ' ' --send
+refused "a blank panel" "roster PANEL is empty"
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --panel '@rev-a,@ex-author' --send
+refused "a panel containing the author (from the roster file)" "also the AUTHOR"
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --panel '@rev-a,@ex-secretary' --send
+refused "a panel containing the secretary (from the roster file)" "also the SECRETARY"
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --author '@rev-a' --send
+refused "an author flag that is on the roster file's panel" "also the AUTHOR"
+for bad_limit in 0 -1 abc 1.5 01 ' 2'; do
+    kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --version-limit "$bad_limit" --send
+    refused "--version-limit '$bad_limit'" "not a positive integer"
+done
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --author '@a' --author '@b' --send
+refused "a second --author" "--author may only be given once"
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --panel '' --send
+refused "an empty --panel value" "--panel requires a non-empty value"
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --send
+refused "\${FROZEN_HEAD} without --review-target" "contains \${FROZEN_HEAD} but --review-target was not given"
+kick "${rkick[@]}" --template "$rdir/frozen-only.md" --to '@x' --send
+refused "\${FROZEN_HEAD} without --review-target in a non-roster template" "contains \${FROZEN_HEAD}"
+kick "${rkick[@]}" --template "$rdir/frozen-only.md" --to '@x' --review-target "$rt_arg"
+check "\${FROZEN_HEAD} fills in a non-roster template given a --review-target" "0" "$k_rc"
+contains "the non-roster \${FROZEN_HEAD} body carries the sha" \
+    "$(cat "$(grep -o -- '--body [^ ]*' <<<"$k_out" | awk '{print $2}')" 2>/dev/null)" "Frozen: $rt_tip"
+kick "${rkick[@]}" --template "$rdir/no-roster-file.md" --author '@a1' --send
+refused "a missing .roster with a needed value not given" "roster value PANEL"
+contains "the missing-file refusal names the file it looked for" "$k_out" "$rdir/no-roster-file.roster"
+contains "the missing-file refusal names the flag" "$k_out" "pass --panel"
+kick "${rkick[@]}" --template "$rdir/no-roster-file.md" --panel '@p1' --send
+refused "a missing .roster with only --panel given (AUTHOR is needed too)" "roster value AUTHOR"
+kick "${rkick[@]}" --template "$rdir/partial.md" --send
+refused "a .roster that lacks a needed key" "roster value AUTHOR"
+contains "the missing-key refusal names the roster file" "$k_out" "$rdir/partial.roster' has no AUTHOR"
+kick "${rkick[@]}" --template "$rdir/bad-key.md" --send
+refused "an unknown roster key" "unknown roster key 'COLOR'"
+contains "the unknown-key refusal names the file and line" "$k_out" "$rdir/bad-key.roster:2"
+kick "${rkick[@]}" --template "$rdir/bad-line.md" --send
+refused "a roster line that is not KEY=value" "is not KEY=value"
+kick "${rkick[@]}" --template "$rdir/dup-key.md" --send
+refused "a repeated roster key" "is set twice"
+kick "${rkick[@]}" --template "$rdir/not-sourced.md" --send
+refused "a roster value is data, not shell" "roster PANEL entry '@rev-a\$(touch"
+if [[ -e "$rdir/sourced-marker" ]]; then no "the roster file is parsed, never sourced" "marker exists"; else ok "the roster file is parsed, never sourced"; fi
+for flag_and_value in "--author @a" "--panel @a" "--secretary @a" "--version-limit 2"; do
+    # shellcheck disable=SC2086  # deliberate split into flag and value
+    kick "${kick_base[@]}" $flag_and_value --send
+    refused "${flag_and_value%% *} with a template that has no \${PANEL}" "has no \${PANEL}"
+done
+kick "${rkick[@]}" --template "$rdir/author-only.md" --to '@x' --send
+refused "\${AUTHOR} in a template with no \${PANEL}" "uses \${AUTHOR} but no \${PANEL}"
+
+printf '\n== --template <bare name> resolves to fleet/kickoffs/<name>.md ==\n'
+kick "${kick_base[@]}" --template series-review
+bare_body="$(cat "$(grep -o -- '--body [^ ]*' <<<"$k_out" | awk '{print $2}')" 2>/dev/null)"
+kick "${kick_base[@]}"
+default_body="$(cat "$(grep -o -- '--body [^ ]*' <<<"$k_out" | awk '{print $2}')" 2>/dev/null)"
+if [[ -n "$bare_body" && "$bare_body" == "$default_body" ]]; then ok "--template series-review is the default template"; else no "--template series-review is the default template" "bodies differ or are empty"; fi
+kick "${kick_base[@]}" --template single-patch
+check "--template single-patch resolves" "0" "$k_rc"
+contains "the resolved single-patch body is the single-patch template's" \
+    "$(cat "$(grep -o -- '--body [^ ]*' <<<"$k_out" | awk '{print $2}')" 2>/dev/null)" "Branch: topic"
+kick "${kick_base[@]}" --template no-such-kickoff --send
+refused "a bare name with no such kickoff" "template 'no-such-kickoff' does not exist"
+printf 'Summary: ${SUMMARY}\n' > "$rdir/local-plain.md"
+(cd "$rdir" && kick_local() { PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" "${kick_base[@]}" --template local-plain.md >/dev/null 2>&1; }; kick_local)
+check "a bare filename that is not a fleet kickoff is still a path, relative to the cwd" "0" "$?"
+kick "${kick_base[@]}" --template "$repo_dir/fleet/kickoffs/series-review.md"
+check "a path still works as before" "0" "$k_rc"
+
+printf '\n== the real fleet/kickoffs/pr-review.roster parses ==\n'
+real_roster="$repo_dir/fleet/kickoffs/pr-review.roster"
+real_dir="$work/real-roster"; mkdir -p -- "$real_dir"
+cp -- "$real_roster" "$real_dir/pr-review.roster"
+cp -- "$rdir/pr-review.md" "$real_dir/pr-review.md"
+kick "${rkick[@]}" --template "$real_dir/pr-review.md" --review-target "$rt_arg"
+check "the shipped pr-review.roster is accepted by the kickoff parser" "0" "$k_rc"
+real_body="$(cat "$(grep -o -- '--body [^ ]*' <<<"$k_out" | awk '{print $2}')" 2>/dev/null)"
+contains "the shipped roster's author" "$real_body" "Author: @pr-author"
+contains "the shipped roster's panel" "$real_body" "Panel: @architecture, @core, @docs, @newcomer, @security, @tests"
+contains "the shipped roster's secretary" "$real_body" "Secretary: @secretary"
+contains "the shipped roster's version limit" "$real_body" "Limit: 4"
+contains "the shipped roster stamps its panel as X-Seats" "$k_out" 'X-Seats:\ @architecture\,\ @core\,\ @docs\,\ @newcomer\,\ @security\,\ @tests'
+
 printf '\n== kickoff templates keep the no-attachment guard on the author reply ==\n'
 # A wake's harvested reply carries no attachment path (the postmaster
 # builds `mail reply` without --attach), so the "Next version" sections

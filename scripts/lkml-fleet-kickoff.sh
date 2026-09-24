@@ -10,14 +10,16 @@
 #            [--allow-namespace <ns[:port]>]... [--reach-probe <host:port>]...
 #            [--context-ro <dir>] [--context-secret <name>]
 #            [--review-target <branch>:<sha>] [--header "Name: value"]...
-#            [--remote] [--send]
+#            [--author <addr>] [--panel <addr-list>] [--secretary <addr>]
+#            [--version-limit <n>] [--remote] [--send]
 #
 # <repo>       path to a local git repository.
 # <range>      a revision range passed straight to `git format-patch`
 #              (e.g. "main..topic" or "main...topic"); a bare ref works
 #              too, degenerately, for the single-patch case.
 # --from       sending address (required).
-# --to         recipient address(es), comma-separated (required).
+# --to         recipient address(es), comma-separated (required, except
+#              for a roster template, whose panel is its To:; see --panel).
 # --cc         optional Cc address(es), comma-separated. Incompatible with
 #              --ci-first, whose kickoff must address CI alone.
 # --subject    the mail subject (required).
@@ -42,7 +44,42 @@
 #              related refusal when such a template's subject carries
 #              no determinable version.
 # --template   kickoff template to fill; defaults to this repo's own
-#              fleet/kickoffs/series-review.md.
+#              fleet/kickoffs/series-review.md. A bare name -- a value with
+#              no "/" -- whose fleet/kickoffs/<name>.md exists in this repo
+#              resolves to that file ("--template pr-review"); anything
+#              else is a path, as before. See the roster flags below for
+#              templates that carry ${PANEL}.
+# --author, --panel, --secretary, --version-limit
+#              the roster of a roster template: one that contains ${PANEL}
+#              and may also use ${AUTHOR}, ${SECRETARY}, ${VERSION_LIMIT}
+#              (and ${FROZEN_HEAD}, below). Their defaults come from a
+#              sibling of the template, <template without .md>.roster:
+#              KEY=value lines with keys AUTHOR, PANEL, SECRETARY and
+#              VERSION_LIMIT; blank lines and "#" comments are ignored; the
+#              file is PARSED, never sourced, and an unknown key, a line
+#              that is not KEY=value, or a repeated key is an error. Each
+#              flag overrides its key; each is single-valued. A template
+#              with no .roster sibling works only when every value it needs
+#              -- PANEL, and whichever of the others it contains -- came
+#              from a flag; otherwise the kickoff is refused, naming the
+#              missing key and the file it looked for. Validated before
+#              anything is composed: AUTHOR, SECRETARY and every PANEL
+#              entry must match ^@[a-z0-9][a-z0-9-]*$; PANEL is non-empty,
+#              comma-separated, de-duplicated in first-seen order, and
+#              contains neither the author nor the secretary;
+#              VERSION_LIMIT is a positive integer. ${PANEL} fills as
+#              "@a, @b, @c" (comma-space). The cover's To: becomes the
+#              panel, and it is stamped X-Seats exactly as --seats would
+#              stamp it (a panel of concrete seats needs no expansion), so
+#              --to and --seats are refused as second sources for the one
+#              roster, and --ci-first and --cc, which address someone other
+#              than the panel, are refused too. The roster flags are
+#              refused with a template that has no ${PANEL}, since they
+#              would silently do nothing; so is a template that uses
+#              ${AUTHOR}, ${SECRETARY} or ${VERSION_LIMIT} without
+#              ${PANEL}, which has no roster to fill them from.
+#              ${FROZEN_HEAD}, in any template, fills with the
+#              --review-target sha, and is refused without one.
 # --hops       non-negative mail reply-hop budget. Omit it to retain the
 #              transport's own default.
 # --ci-first   address the kickoff to this CI seat alone, then have its
@@ -300,12 +337,16 @@ context_secret=""
 context_secret_given=0
 headers=()
 remote=0
+roster_author=""
+roster_panel=""
+roster_secretary=""
+roster_version_limit=""
 review_target=""
 review_target_given=0
 
 while (( $# > 0 )); do
     case "$1" in
-        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats|--header|--allow-namespace|--reach-probe|--context-ro|--context-secret|--review-target)
+        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats|--header|--author|--panel|--secretary|--version-limit|--allow-namespace|--reach-probe|--context-ro|--context-secret|--review-target)
             (( $# >= 2 )) || { echo "Error: $1 requires a value. See --help." >&2; exit 1; }
             ;;
     esac
@@ -333,6 +374,11 @@ while (( $# > 0 )); do
         --review-target)
             (( ! review_target_given )) || { echo "Error: --review-target may only be given once. See --help." >&2; exit 1; }
             review_target="$2"; review_target_given=1; shift 2 ;;
+        --author|--panel|--secretary|--version-limit)
+            roster_var="roster_${1#--}"; roster_var="${roster_var//-/_}"
+            [[ -z "${!roster_var}" ]] || { echo "Error: $1 may only be given once. See --help." >&2; exit 1; }
+            [[ -n "$2" ]] || { echo "Error: $1 requires a non-empty value. See --help." >&2; exit 1; }
+            printf -v "$roster_var" '%s' "$2"; shift 2 ;;
         --remote) remote=1; shift ;;
         --allow-ambiguous-version) allow_ambiguous_version=1; shift ;;
         --patches) post_patches=1; shift ;;
@@ -344,9 +390,189 @@ while (( $# > 0 )); do
 done
 
 [[ -n "$from" ]] || { echo "Error: --from is required. See --help." >&2; exit 1; }
-[[ -n "$to" ]] || { echo "Error: --to is required. See --help." >&2; exit 1; }
 [[ -n "$subject" ]] || { echo "Error: --subject is required. See --help." >&2; exit 1; }
+# A bare name (no "/") resolves to this repo's own fleet/kickoffs/<name>.md
+# when that exists; anything else is a path, as it always was.
+if [[ "$template" != */* && -f "$script_dir/../fleet/kickoffs/$template.md" ]]; then
+    template="$script_dir/../fleet/kickoffs/$template.md"
+fi
 [[ -f "$template" ]] || { echo "Error: template '$template' does not exist." >&2; exit 1; }
+
+# Comments are stripped by finding "-->" as a substring anywhere in the
+# line, not by anchoring to end-of-line -- a closing "-->" followed by
+# trailing whitespace or by more text on the same line still closes the
+# comment, instead of leaving in_comment set and swallowing the rest of
+# the file. Computed up front, before any git work, so the FOCUS-shaped
+# and roster checks can refuse before format-patch or a version stamp
+# ever runs -- and before --to is demanded, since a roster template
+# supplies its own.
+body="$(awk '
+    BEGIN { in_comment = 0; started = 0 }
+    {
+        line = $0
+        if (!started) {
+            if (in_comment) {
+                idx = index(line, "-->")
+                if (idx == 0) { next }
+                in_comment = 0
+                line = substr(line, idx + 3)
+                sub(/^[ \t]+/, "", line)
+            } else if (line ~ /^<!--/) {
+                idx = index(line, "-->")
+                if (idx == 0) { in_comment = 1; next }
+                line = substr(line, idx + 3)
+                sub(/^[ \t]+/, "", line)
+            }
+            if (line == "") { next }
+            started = 1
+        }
+        print line
+    }
+' "$template")"
+
+# A template that uses ${PANEL} is a roster template: who authors, who
+# reviews, who is secretary and how many versions the round may run come
+# from the template's sibling <name>.roster file (KEY=value lines), and the
+# flags override it. Every value is validated here, before anything is
+# composed, since a wrong roster mails the wrong people.
+# shellcheck disable=SC2016  # ${...} below is literal placeholder text.
+has_placeholder() { [[ "$body" == *'${'"$1"'}'* ]]; }
+roster_mode=0
+has_placeholder PANEL && roster_mode=1
+if (( ! roster_mode )); then
+    if [[ -n "$roster_author$roster_panel$roster_secretary$roster_version_limit" ]]; then
+        echo "Error: --author/--panel/--secretary/--version-limit given but template '$template' has no \${PANEL}; they would silently do nothing. Use a roster template. See --help." >&2
+        exit 1
+    fi
+    for roster_ph in AUTHOR SECRETARY VERSION_LIMIT; do
+        if has_placeholder "$roster_ph"; then
+            echo "Error: template '$template' uses \${$roster_ph} but no \${PANEL}; the roster placeholders are only filled for a template that has \${PANEL}." >&2
+            exit 1
+        fi
+    done
+fi
+if has_placeholder FROZEN_HEAD && (( ! review_target_given )); then
+    echo "Error: template '$template' contains \${FROZEN_HEAD} but --review-target was not given; there is no commit to freeze the review at. Pass --review-target <branch>:<sha>." >&2
+    exit 1
+fi
+roster_panel_csv=""
+roster_panel_spaced=""
+roster_author_value=""
+roster_secretary_value=""
+roster_version_limit_value=""
+if (( roster_mode )); then
+    if [[ -n "$to" ]]; then
+        echo "Error: --to given but template '$template' is a roster template: its To: is the panel, and two sources for one roster would disagree. Drop --to, or set the panel with --panel. See --help." >&2
+        exit 1
+    fi
+    if [[ -n "$seats" ]]; then
+        echo "Error: --seats given but template '$template' is a roster template: its panel is stamped as X-Seats already. Drop --seats, or set the panel with --panel. See --help." >&2
+        exit 1
+    fi
+    if [[ -n "$ci_first" ]]; then
+        echo "Error: --ci-first cannot be combined with roster template '$template': its kickoff addresses the panel directly." >&2
+        exit 1
+    fi
+    if [[ -n "$cc" ]]; then
+        echo "Error: --cc cannot be combined with roster template '$template': its To: is the whole panel." >&2
+        exit 1
+    fi
+
+    # PARSED, never sourced: the file is data, and a key it does not
+    # know is a typo or a stale file, not something to ignore.
+    if [[ "$template" == *.md ]]; then roster_file="${template%.md}.roster"; else roster_file="$template.roster"; fi
+    declare -A roster_kv=()
+    if [[ -f "$roster_file" ]]; then
+        roster_lineno=0
+        while IFS= read -r roster_line || [[ -n "$roster_line" ]]; do
+            (( roster_lineno += 1 ))
+            roster_line="${roster_line#"${roster_line%%[![:space:]]*}"}"
+            roster_line="${roster_line%"${roster_line##*[![:space:]]}"}"
+            [[ -z "$roster_line" || "$roster_line" == '#'* ]] && continue
+            if [[ ! "$roster_line" =~ ^([A-Z_]+)=(.*)$ ]]; then
+                echo "Error: $roster_file:$roster_lineno: '$roster_line' is not KEY=value." >&2
+                exit 1
+            fi
+            roster_key="${BASH_REMATCH[1]}"
+            roster_val="${BASH_REMATCH[2]}"
+            roster_val="${roster_val#"${roster_val%%[![:space:]]*}"}"
+            case "$roster_key" in
+                AUTHOR|PANEL|SECRETARY|VERSION_LIMIT) ;;
+                *) echo "Error: $roster_file:$roster_lineno: unknown roster key '$roster_key' (known: AUTHOR, PANEL, SECRETARY, VERSION_LIMIT)." >&2; exit 1 ;;
+            esac
+            if [[ -n "${roster_kv[$roster_key]+x}" ]]; then
+                echo "Error: $roster_file:$roster_lineno: roster key '$roster_key' is set twice." >&2
+                exit 1
+            fi
+            roster_kv[$roster_key]="$roster_val"
+        done < "$roster_file"
+    fi
+    [[ -n "$roster_author" ]] && roster_kv[AUTHOR]="$roster_author"
+    [[ -n "$roster_panel" ]] && roster_kv[PANEL]="$roster_panel"
+    [[ -n "$roster_secretary" ]] && roster_kv[SECRETARY]="$roster_secretary"
+    [[ -n "$roster_version_limit" ]] && roster_kv[VERSION_LIMIT]="$roster_version_limit"
+
+    roster_needed=(PANEL)
+    for roster_ph in AUTHOR SECRETARY VERSION_LIMIT; do
+        has_placeholder "$roster_ph" && roster_needed+=("$roster_ph")
+    done
+    for roster_key in "${roster_needed[@]}"; do
+        if [[ -z "${roster_kv[$roster_key]+x}" ]]; then
+            if [[ -f "$roster_file" ]]; then roster_where="'$roster_file' has no $roster_key"; else roster_where="'$roster_file' does not exist"; fi
+            roster_flag="--${roster_key,,}"; roster_flag="${roster_flag//_/-}"
+            echo "Error: template '$template' needs the roster value $roster_key, and none was given: pass $roster_flag, or set $roster_key in its roster file ($roster_where)." >&2
+            exit 1
+        fi
+    done
+
+    roster_addr_re='^@[a-z0-9][a-z0-9-]*$'
+    for roster_key in AUTHOR SECRETARY; do
+        if [[ -n "${roster_kv[$roster_key]+x}" && ! "${roster_kv[$roster_key]}" =~ $roster_addr_re ]]; then
+            echo "Error: roster $roster_key '${roster_kv[$roster_key]}' is not an address like @name (^@[a-z0-9][a-z0-9-]*\$)." >&2
+            exit 1
+        fi
+    done
+    if [[ -n "${roster_kv[VERSION_LIMIT]+x}" && ! "${roster_kv[VERSION_LIMIT]}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "Error: roster VERSION_LIMIT '${roster_kv[VERSION_LIMIT]}' is not a positive integer." >&2
+        exit 1
+    fi
+    roster_panel_raw="${roster_kv[PANEL]}"
+    if [[ -z "${roster_panel_raw//[[:space:]]/}" ]]; then
+        echo "Error: roster PANEL is empty; a review with no reviewers never starts." >&2
+        exit 1
+    fi
+    if [[ "$roster_panel_raw" =~ (^|,)[[:space:]]*(,|$) ]]; then
+        echo "Error: roster PANEL '$roster_panel_raw' has an empty entry (a stray comma)." >&2
+        exit 1
+    fi
+    declare -A roster_seen=()
+    roster_panel_list=()
+    IFS=',' read -r -a roster_panel_items <<<"$roster_panel_raw"
+    for roster_addr in "${roster_panel_items[@]}"; do
+        roster_addr="${roster_addr#"${roster_addr%%[![:space:]]*}"}"
+        roster_addr="${roster_addr%"${roster_addr##*[![:space:]]}"}"
+        if [[ ! "$roster_addr" =~ $roster_addr_re ]]; then
+            echo "Error: roster PANEL entry '$roster_addr' is not an address like @name (^@[a-z0-9][a-z0-9-]*\$)." >&2
+            exit 1
+        fi
+        for roster_key in AUTHOR SECRETARY; do
+            if [[ "$roster_addr" == "${roster_kv[$roster_key]-}" ]]; then
+                echo "Error: roster PANEL contains '$roster_addr', which is also the $roster_key; an author or secretary does not review its own series." >&2
+                exit 1
+            fi
+        done
+        if [[ -z "${roster_seen[$roster_addr]+x}" ]]; then
+            roster_seen[$roster_addr]=1
+            roster_panel_list+=("$roster_addr")
+        fi
+    done
+    roster_panel_csv="$(IFS=,; printf '%s' "${roster_panel_list[*]}")"
+    roster_panel_spaced="$(IFS=,; roster_joined="${roster_panel_list[*]}"; printf '%s' "${roster_joined//,/, }")"
+    roster_author_value="${roster_kv[AUTHOR]-}"
+    roster_secretary_value="${roster_kv[SECRETARY]-}"
+    roster_version_limit_value="${roster_kv[VERSION_LIMIT]-}"
+fi
+[[ -n "$to" || "$roster_mode" == 1 ]] || { echo "Error: --to is required. See --help." >&2; exit 1; }
 if [[ -n "$hops" && ! "$hops" =~ ^[0-9]+$ ]]; then
     echo "Error: --hops must be a non-negative integer. See --help." >&2
     exit 1
@@ -556,36 +782,14 @@ if [[ -n "$seats" ]]; then
     done
 fi
 
-# Comments are stripped by finding "-->" as a substring anywhere in the
-# line, not by anchoring to end-of-line -- a closing "-->" followed by
-# trailing whitespace or by more text on the same line still closes the
-# comment, instead of leaving in_comment set and swallowing the rest of
-# the file. Computed up front, before any git work, so the FOCUS-shaped
-# checks just below can refuse before format-patch or a version stamp
-# ever runs.
-body="$(awk '
-    BEGIN { in_comment = 0; started = 0 }
-    {
-        line = $0
-        if (!started) {
-            if (in_comment) {
-                idx = index(line, "-->")
-                if (idx == 0) { next }
-                in_comment = 0
-                line = substr(line, idx + 3)
-                sub(/^[ \t]+/, "", line)
-            } else if (line ~ /^<!--/) {
-                idx = index(line, "-->")
-                if (idx == 0) { in_comment = 1; next }
-                line = substr(line, idx + 3)
-                sub(/^[ \t]+/, "", line)
-            }
-            if (line == "") { next }
-            started = 1
-        }
-        print line
-    }
-' "$template")"
+# A roster panel is already concrete seats, so it needs no expansion and is
+# stamped exactly as --seats would stamp its expansion.
+if (( roster_mode )); then
+    to="$roster_panel_csv"
+    seats_header="$roster_panel_spaced"
+    panel="$roster_panel_spaced"
+fi
+
 # shellcheck disable=SC2016  # ${FOCUS} is the literal placeholder text
 # being searched for in the stripped body, not a variable to expand.
 # Keyed on the placeholder, not a filename, so a site's own focused
@@ -956,6 +1160,10 @@ fill body BASE "$base"
 fill body BRANCH "$branch"
 fill body PATCH_COUNT "$patch_count"
 fill body PANEL "$panel"
+fill body AUTHOR "$roster_author_value"
+fill body SECRETARY "$roster_secretary_value"
+fill body VERSION_LIMIT "$roster_version_limit_value"
+fill body FROZEN_HEAD "$review_target_sha"
 fill body HANDOFF "$handoff"
 
 # fill() above already removes an empty own-line placeholder's line and
