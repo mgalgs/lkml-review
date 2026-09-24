@@ -1208,6 +1208,15 @@ kick "${kick_base[@]}" --subject '[PATCH v3 0/2] improve the thing' --focus 'pat
     --template "$focused_template" --review-target "topic:$rt_tip" --send
 refused "a focused template with --review-target (--send)" "fork-sandbox mail grant"
 
+printf '\n== --unless-exists validation ==\n'
+kick "${kick_base[@]}" --review-target "topic:$rt_tip" --unless-exists
+refused "--unless-exists without --send" "--unless-exists requires --send"
+kick "${kick_base[@]}" --unless-exists --send
+refused "--unless-exists without --review-target" "--unless-exists requires --review-target"
+kick "${kick_base[@]}" --subject '[PATCH v3 0/2] improve the thing' --focus 'patch 2 only' \
+    --template "$focused_template" --review-target "topic:$rt_tip" --unless-exists --send
+refused "--unless-exists with a focused template refuses via the existing FOCUS+target check" "fork-sandbox mail grant"
+
 printf '\n== --context-secret: forwarded to the cover only ==\n'
 kick "${kick_base[@]}" --allow-namespace example-ns --reach-probe 'svc-a.example-ns.svc.cluster.local:8001' \
     --context-secret 'slot-07-context' --review-target "topic:$rt_tip" --send

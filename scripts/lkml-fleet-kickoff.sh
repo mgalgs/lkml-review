@@ -11,7 +11,7 @@
 #            [--context-ro <dir>] [--context-secret <name>]
 #            [--review-target <branch>:<sha>] [--header "Name: value"]...
 #            [--author <addr>] [--panel <addr-list>] [--secretary <addr>]
-#            [--version-limit <n>] [--remote] [--send]
+#            [--version-limit <n>] [--remote] [--send] [--unless-exists]
 #
 # <repo>       path to a local git repository.
 # <range>      a revision range passed straight to `git format-patch`
@@ -291,6 +291,37 @@
 # --send       actually run the composed `fork-sandbox mail send`
 #              command. Without it, the command is printed, shell-quoted,
 #              and nothing is sent.
+# --unless-exists
+#              a bare switch. Immediately before sending, look up whether
+#              a thread already exists for this exact review: one whose
+#              root carries every --header given on this command line
+#              AND `X-Review-Target-Set: <branch> <sha>` from
+#              --review-target. The lookup is `fork-sandbox mail
+#              [--remote] list --json`, called with one --header per
+#              filter (ANDed) plus the X-Review-Target-Set filter. A
+#              match means a panel for this commit is already done or in
+#              progress: nothing is sent -- no cover, no per-patch
+#              replies -- the matching thread's id is printed alone on
+#              stdout (the same place a fresh send prints its new
+#              message id, so `id=$(... --send --unless-exists)` returns
+#              the panel's thread either way), and one `Skipped:` line
+#              goes to stderr. Several matches: the newest by date is
+#              printed and chosen, and stderr also gets one `Warning:`
+#              naming every matching id. Exits 0 either way -- match or
+#              no match is not a failure. Requires --send, since the
+#              check only matters when something would be sent, and
+#              --review-target, since without a target "the same commit"
+#              has no meaning; refused without either. The lookup's
+#              output is distrusted on principle: if any thread `list`
+#              returns does not actually carry every filter header, that
+#              means an old fork-sandbox that ignores `list`'s filter
+#              arguments, not "no panel exists yet" -- this refuses
+#              outright rather than falling back to sending, since a
+#              silent skip there would read to CI as a green panel that
+#              never ran. Output that fails to parse as a JSON array, or
+#              `list` exiting nonzero, refuse the same way. There is a
+#              known race this flag does not close: two callers checking
+#              at the same moment can both see no match and both send.
 #
 # This script is LOCAL ONLY: it formats patches and fills a template. It
 # never talks to GitHub itself, and without --remote it never touches the
@@ -344,6 +375,7 @@ roster_secretary=""
 roster_version_limit=""
 review_target=""
 review_target_given=0
+unless_exists=0
 
 while (( $# > 0 )); do
     case "$1" in
@@ -385,6 +417,7 @@ while (( $# > 0 )); do
         --patches) post_patches=1; shift ;;
         --attach) post_patches=1; echo "Warning: --attach is a deprecated alias for --patches; attachments are never posted -- this now posts one mail reply per patch instead. Use --patches." >&2; shift ;;
         --send) send=1; shift ;;
+        --unless-exists) unless_exists=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Error: unknown argument '$1'. See --help." >&2; exit 1 ;;
     esac
@@ -392,6 +425,14 @@ done
 
 [[ -n "$from" ]] || { echo "Error: --from is required. See --help." >&2; exit 1; }
 [[ -n "$subject" ]] || { echo "Error: --subject is required. See --help." >&2; exit 1; }
+if (( unless_exists && ! send )); then
+    echo "Error: --unless-exists requires --send; the check is only meaningful when something would be sent. See --help." >&2
+    exit 1
+fi
+if (( unless_exists && ! review_target_given )); then
+    echo "Error: --unless-exists requires --review-target; without a target, \"the same commit\" has no meaning. See --help." >&2
+    exit 1
+fi
 # A bare name (no "/") resolves to this repo's own fleet/kickoffs/<name>.md
 # when that exists; anything else is a path, as it always was.
 if [[ "$template" != */* && -f "$script_dir/../fleet/kickoffs/$template.md" ]]; then
