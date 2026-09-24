@@ -535,8 +535,14 @@ $series_dir/results-v2.md" \
     "$(tail -n 2 <<< "$stdout" | tr -d '\r')"
 contains "the v2 low handoff is about the section headed widget-frob v2" \
     "$(cat "$cap2/summarize-low.handoff.md")" '"widget-frob v2"'
-contains "the v2 low handoff carries v1 as context" \
-    "$(cat "$cap2/summarize-low.handoff.md")" "Add the frobnicator"
+case "$(cat "$cap2/summarize-low.handoff.md")" in
+    *"Add the frobnicator"*) no "the v2 low handoff does not carry v1's raw thread content" ;;
+    *) ok "the v2 low handoff does not carry v1's raw thread content" ;;
+esac
+contains "the v2 low handoff carries v1's own extraction (results-v1.json) as context" \
+    "$(cat "$cap2/summarize-low.handoff.md")" '"claim":"frob looks flaky under load"'
+contains "the v2 low handoff's v1-context heading names results-v1.json" \
+    "$(cat "$cap2/summarize-low.handoff.md")" "results-v1.json"
 contains "the v2 tally section is inline for the high tier" \
     "$(cat "$cap2/summarize-high.handoff.md")" "frob: second"
 if cmp -s <(printf '%s\n' "$DEFAULT_MD") "$series_dir/results-v1.md"; then
@@ -792,6 +798,13 @@ then
 else
     no "the series handoff orders the inputs: intermediates, tallies, cover"
 fi
+# Pin build_series_handoff's own intro sentence verbatim: it names the
+# whole-render tallies and the per-version intermediates exactly as
+# before the per-version low tier's handoff was rewritten to stop
+# inlining the whole thread, so an accidental edit that carried that
+# rewrite into series mode too would show here.
+contains "the series handoff's intro sentence is unchanged by the low-tier rewrite" \
+    "$shandoff" "You are handed (1) each recorded version's extraction intermediate"
 
 capSeries="$(mktemp -d)"; tmpdirs+=("$capSeries")
 series_cap_rc=0
@@ -883,6 +896,94 @@ rc=$?
 if (( rc == 0 )); then ok "an over-long series Summary still exits 0"; else no "an over-long series Summary still exits 0" "exit $rc: $out_full"; fi
 contains "an over-long series Summary warns on stderr with the word count" "$out_full" "210 words"
 contains "the series warning aims for ~150" "$out_full" "aim for ~150"
+
+printf '\n== per-version extraction: late replies and prior-version context ==\n'
+# A fresh two-version series, never summarized before: v2's low handoff
+# must carry a reply filed late (on v1's thread, after v2's cover) under
+# the "late replies" heading, must NOT carry v1's own (non-late) reply,
+# and -- since results-v1.json has never been written for this series --
+# must carry no "previous version's extraction" heading at all.
+printf 'Cover for latefrob\n\nBody.\n' > cover-late.txt
+mkdir patches-late
+printf 'Subject: [PATCH 1/1] latefrob: add core\n\ndiff\n' > patches-late/0001.patch
+"$mailbox" init latefrob --cover cover-late.txt --patches patches-late --from author \
+    --harness claude --model opus --no-checkout >/dev/null 2>&1
+latefrob_series_dir="$LKML_MAILBOX_ROOT/latefrob"
+printf '{"version":1,"branch":"main"}\n' > "$latefrob_series_dir/versions.jsonl"
+latefrob_p1="$("$mailbox" tree latefrob | awk 'NR==3{print $1}')"
+printf 'EARLY REPLY BEFORE LATEFROB V2 EXISTS\n' > early-late.txt
+"$mailbox" post latefrob --from core --reply-to "$latefrob_p1" --file early-late.txt \
+    --harness claude --model opus >/dev/null 2>&1
+printf 'Cover for latefrob v2\n\nV2 body.\n' > cover-late2.txt
+mkdir patches-late2
+printf 'Subject: [PATCH 1/1] latefrob: second\n\ndiff\n' > patches-late2/0001.patch
+"$mailbox" init latefrob --cover cover-late2.txt --patches patches-late2 --from author \
+    --harness claude --model opus --version 2 --no-checkout >/dev/null 2>&1
+printf '{"version":2,"branch":"main"}\n' >> "$latefrob_series_dir/versions.jsonl"
+printf 'LATE REPLY FILED DURING LATEFROB V2\n' > late-late.txt
+"$mailbox" post latefrob --from core --reply-to "$latefrob_p1" --file late-late.txt \
+    --harness claude --model opus >/dev/null 2>&1
+
+capLate="$(mktemp -d)"; tmpdirs+=("$capLate")
+late_rc=0
+PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$capLate" STUB_RUN_PREFIX="$run_prefix_dir" \
+    STUB_JSON="$DEFAULT_JSON" STUB_MD="$DEFAULT_MD" \
+    "$summarize" latefrob --project "$project_dir" --version 2 >/dev/null 2>"$capLate/err" || late_rc=$?
+if (( late_rc == 0 )); then ok "summarizing a fresh v2 with a late reply exits 0"; else no "summarizing a fresh v2 with a late reply exits 0" "$(cat "$capLate/err")"; fi
+late_low_handoff="$(cat -- "$capLate/summarize-low.handoff.md")"
+contains "the low handoff carries the late reply's body" \
+    "$late_low_handoff" "LATE REPLY FILED DURING LATEFROB V2"
+contains "the low handoff carries the late-replies heading" \
+    "$late_low_handoff" "late replies (posted during v2, filed on earlier versions' threads)"
+case "$late_low_handoff" in
+    *"EARLY REPLY BEFORE LATEFROB V2 EXISTS"*) no "the low handoff does not carry v1's own (non-late) reply" ;;
+    *) ok "the low handoff does not carry v1's own (non-late) reply" ;;
+esac
+case "$late_low_handoff" in
+    *"Previous version"*"extraction"*) no "no results-v1.json on disk means no previous-extraction heading" "$late_low_handoff" ;;
+    *) ok "no results-v1.json on disk means no previous-extraction heading" ;;
+esac
+
+printf '\n== the actual bug: whole render exceeds the cap, but v2 alone fits ==\n'
+# A regression test for the bug this round fixes: a series whose v1
+# section alone is big enough to blow the whole-render past a small
+# cap, but whose v2 section on its own fits comfortably under it.
+# Verified against the pre-fix script (git stash scripts/lkml-summarize.sh,
+# rerun, git stash pop) that this refuses there -- it must not refuse here.
+printf 'Cover for bigv1\n\nBody.\n' > cover-bigv1.txt
+mkdir patches-bigv1
+printf 'Subject: [PATCH 1/1] bigv1: add core\n\ndiff\n' > patches-bigv1/0001.patch
+"$mailbox" init bigv1 --cover cover-bigv1.txt --patches patches-bigv1 --from author \
+    --harness claude --model opus --no-checkout >/dev/null 2>&1
+bigv1_series_dir="$LKML_MAILBOX_ROOT/bigv1"
+printf '{"version":1,"branch":"main"}\n' > "$bigv1_series_dir/versions.jsonl"
+bigv1_p1="$("$mailbox" tree bigv1 | awk 'NR==3{print $1}')"
+yes 'padding padding padding padding padding padding padding padding' | head -n 6000 > huge-v1-reply.txt
+"$mailbox" post bigv1 --from core --reply-to "$bigv1_p1" --file huge-v1-reply.txt \
+    --harness claude --model opus >/dev/null 2>&1
+printf 'Cover for bigv1 v2\n\nSmall v2 body.\n' > cover-bigv2.txt
+mkdir patches-bigv2
+printf 'Subject: [PATCH 1/1] bigv1: second\n\ndiff\n' > patches-bigv2/0001.patch
+"$mailbox" init bigv1 --cover cover-bigv2.txt --patches patches-bigv2 --from author \
+    --harness claude --model opus --version 2 --no-checkout >/dev/null 2>&1
+printf '{"version":2,"branch":"main"}\n' >> "$bigv1_series_dir/versions.jsonl"
+
+whole_render_bytes="$(python3 "$repo_dir/scripts/lkml-render.py" --text "$bigv1_series_dir" | wc -c | tr -d '[:space:]')"
+v2_section_bytes="$(python3 "$repo_dir/scripts/lkml-render.py" --text --version 2 "$bigv1_series_dir" | wc -c | tr -d '[:space:]')"
+bug_cap=$(( (whole_render_bytes + v2_section_bytes) / 2 ))
+bug_cap_env="$work/lkml-summarize-bug-cap.env"
+printf 'LKML_SUMMARIZE_MAX_INPUT_BYTES=%s\n' "$bug_cap" > "$bug_cap_env"
+
+capBug="$(mktemp -d)"; tmpdirs+=("$capBug")
+bug_rc=0
+PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$capBug" STUB_RUN_PREFIX="$run_prefix_dir" \
+    STUB_JSON="$DEFAULT_JSON" STUB_MD="$DEFAULT_MD" LKML_SUMMARIZE_ENV_FILE="$bug_cap_env" \
+    "$summarize" bigv1 --project "$project_dir" --version 2 >/dev/null 2>"$capBug/err" || bug_rc=$?
+if (( bug_rc == 0 )); then
+    ok "v2 launches even though v1's section alone bloats the whole render past the cap"
+else
+    no "v2 launches even though v1's section alone bloats the whole render past the cap" "$(cat "$capBug/err")"
+fi
 
 printf '\n== --help ==\n'
 h_out="$("$summarize" --help 2>&1)"; h_rc=$?

@@ -48,8 +48,14 @@
 # it is site config read from summarize.env, with the environment taking precedence.
 #
 # Input is `lkml-render.py --text <series-dir>` output ONLY -- never
-# the HTML view. The render is carried inline in each tier's handoff
-# because a sandboxed run cannot read the mailbox (the same lesson as
+# the HTML view. Series mode's synthesis run, and the per-version high
+# tier's tally section, still come from the whole-thread render; the
+# per-version low (extraction) tier is instead handed only version N's
+# own section, via `lkml-render.py --text --version <n> <series-dir>`
+# (plus, when any exist, that version's late replies) -- the whole
+# thread no longer fits a tier's context window on a long series.
+# Either way the render is carried inline in the handoff because a
+# sandboxed run cannot read the mailbox (the same lesson as
 # lkml-round.sh's secretary seat, whose handoff carries the thread
 # for exactly this reason).
 #
@@ -400,6 +406,26 @@ if [[ -z "$series_mode" ]]; then
         echo "Error: the --text render has no section for '$series v$version'; the version ledger and the mailbox disagree." >&2
         exit 1
     fi
+    # The LOW tier's own input: just this version's section (plus any
+    # late replies filed during it), not the whole thread -- the fix for
+    # the size-cap refusal a long series triggers when the whole render
+    # is inlined. The tally check just above already confirms this
+    # version has a section in the whole render, so a genuine posting/
+    # ledger disagreement is caught there with its own message.
+    render_text_version="$(python3 "$render_py" --text --version "$version" "$series_dir" 2>/dev/null)"
+    render_version_rc=$?
+    if (( render_version_rc != 0 )); then
+        echo "Error: lkml-render.py --text --version $version $series_dir failed (exit $render_version_rc)." >&2
+        exit 1
+    fi
+    # The previous version's own extraction, when it exists, rides along
+    # as context only (see build_low_handoff): it is never itself a
+    # source of this version's findings.
+    prev_version=$(( version - 1 ))
+    prev_intermediate=""
+    if [[ -f "$series_dir/results-v${prev_version}.json" ]]; then
+        prev_intermediate="$(cat -- "$series_dir/results-v${prev_version}.json")"
+    fi
 fi
 
 
@@ -425,7 +451,7 @@ check_handoff_size() {
     local tier="$1" handoff_file="$2" handoff_bytes
     handoff_bytes="$(wc -c < "$handoff_file" | tr -d '[:space:]')"
     if (( handoff_bytes > max_input_bytes )); then
-        echo "fork-sandbox lkml-summarize: Error: the $tier tier's handoff is $handoff_bytes bytes; the cap is $max_input_bytes (LKML_SUMMARIZE_MAX_INPUT_BYTES in summarize.env). The thread no longer fits a tier's context window; see the hardening backlog's size-scaling item." >&2
+        echo "fork-sandbox lkml-summarize: Error: the $tier tier's handoff is $handoff_bytes bytes; the cap is $max_input_bytes (LKML_SUMMARIZE_MAX_INPUT_BYTES in summarize.env). Even one version's section of the thread no longer fits a tier's context window." >&2
         return 1
     fi
 }
@@ -485,21 +511,40 @@ launch_tier() {
     return 0
 }
 
-# The LOW tier's handoff: a persona-style brief, then the whole --text
-# render inline -- the sandbox cannot read the mailbox, the same reason
-# lkml-round.sh hands its secretary seat the thread.
+# The LOW tier's handoff: a persona-style brief, then version $version's
+# own section of the --text render inline (plus any late replies filed
+# during it, and the previous version's extraction as context) -- the
+# sandbox cannot read the mailbox, the same reason lkml-round.sh hands
+# its secretary seat the thread.
 build_low_handoff() {
     cat <<BRIEF
 You are the EXTRACTION tier of a two-tier summary of the lkml-mode
 review series $series, version $version.
 
-You are handed the whole thread below, as the mailbox's own --text
-render, inlined: this sandbox cannot read the mailbox. It covers every
-posted version; THIS summary is about the section headed
-"$series v$version" -- earlier versions are there as context for what
-changed.
+You are handed, below, "$series v$version"'s own section of the
+mailbox's --text render, inlined: this sandbox cannot read the
+mailbox. It is this version's own thread, exactly as posted, plus,
+only when any exist, a block of late replies: messages filed on an
+EARLIER version's
+thread while v$version was the current version (a reviewer answering a
+still-open point on the old thread rather than the new one). A late
+reply counts toward THIS version's verdicts, defects and responses
+exactly as if it had been posted here.
+BRIEF
+    if [[ -n "$prev_intermediate" ]]; then
+        cat <<BRIEF
 
-Read the whole thread, then write ONE file: \`results.json\` at the
+You are also handed the previous version's own extraction, as CONTEXT
+ONLY: what results-v${prev_version}.json recorded. Use it to fill
+"superseded" and to recognise a point carried over from that version --
+but record only what THIS version's section and its late replies
+state, not anything from the previous extraction that isn't restated
+here.
+BRIEF
+    fi
+    cat <<BRIEF
+
+Read the section below, then write ONE file: \`results.json\` at the
 root of the artifact outbox directory named in your prompt, shaped
 like this:
 
@@ -557,15 +602,22 @@ must mean exactly what its name says:
   place (two reviewers, or one reviewer across versions).
 
 Every single item carries the 7-hex message id(s) it comes from -- the
-ids the render prints for each message. Record ONLY what the thread
-states: do not review the code and do not invent findings.
+id field printed at the end of each message's own \`== \` header line
+(e.g. \`== #3 · reply to #2 · depth 2 · id 9d67f5e\` cites as
+\`9d67f5e\`; a late reply's header carries the same id field). Record
+ONLY what the thread states: do not review the code and do not invent
+findings.
 
 Make NO commits and no other changes to the clone: writing
 results.json to the outbox is the whole job. In your final report,
 say how many patches you covered and how many defects you recorded.
 BRIEF
-    printf '\n## The thread (the mailbox --text render, all versions)\n\n'
-    printf '%s\n' "$render_text"
+    if [[ -n "$prev_intermediate" ]]; then
+        printf '\n## Previous version'"'"'s extraction (results-v%s.json) -- CONTEXT ONLY\n\n' "$prev_version"
+        printf '%s\n' "$prev_intermediate"
+    fi
+    printf '\n## The thread (v%s'"'"'s own section, plus any late replies filed during it)\n\n' "$version"
+    printf '%s\n' "$render_text_version"
 }
 
 # The HIGH tier's handoff: a persona-style brief, then the extraction
