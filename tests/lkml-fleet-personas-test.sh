@@ -602,8 +602,13 @@ if [[ -f "$prk" ]]; then
     done
     has "$prk" 'Silence is NOT a' \
         "pr-review.md says silence is not a valid outcome"
-    has "$prk" 'does not yet fill the' \
-        "pr-review.md header says kickoff-script support for the roster placeholders is separate work"
+    has "$prk" 'lkml-fleet-kickoff.sh --template pr-review' \
+        "pr-review.md header points at the kickoff script that fills its placeholders"
+    if grep -qF 'does not yet fill' "$prk"; then
+        no "pr-review.md drops the stale 'does not yet fill' note" "still present"
+    else
+        ok "pr-review.md drops the stale 'does not yet fill' note"
+    fi
     if grep -qF 'Silence is a valid outcome' "$prk"; then
         no "pr-review.md does not call silence valid" "series-review's wording leaked in"
     else

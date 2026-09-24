@@ -5,16 +5,13 @@ author seat (fleet/personas/pr-author.md) decides on every wake whether
 the panel is still reviewing, has converged, or needs a re-roll, and the
 secretary (fleet/personas/secretary.md) closes the thread.
 
-Send with something like:
-    fork-sandbox mail send --from ${FROM} --to ${PANEL} \
-        --subject "${SUBJECT}" --body - <<'BODY'
-    ... this file, with placeholders filled ...
-    BODY
+Send with `lkml-fleet-kickoff.sh --template pr-review --review-target
+<branch>:<sha> ...`, which fills every placeholder below: the roster
+from pr-review.roster (or --author/--panel/--secretary/--version-limit),
+${FROZEN_HEAD} from the --review-target sha. docs/cluster-panel.md walks
+through the whole flow.
 
-Placeholders (dumb substitution -- fill with envsubst or sed, not a
-template engine). NOTE: lkml-fleet-kickoff.sh does not yet fill the
-five roster placeholders below; teaching it to is separate work. Until
-then fill them yourself.
+Placeholders (dumb substitution, not a template engine):
   ${FROM}          sending address (not the Author: reviewers address
                    the seat named on the Author: line, not this mail's
                    From:)
