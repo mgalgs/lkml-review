@@ -295,10 +295,12 @@ if [[ "${1-}" == "fleet" && "${2-}" == "expand" ]]; then
     esac
     exit 0
 fi
-if [[ "${1-}" == "mail" && ( "${2-}" == "send" || "${2-}" == "reply" ) ]]; then
+if [[ "${1-}" == "mail" ]]; then
     printf '%s\n' "$*" >> "$STUB_CAPTURE_DIR/argv"
     id="stub-$(printf '%s' "$*" | cksum | awk '{print $1}')-$$"
-    if [[ "$2" == "send" ]]; then
+    verb="${2-}"; [[ "$verb" == "--remote" ]] && verb="${3-}"
+    [[ "$verb" == "send" || "$verb" == "reply" ]] || { echo "Error: unexpected stub mail verb: $*" >&2; exit 1; }
+    if [[ "$verb" == "send" ]]; then
         echo "stub fork-sandbox: sent $id as a new thread" >&2
     else
         echo "stub fork-sandbox: replied $id" >&2
@@ -1321,6 +1323,67 @@ refused "a focused template with --header (print-only)" "reply inside an existin
 kick "${kick_base[@]}" --subject '[PATCH v3 0/2] improve the thing' --focus 'patch 2 only' \
     --template "$focused_template" --header 'X-Preview-PR: 42' --send
 refused "a focused template with --header (--send)" "fork-sandbox mail grant"
+
+printf '\n== --remote: every composed and run mail command carries it, right after `mail` ==\n'
+kick "${kick_base[@]}" --patches --send --remote
+check "--send --patches --remote exits 0" "0" "$k_rc"
+check "the cover and both patch replies all run as 'mail --remote <verb>'" "3" \
+    "$(grep -c -- '^mail --remote \(send\|reply\) ' <<<"$k_argv")"
+check "no mail command runs without --remote" "0" \
+    "$(grep -c -- '^mail \(send\|reply\) ' <<<"$k_argv")"
+check "exactly one of them is the cover send" "1" "$(grep -c -- '^mail --remote send ' <<<"$k_argv")"
+check "and two are per-patch replies" "2" "$(grep -c -- '^mail --remote reply ' <<<"$k_argv")"
+kick "${kick_base[@]}" --send --remote
+contains "a plain --send --remote cover is 'mail --remote send'" "$k_argv" "mail --remote send --from @author --to @lkml-panel --subject"
+kick "${kick_base[@]}" --patches --remote
+check "print-only --patches --remote exits 0" "0" "$k_rc"
+contains "the printed cover is 'fork-sandbox mail --remote send'" "$(grep -m1 -- 'cover_id=\$(' <<<"$k_out")" "cover_id=\$(fork-sandbox mail --remote send "
+check "every printed per-patch reply is 'fork-sandbox mail --remote reply'" "2" \
+    "$(grep -c -- '^fork-sandbox mail --remote reply ' <<<"$k_out")"
+check "no printed mail command lacks --remote" "0" \
+    "$(grep -c -- 'mail \(send\|reply\) ' <<<"$k_out")"
+kick "${kick_base[@]}" --remote
+contains "the printed (no --send, no --patches) cover is 'fork-sandbox mail --remote send'" "$k_out" "fork-sandbox mail --remote send "
+kick "${kick_base[@]}" --patches --send
+case "$k_argv" in
+    *"--remote"*) no "without --remote no command carries it" "$k_argv" ;;
+    *) ok "without --remote no command carries it" ;;
+esac
+kick "${kick_base[@]}" --remote --context-secret one --review-target "topic:$rt_tip" --header 'X-Preview-PR: 42' --send
+check "--remote composes with the in-cluster flags" "0" "$k_rc"
+contains "the in-cluster flags follow 'mail --remote send' on the cover" "$k_argv" \
+    "mail --remote send --from @author --to @lkml-panel --header X-Preview-PR: 42 --context-secret one --review-target topic:$rt_tip --subject"
+
+printf '\n== --remote refuses --context-ro ==\n'
+kick "${kick_base[@]}" --remote --context-ro "$grant_ctx_dir" --send
+refused "--remote with --context-ro" "--remote and --context-ro cannot be combined"
+kick "${kick_base[@]}" --context-ro "$missing_ctx_dir" --remote --send
+refused "--remote with a nonexistent --context-ro still names the conflict" "--remote and --context-ro"
+
+printf '\n== --remote warns when --seats expands through the local registry ==\n'
+kick "${kick_base[@]}" --remote --seats '@panel,@ci'
+check "--remote --seats <list address> still composes" "0" "$k_rc"
+contains "the list address warns the local registry may differ" "$k_out" "Warning: --seats '@panel' expanded to 3 seats through the local fleet registry, which may differ from the remote mail store's"
+contains "the roster is still stamped" "$k_out" 'X-Seats:\ @core\,\ @docs\,\ @tests\,\ @ci'
+check "the warning is given once" "1" "$(grep -c 'through the local fleet registry' <<<"$k_out")"
+kick "${kick_base[@]}" --remote --seats '@panel,@lkml-panel'
+check "two list addresses warn once, not per address" "1" "$(grep -c 'through the local fleet registry' <<<"$k_out")"
+kick "${kick_base[@]}" --remote --seats '@ci'
+check "--remote --seats <single seat> composes" "0" "$k_rc"
+case "$k_out" in
+    *"local fleet registry"*) no "a --seats address that expands to one seat does not warn" "$k_out" ;;
+    *) ok "a --seats address that expands to one seat does not warn" ;;
+esac
+kick "${kick_base[@]}" --seats '@panel'
+case "$k_out" in
+    *"local fleet registry"*) no "without --remote a list-address --seats does not warn" "$k_out" ;;
+    *) ok "without --remote a list-address --seats does not warn" ;;
+esac
+
+printf '\n== --remote is documented as reaching the mail API, not GitHub ==\n'
+kickoff_header="$(sed -n '2,/^set -euo/p' "$kickoff")"
+contains "the LOCAL ONLY paragraph says --remote still never talks to GitHub" "$kickoff_header" "With --remote the script still never talks to"
+contains "the LOCAL ONLY paragraph says the mail client reaches the mail API" "$kickoff_header" "reaches the mail API"
 
 printf '\n== kickoff templates keep the no-attachment guard on the author reply ==\n'
 # A wake's harvested reply carries no attachment path (the postmaster

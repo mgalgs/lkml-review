@@ -10,7 +10,7 @@
 #            [--allow-namespace <ns[:port]>]... [--reach-probe <host:port>]...
 #            [--context-ro <dir>] [--context-secret <name>]
 #            [--review-target <branch>:<sha>] [--header "Name: value"]...
-#            [--send]
+#            [--remote] [--send]
 #
 # <repo>       path to a local git repository.
 # <range>      a revision range passed straight to `git format-patch`
@@ -237,13 +237,28 @@
 #              restrictions as --allow-namespace otherwise: cover only,
 #              never on a per-patch reply, and refused alongside a ${FOCUS}
 #              template.
+# --remote     a bare switch. Every `fork-sandbox mail ...` this script
+#              composes or runs -- the cover and each per-patch reply,
+#              printed or sent -- becomes `fork-sandbox mail --remote ...`,
+#              so the mail client reaches a remote mail store through its
+#              API (the client reads FORK_SANDBOX_MAIL_API_URL and
+#              FORK_SANDBOX_MAIL_API_TOKEN_FILE from the environment; this
+#              script does not touch them). Refused with --context-ro: a
+#              host path means nothing to a remote store. --seats still
+#              expands through the LOCAL fleet registry, which may differ
+#              from the remote's; with --remote a --seats address that
+#              expands to more than one seat (a list address such as
+#              @panel) warns about that, once. A --seats naming concrete
+#              seats needs no expansion to trust and does not warn.
 # --send       actually run the composed `fork-sandbox mail send`
 #              command. Without it, the command is printed, shell-quoted,
 #              and nothing is sent.
 #
 # This script is LOCAL ONLY: it formats patches and fills a template. It
-# never talks to GitHub or the network in any way — the postmaster and
-# `fork-sandbox mail` handle everything past composing the message.
+# never talks to GitHub itself, and without --remote it never touches the
+# network at all -- the postmaster and `fork-sandbox mail` handle everything
+# past composing the message. With --remote the script still never talks to
+# GitHub, but the `fork-sandbox mail` client it runs reaches the mail API.
 
 set -euo pipefail
 
@@ -284,6 +299,7 @@ context_ro_given=0
 context_secret=""
 context_secret_given=0
 headers=()
+remote=0
 review_target=""
 review_target_given=0
 
@@ -317,6 +333,7 @@ while (( $# > 0 )); do
         --review-target)
             (( ! review_target_given )) || { echo "Error: --review-target may only be given once. See --help." >&2; exit 1; }
             review_target="$2"; review_target_given=1; shift 2 ;;
+        --remote) remote=1; shift ;;
         --allow-ambiguous-version) allow_ambiguous_version=1; shift ;;
         --patches) post_patches=1; shift ;;
         --attach) post_patches=1; echo "Warning: --attach is a deprecated alias for --patches; attachments are never posted -- this now posts one mail reply per patch instead. Use --patches." >&2; shift ;;
@@ -340,6 +357,10 @@ if (( version_given )) && [[ ! "$version" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if [[ -n "$ci_first" && -n "$cc" ]]; then
     echo "Error: --cc is incompatible with --ci-first: the kickoff must address the CI seat alone so Cc recipients are not woken before its results." >&2
+    exit 1
+fi
+if (( remote && context_ro_given )); then
+    echo "Error: --remote and --context-ro cannot be combined: --context-ro names a host path, which means nothing to a remote mail store. Use --context-secret. See --help." >&2
     exit 1
 fi
 if (( context_secret_given && context_ro_given )); then
@@ -495,6 +516,7 @@ if [[ -n "$seats" ]]; then
     fi
     declare -A seats_seen=()
     seats_expanded=()
+    seats_remote_warned=0
     IFS=',' read -r -a seats_addrs <<<"$seats"
     for seats_addr in "${seats_addrs[@]}"; do
         # Trim surrounding whitespace so "@a, @b" (a space after the
@@ -507,13 +529,19 @@ if [[ -n "$seats" ]]; then
             echo "Error: --seats address '$seats_addr' did not resolve; refusing to stamp a partial or wrong X-Seats roster." >&2
             exit 1
         fi
+        seats_addr_count=0
         while IFS= read -r seats_name; do
             [[ -z "${seats_name//[$'\t\r ']/}" ]] && continue
+            (( seats_addr_count += 1 ))
             if [[ -z "${seats_seen[$seats_name]+x}" ]]; then
                 seats_seen[$seats_name]=1
                 seats_expanded+=("$seats_name")
             fi
         done <<<"$seats_expansion"
+        if (( remote && seats_addr_count > 1 && ! seats_remote_warned )); then
+            seats_remote_warned=1
+            echo "Warning: --seats '$seats_addr' expanded to $seats_addr_count seats through the local fleet registry, which may differ from the remote mail store's; the X-Seats roster stamped is the local one." >&2
+        fi
     done
     if (( ${#seats_expanded[@]} == 0 )); then
         echo "Error: --seats '$seats' expanded to no addresses; refusing to stamp an empty X-Seats roster." >&2
@@ -987,7 +1015,9 @@ print(str(email.header.make_header(email.header.decode_header(raw))))
     fi
 }
 
-cover_cmd=(fork-sandbox mail send --from "$from" --to "$to")
+remote_args=()
+(( remote )) && remote_args=(--remote)
+cover_cmd=(fork-sandbox mail "${remote_args[@]}" send --from "$from" --to "$to")
 [[ -n "$cc" ]] && cover_cmd+=(--cc "$cc")
 [[ -n "$hops" ]] && cover_cmd+=(--hops "$hops")
 [[ -n "$seats_header" ]] && cover_cmd+=(--header "X-Seats: $seats_header")
@@ -1018,7 +1048,7 @@ if (( send )); then
         cover_id="$("${cover_cmd[@]}")"
         [[ -n "$cover_id" ]] || { echo "Error: fork-sandbox mail send printed no message id on stdout; cannot post per-patch replies without one." >&2; exit 1; }
         for f in "${patches[@]}"; do
-            fork-sandbox mail reply --from "$from" --to @operator \
+            fork-sandbox mail "${remote_args[@]}" reply --from "$from" --to @operator \
                 --reply-to "$cover_id" --subject "$(patch_subject "$f")" --body "$f"
         done
     else
@@ -1043,7 +1073,7 @@ else
         printf '%q ' "${cover_cmd[@]}"
         printf ')\n'
         for f in "${patches[@]}"; do
-            printf '%q ' fork-sandbox mail reply --from "$from" --to @operator --reply-to
+            printf '%q ' fork-sandbox mail "${remote_args[@]}" reply --from "$from" --to @operator --reply-to
             # shellcheck disable=SC2016
             printf '"$cover_id" '
             printf '%q ' --subject "$(patch_subject "$f")" --body "$f"
