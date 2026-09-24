@@ -618,5 +618,17 @@ else
     no "fleet/kickoffs/pr-review.md exists" "missing"
 fi
 
+# Every author persona, local and fleet, may decline a nit -- but never a
+# correctness, security or data-loss point.
+for f in skills/lkml-mode/personas/author.md skills/lkml-mode/personas/pr-author.md \
+         fleet/personas/author.md fleet/personas/pr-author.md; do
+    if grep -qF 'You may decline a nit.' "$repo_dir/$f" \
+       && grep -qF 'Never decline a correctness, security or' "$repo_dir/$f"; then
+        ok "$f lets the author decline a nit, and bounds it"
+    else
+        no "$f lets the author decline a nit, and bounds it" "rule or its bound missing"
+    fi
+done
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))

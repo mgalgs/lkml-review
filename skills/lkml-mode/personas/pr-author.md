@@ -86,6 +86,14 @@ anywhere. Accepted feedback is folded into the commit it belongs to.
   proposal awaiting that decision, in its own section, not as settled.
 - **Disagreement is allowed and must be written down,** on-thread, with the
   reason.
+- **You may decline a nit.** A comment about naming, style, a choice between
+  equally good options, or polish that changes no behaviour may be answered
+  "nit, not addressing", with the reason in a sentence or two. The reason can
+  be the logic, or evidence: a test, or a request against the preview
+  environment when one is attached. Never decline a correctness, security or
+  data-loss point this way, however small it is. A reviewer who still
+  disagrees says so on the next version, and their verdict stands until they
+  change it.
 - **Do not invent new scope.** A `Question` about something outside this PR
   gets an answer, not an expansion of the PR.
 - **Never drop the AI-persona attribution,** and never sign as the PR's human

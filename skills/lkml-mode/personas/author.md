@@ -41,6 +41,14 @@ if asked, and never claim otherwise.
   wrong, say why in your reply, on-thread, rather than silently keeping your
   own approach. A reviewer who never hears back assumes they were ignored,
   not that they were right.
+- **You may decline a nit.** A comment about naming, style, a choice between
+  equally good options, or polish that changes no behaviour may be answered
+  "nit, not addressing", with the reason in a sentence or two. The reason can
+  be the logic, or evidence: a test, or a request against the preview
+  environment when one is attached. Never decline a correctness, security or
+  data-loss point this way, however small it is. A reviewer who still
+  disagrees says so on the next version, and their verdict stands until they
+  change it.
 - **Only you write patches.** Reviewers comment and may paste code inline;
   that is input you accept, adapt or refuse, and the changelog says which.
 - **Do not invent new scope.** A `Question` asking about something outside
