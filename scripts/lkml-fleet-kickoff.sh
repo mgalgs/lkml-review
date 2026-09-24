@@ -1316,6 +1316,7 @@ if (( send )); then
         # a kickoff CI believes ran when it did not.
         exists_result="$(python3 -c '
 import json, sys
+from datetime import datetime
 from email.utils import parsedate_to_datetime
 
 filters = []
@@ -1351,6 +1352,9 @@ for elem in data:
     if not ok:
         bad = True
         continue
+    if not str(elem.get("thread") or "").strip():
+        print("NOTHREAD")
+        sys.exit(0)
     matches.append(elem)
 
 if bad:
@@ -1361,8 +1365,13 @@ if not matches:
     sys.exit(0)
 
 def sort_key(elem):
+    raw = str(elem.get("date") or "")
     try:
-        return parsedate_to_datetime(str(elem.get("date") or "")).timestamp()
+        return parsedate_to_datetime(raw).timestamp()
+    except Exception:
+        pass
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
     except Exception:
         return float("-inf")
 
@@ -1379,11 +1388,15 @@ for m in matches:
             BADFILTER)
                 echo "Error: fork-sandbox mail list returned a thread without the requested headers; the header filter is not supported by this fork-sandbox (upgrade it). Nothing sent." >&2
                 exit 1 ;;
+            NOTHREAD)
+                echo "Error: fork-sandbox mail list returned a matching thread with no thread id; cannot report which panel exists. Nothing sent." >&2
+                exit 1 ;;
             MATCH)
                 mapfile -t exists_threads < <(tail -n +2 <<<"$exists_result")
                 exists_chosen="${exists_threads[0]}"
                 if (( ${#exists_threads[@]} > 1 )); then
-                    exists_joined="$(IFS=', '; echo "${exists_threads[*]}")"
+                    printf -v exists_joined '%s, ' "${exists_threads[@]}"
+                    exists_joined="${exists_joined%, }"
                     echo "Warning: ${#exists_threads[@]} threads match --unless-exists for $review_target_branch $review_target_sha with the same headers: $exists_joined; choosing the newest, $exists_chosen." >&2
                 fi
                 printf '%s\n' "$exists_chosen"

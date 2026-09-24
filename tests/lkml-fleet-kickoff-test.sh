@@ -1311,10 +1311,32 @@ check "two matches: prints the newest thread id, alone, on stdout" "T-NEW" "$two
 contains "two matches: the Warning line names T-OLD" "$two_match_stderr" "T-OLD"
 contains "two matches: the Warning line names T-NEW" "$two_match_stderr" "T-NEW"
 contains "two matches: the Skipped line names the chosen (newest) id" "$two_match_stderr" "Skipped: thread T-NEW"
+contains "two matches: the Warning joins the ids with ', '" "$two_match_stderr" "T-NEW, T-OLD"
 case "$two_match_argv" in
     *"mail send"*|*"mail reply"*) no "two matches: nothing sent" "$two_match_argv" ;;
     *) ok "two matches: nothing sent" ;;
 esac
+
+printf '\n== --unless-exists lookup: ISO-8601 dates also order the matches ==\n'
+# The newest is listed SECOND: if the dates did not parse, the stable sort
+# would keep list order and choose T-OLD.
+STUB_LIST_JSON="$(cat <<JSON
+[{"thread":"T-OLD","messages":1,"subject":"s","from":"@author","date":"2025-09-01T09:00:00Z","last_date":"2025-09-01T09:00:00Z","root_headers":[["X-Review-Target-Set","topic $rt_tip"]],"review_target":null},{"thread":"T-NEW","messages":1,"subject":"s","from":"@author","date":"2025-09-01T12:00:00Z","last_date":"2025-09-01T12:00:00Z","root_headers":[["X-Review-Target-Set","topic $rt_tip"]],"review_target":null}]
+JSON
+)"
+iso_match_out="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" STUB_EXPAND_LOG="$expand_log" \
+    STUB_LIST_JSON="$STUB_LIST_JSON" \
+    "$kickoff" "$project_dir" "$kick_range" "${kick_base[@]}" --review-target "topic:$rt_tip" --unless-exists --send \
+    2>/dev/null)"
+check "ISO dates: prints the newest thread id" "T-NEW" "$iso_match_out"
+
+printf '\n== --unless-exists lookup: a match with no thread id is refused, not printed empty ==\n'
+STUB_LIST_JSON="$(cat <<JSON
+[{"messages":1,"subject":"s","from":"@author","date":"Mon, 01 Sep 2025 09:00:00 +0000","last_date":"Mon, 01 Sep 2025 09:00:00 +0000","root_headers":[["X-Review-Target-Set","topic $rt_tip"]],"review_target":null}]
+JSON
+)"
+kick "${kick_base[@]}" --review-target "topic:$rt_tip" --unless-exists --send
+refused_after_lookup "a match with no thread id" "with no thread id"
 
 printf '\n== --unless-exists lookup: a thread missing a filter header means an old fork-sandbox -- refuse, never fall back to sending ==\n'
 STUB_LIST_JSON="$(cat <<JSON
