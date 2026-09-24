@@ -481,6 +481,55 @@ if [[ -n "$verdict_baseline" ]]; then
     done
 fi
 
+# secretary: the terminal message of a panel thread. Its Panel-* trailer
+# lines are a machine contract read by a separate parser, so spelling and
+# order are pinned exactly, and the summary goes to @operator alone.
+sec="$personas_dir/secretary.md"
+extract_closing() {
+    awk '/^## Closing the panel$/{ f = 1; print; next }
+         f && /^## / { exit }
+         f { print }' "$1"
+}
+closing="$(extract_closing "$sec")"
+if [[ -n "$closing" ]]; then
+    ok "secretary.md carries the Closing the panel section"
+else
+    no "secretary.md carries the Closing the panel section" "no '## Closing the panel' heading"
+fi
+panel_lines="$(grep -E '^ +Panel-[A-Za-z]+: ' <<<"$closing" | sed 's/^ *//')"
+expected_panel_lines='Panel-Version: <N>
+Panel-Status: CONVERGED
+Panel-Verdict: SIGNED-OFF'
+if [[ "$panel_lines" == "$expected_panel_lines" ]]; then
+    ok "secretary.md shows the three Panel-* lines, in order"
+else
+    no "secretary.md shows the three Panel-* lines, in order" "got: $panel_lines"
+fi
+has "$sec" 'To: @operator' \
+    "secretary.md addresses its summary To: @operator"
+if grep -qF 'whoever invoked you' "$sec"; then
+    no "secretary.md no longer addresses whoever invoked it" "old wording still present"
+else
+    ok "secretary.md no longer addresses whoever invoked it"
+fi
+# shellcheck disable=SC2016  # literal backticks in the needles
+{
+has "$sec" '`Panel-Status` is `CONVERGED` only when every' \
+    "secretary.md ties CONVERGED to every Panel seat's non-blocking verdict"
+has "$sec" 'NO `Panel-Verdict:` line at all' \
+    "secretary.md writes no Panel-Verdict line unless converged"
+has "$sec" '`IN-PROGRESS`' \
+    "secretary.md names Panel-Status IN-PROGRESS"
+has "$sec" '`SIGNED-OFF` if N is 1' \
+    "secretary.md signs off only a converged v1"
+has "$sec" '`RESPIN` if N is greater than 1' \
+    "secretary.md respins a converged later version"
+has "$sec" 'verify it from the thread yourself' \
+    "secretary.md verifies verdicts from the thread, not the Author's summary"
+has "$sec" 'last in the body' \
+    "secretary.md makes the Panel-* lines last in the body"
+}
+
 # pr-author: the fleet's in-cluster PR author. Its wake checklist IS the
 # round protocol (no orchestrator drives the rounds), so the strings
 # that carry the protocol are pinned, not just the frontmatter.
