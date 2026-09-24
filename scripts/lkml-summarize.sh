@@ -395,7 +395,7 @@ else
     echo "fork-sandbox lkml-summarize: summarizing $series v$version (low: $low_spec, high: $high_spec)" >&2
 fi
 
-echo "fork-sandbox lkml-summarize: assembling summary input (the whole thread render)..." >&2
+echo "fork-sandbox lkml-summarize: assembling summary input..." >&2
 
 # Per-version mode only: in --series mode every recorded version's tally
 # was already extracted and checked in the loop above, and the series
@@ -526,9 +526,9 @@ You are handed, below, "$series v$version"'s own section of the
 mailbox's --text render, inlined: this sandbox cannot read the
 mailbox. It is this version's own thread, exactly as posted, plus,
 only when any exist, a block of late replies: messages filed on an
-EARLIER version's
-thread while v$version was the current version (a reviewer answering a
-still-open point on the old thread rather than the new one). A late
+EARLIER version's thread while v$version was the current version (a
+reviewer answering a still-open point on the old thread rather than
+the new one). A late
 reply counts toward THIS version's verdicts, defects and responses
 exactly as if it had been posted here.
 BRIEF
