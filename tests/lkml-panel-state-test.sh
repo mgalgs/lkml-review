@@ -1160,6 +1160,63 @@ check "an unreadable unrouted count is not quiescent" "false" "$(jr .postmaster.
 reason_has "an unreadable unrouted count is a reason" "unrouted count is unreadable"
 check "and is not CONVERGED" "IN-PROGRESS" "$(jr .status)"
 
+printf '\n== a newer tagged message with no usable target ==\n'
+gen nohdr <<'PY'
+m = [root(), msg(2, "@core", "Reviewed-by: C", sha=A, ver=1),
+     msg(3, "@tests", "Reviewed-by: T", sha=A, ver=1),
+     msg(4, "@docs", "Reviewed-by: D", sha=A, ver=1),
+     msg(5, "@core", "NAK", sha=None), sec(20)]
+write(D, export(m), status())
+PY
+run_case nohdr
+check "a header-less NAK after an on-target Reviewed-by: not CONVERGED (quiescent, so STALLED)" "STALLED" "$(jr .status)"
+check "the seat is stale, not positive" "stale" "$(seat @core state)"
+check "the seat reports the newer message" "NAK m005" "$(seat @core verdict) $(seat @core message_id)"
+reason_has "the reason names the unstamped message" "@core: newer message m005 carries NAK with no usable X-Review-Target"
+reason_has "the secretary's CONVERGED is called out" "secretary says CONVERGED but @core is stale"
+check "verdict is null" "null" "$(j .verdict)"
+
+gen nohdr2 <<'PY'
+m = [root(), msg(2, "@core", "Reviewed-by: C", sha=A, ver=1),
+     msg(3, "@tests", "Reviewed-by: T", sha=A, ver=1),
+     msg(4, "@docs", "Reviewed-by: D", sha=A, ver=1),
+     msg(5, "@core", "NAK", extra=[["X-Review-Target", "garbage"]]), sec(20)]
+write(D, export(m), status())
+PY
+run_case nohdr2
+check "an unparseable X-Review-Target NAK: not CONVERGED" "STALLED" "$(jr .status)"
+
+gen nohdr3 <<'PY'
+m = [root(), msg(2, "@core", "NAK", sha=None),
+     msg(3, "@core", "Reviewed-by: C", sha=A, ver=1),
+     msg(4, "@tests", "Reviewed-by: T", sha=A, ver=1),
+     msg(5, "@docs", "Reviewed-by: D", sha=A, ver=1), sec(20)]
+write(D, export(m), status())
+PY
+run_case nohdr3
+check "a header-less NAK BEFORE the on-target Reviewed-by does not block" "CONVERGED" "$(jr .status)"
+
+printf '\n== oversized digit strings are input, not a crash ==\n'
+gen bigint <<'PY'
+big = "9" * 5000
+body = ROOT_BODY.replace("Version-Limit: 4", "Version-Limit: " + big)
+m = [root(body=body), msg(2, "@core", "Reviewed-by: C", sha=A, extra=[["X-Version", big]]),
+     msg(3, "@tests", "Reviewed-by: T", sha=A, ver=1),
+     msg(4, "@docs", "Reviewed-by: D", sha=A, ver=1),
+     sec(20, pver=big)]
+st = status(); st["review_target"]["version"] = big
+write(D, export(m), st)
+PY
+run_case bigint
+check "huge digit strings: exit 0, an object" "0" "$RC"
+if grep -q Traceback "$work/err"; then no "huge digit strings: no traceback" "$(cat "$work/err")"; else ok "huge digit strings: no traceback"; fi
+check "huge Version-Limit is null" "null" "$(j .roster.version_limit)"
+reason_has "huge Version-Limit is a clipped reason" "malformed Version-Limit"
+check "huge target version is null" "null" "$(j .target.version)"
+check "huge X-Version is null on the seat" "null" "$(seat @core version)"
+reason_has "huge Panel-Version is a malformed trailer" "is not a number"
+check "and it is not CONVERGED" "STALLED" "$(jr .status)"
+
 printf '\n== invariants over every case above ==\n'
 inv_bad=""; inv_n=0; inv_conv=0
 for c in "${cases_run[@]}"; do

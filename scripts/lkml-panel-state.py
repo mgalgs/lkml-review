@@ -71,7 +71,9 @@ Changes-requested, Question, then the -by trailers). state is:
     blocking   Changes-requested / NAK
     question   Question
     stale      no on-target tagged message, but a tagged message about
-               another target exists
+               another target exists; or a tagged message with no usable
+               X-Review-Target is NEWER than the on-target positive (it
+               may retract it, so the positive is not trusted)
     silent     no tagged message from the seat at all
 
 Secretary -- the roster's Secretary seat reports the panel's overall
@@ -169,6 +171,20 @@ Usage: lkml-panel-state.py <thread-id> [--remote]
        lkml-panel-state.py -h|--help"""
 
 
+UINT_RE = re.compile(r"[0-9]{1,18}")
+
+
+def parse_uint(text):
+    """A non-negative integer from digits, or None. The length cap keeps
+    int() away from strings long enough to raise ValueError (Python 3.11+
+    refuses 4300+ digits); no real version or count is anywhere near it."""
+    return int(text) if UINT_RE.fullmatch(text) else None
+
+
+def clip(text, n=40):
+    return text if len(text) <= n else text[:n] + "..."
+
+
 class InputError(Exception):
     pass
 
@@ -237,7 +253,7 @@ def int_header(msg, name):
     if len(vals) != 1:
         return None
     v = next(iter(vals))
-    return int(v) if re.fullmatch(r"[0-9]+", v) else None
+    return parse_uint(v)
 
 
 def normalize_message(raw):
@@ -301,11 +317,11 @@ def parse_roster(root):
             if addr and addr not in roster["panel"]:
                 roster["panel"].append(addr)
     if "Version-Limit" in seen:
-        if re.fullmatch(r"[0-9]+", seen["Version-Limit"]):
-            roster["version_limit"] = int(seen["Version-Limit"])
-        else:
+        roster["version_limit"] = parse_uint(seen["Version-Limit"])
+        if roster["version_limit"] is None:
             reasons.append(
-                f"roster: malformed Version-Limit {seen['Version-Limit']!r} dropped")
+                f"roster: malformed Version-Limit "
+                f"{clip(seen['Version-Limit'])!r} dropped")
     if "Frozen-Head" in seen:
         if FROZEN_HEAD_RE.match(seen["Frozen-Head"]):
             roster["frozen_head"] = seen["Frozen-Head"].lower()
@@ -322,8 +338,8 @@ def opt_int(value):
         return None
     if isinstance(value, int):
         return value
-    if isinstance(value, str) and re.fullmatch(r"[0-9]+", value):
-        return int(value)
+    if isinstance(value, str):
+        return parse_uint(value)
     return None
 
 
@@ -425,6 +441,17 @@ def judge_seat(seat, msgs, target):
         entry.update(state=seat_state_of(tag), verdict=tag,
                      message_id=m["id"], version=m["version"], sha=m["sha"])
         if entry["state"] == "positive":
+            newer = [x for x in tagged if x["seq"] > m["seq"] and x["sha"] is None]
+            if newer:
+                # A later tagged message about no readable target may be
+                # a retraction; "silently vanishes" would be a false green.
+                u = newer[-1]
+                utag = pick_tag(u["tags"])
+                entry.update(state="stale", verdict=utag, message_id=u["id"],
+                             version=u["version"], sha=None)
+                return entry, (f"{seat}: newer message {u['id']} carries "
+                               f"{utag} with no usable X-Review-Target; "
+                               f"{tag} on {target_label(target)} not trusted")
             return entry, None
         where = f"v{target['version']}" if target["version"] is not None \
             else f"({target['sha'][:8]})"
@@ -470,9 +497,9 @@ def parse_trailer(body):
         return None, ("trailer block is not Panel-Version, Panel-Status "
                       "[, Panel-Verdict] in that order")
     fields = {"version": None, "status": None, "verdict": None}
-    if not re.fullmatch(r"[0-9]+", vals[0]):
-        return None, f"Panel-Version {vals[0]!r} is not a number"
-    fields["version"] = int(vals[0])
+    fields["version"] = parse_uint(vals[0])
+    if fields["version"] is None:
+        return None, f"Panel-Version {clip(vals[0])!r} is not a number"
     if vals[1] not in ("CONVERGED", "IN-PROGRESS"):
         return None, f"unknown Panel-Status {vals[1]!r}"
     fields["status"] = vals[1]
