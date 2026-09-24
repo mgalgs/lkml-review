@@ -575,5 +575,43 @@ has "$pra" 'GIT_SEQUENCE_EDITOR=true' \
 has "$pra" 'Comment-only:' \
     "pr-author.md keeps the Comment-only trailer rule"
 
+# pr-review kickoff: the roster lines are how every seat finds the
+# author, the panel, the secretary and the frozen head, so each must sit
+# alone at the start of its own line in the body (after the header
+# comment), spelled exactly as the personas read them.
+prk="$repo_dir/fleet/kickoffs/pr-review.md"
+if [[ -f "$prk" ]]; then
+    ok "fleet/kickoffs/pr-review.md exists"
+    prk_body="$(awk 'BEGIN { c = 0 } c == 0 && /^<!--/ { c = 1 } c == 1 { if (index($0, "-->")) c = 2; next } { print }' "$prk")"
+    # shellcheck disable=SC2016  # ${...} is the literal placeholder text
+    for roster in 'Author: ${AUTHOR}' 'Panel: ${PANEL}' 'Secretary: ${SECRETARY}' \
+                  'Version-Limit: ${VERSION_LIMIT}' 'Frozen-Head: ${FROZEN_HEAD}'; do
+        if grep -qxF -- "$roster" <<<"$prk_body"; then
+            ok "pr-review.md body carries '$roster' alone on its line"
+        else
+            no "pr-review.md body carries '$roster' alone on its line" "not found as a whole line"
+        fi
+    done
+    # shellcheck disable=SC2016  # ${...} is the literal placeholder text
+    for ph in '${SUMMARY}' '${BASE}' '${BRANCH}' '${PATCH_COUNT}'; do
+        if grep -qF -- "$ph" <<<"$prk_body"; then
+            ok "pr-review.md body uses $ph"
+        else
+            no "pr-review.md body uses $ph"
+        fi
+    done
+    has "$prk" 'Silence is NOT a' \
+        "pr-review.md says silence is not a valid outcome"
+    has "$prk" 'does not yet fill the' \
+        "pr-review.md header says kickoff-script support for the roster placeholders is separate work"
+    if grep -qF 'Silence is a valid outcome' "$prk"; then
+        no "pr-review.md does not call silence valid" "series-review's wording leaked in"
+    else
+        ok "pr-review.md does not call silence valid"
+    fi
+else
+    no "fleet/kickoffs/pr-review.md exists" "missing"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))
