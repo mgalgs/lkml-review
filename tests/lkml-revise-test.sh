@@ -26,6 +26,16 @@
 #     already exists): exits non-zero and does NOT append to the
 #     version-to-branch ledger lkml-forklift.sh reads -- a failed init must
 #     not leave a ledger entry for a version with no cover letter.
+#   - the handoff names the frozen boundary (an --upstream-head, an
+#     inherited ledger head, or the series base) and carries the re-roll
+#     rules: fold fixes into the right commit, no fixup!/squash!, a
+#     `## Testing` section, accepted/adapted/refused per reviewer point.
+#   - the gate (lkml-series-check.sh, next to the script) refuses a fetched
+#     branch with a fixup! commit, a comment-only commit, or one not sitting
+#     on the --upstream-head; a cover letter with no `## Testing` heading
+#     is refused too. Every refusal still harvests replies, posts no
+#     version and keeps the branch. A clean re-rolled branch whose commits
+#     are not descendants of the checkout tip, only of the boundary, posts.
 
 set -uo pipefail
 
@@ -125,6 +135,7 @@ run_prefix_dir="$(mktemp -d)"; tmpdirs+=("$run_prefix_dir")
 # writes its own stub so commits/fetched/cover-letter can vary.
 write_stub() {
     local commits="$1" fetched="$2" write_cover="$3" write_reply="$4"
+    local branch="${5:-v2-branch}" testing="${6:-1}"
     cat > "$stub_bin/fork-sandbox.sh" <<STUB
 #!/usr/bin/env bash
 set -euo pipefail
@@ -137,6 +148,11 @@ STUB
         cat >> "$stub_bin/fork-sandbox.sh" <<STUB
 printf 'Add the return-value fix\n\nv2: fixed frob per core.\n' > "\$clone_dir/.git/lkml-out/cover-letter.md"
 STUB
+        if [[ "$testing" == 1 ]]; then
+            cat >> "$stub_bin/fork-sandbox.sh" <<STUB
+printf '\n## Testing\n\nsh run-tests.sh: 4 passed, 0 failed\n' >> "\$clone_dir/.git/lkml-out/cover-letter.md"
+STUB
+        fi
     fi
     if [[ "$write_reply" == 1 ]]; then
         cat >> "$stub_bin/fork-sandbox.sh" <<STUB
@@ -144,7 +160,7 @@ printf 'In-Reply-To: $r1\nX-Tags: Reviewed-by\n\nFixed, see v2.\n' > "\$clone_di
 STUB
     fi
     cat >> "$stub_bin/fork-sandbox.sh" <<STUB
-jq -n --arg clone_dir "\$clone_dir" --arg branch "v2-branch" \\
+jq -n --arg clone_dir "\$clone_dir" --arg branch "$branch" \\
     --argjson commits $commits --argjson fetched $fetched \\
     '{clone_dir: \$clone_dir, branch: \$branch, commits: \$commits, fetched: \$fetched}' \\
     > "\$run_dir/summary.json"
@@ -166,7 +182,7 @@ contains "reports posting v2" "$out" "posted v2"
 tree_out="$("$mailbox" tree widget-frob)"
 contains "v2 shows up in the tree" "$tree_out" "=== v2 ==="
 contains "v2's patch carries the real repo's commit message" "$tree_out" "frob: fix return value"
-contains "v2 is posted as the whole series (v1's commit plus this round's fixup), not just the fixup alone" \
+contains "v2 is posted as the whole series (v1's commit plus this round's change), not just the change alone" \
     "$tree_out" "PATCH v2 2/2"
 contains "core's Changes-requested was answered with Reviewed-by" \
     "$("$mailbox" tree widget-frob)" "Reviewed-by"
@@ -411,7 +427,7 @@ write_stub 1 true 1 1
 r1="$r1_saved"
 out_uh="$(PATH="$stub_bin:$PATH" "$revise" widget-uh --project "$real_repo" \
     --checkout somebranch --version 1 --base "$series_base_sha" \
-    --upstream-head v2-branch 2>&1)"
+    --upstream-head somebranch 2>&1)"
 rc_uh=$?
 if (( rc_uh == 0 )); then ok "uh: exits 0 and posts v2"; else no "uh: exits 0 and posts v2" "exit $rc_uh: $out_uh"; fi
 uh_tree="$("$mailbox" tree widget-uh)"
@@ -419,12 +435,192 @@ uh_reply_msg="$("$mailbox" show widget-uh "$(printf '%s\n' "$uh_tree" | grep -m1
 contains "the author's reply carries the REVIEWED version's ledger upstream_head" \
     "$uh_reply_msg" "X-Upstream-Head: $reviewed_upstream_sha"
 case "$uh_reply_msg" in
-    *"X-Upstream-Head: $v2_branch_sha"*) no "the author's reply must not carry the NEW version's --upstream-head instead" ;;
+    *"X-Upstream-Head: $somebranch_sha"*) no "the author's reply must not carry the NEW version's --upstream-head instead" ;;
     *) ok "the author's reply does not carry the NEW version's --upstream-head" ;;
 esac
 uh_v2_cover_id="$(printf '%s\n' "$uh_tree" | awk '/^=== v2 ===/{found=1; next} found && /^[[:alnum:]]/{print $1; exit}')"
 contains "the new v2 cover still carries the NEW version's --upstream-head, not the reviewed one" \
-    "$("$mailbox" show widget-uh "$uh_v2_cover_id")" "X-Upstream-Head: $v2_branch_sha"
+    "$("$mailbox" show widget-uh "$uh_v2_cover_id")" "X-Upstream-Head: $somebranch_sha"
+
+printf '\n== fixture branches, as a run would fetch them back ==\n'
+# Real branches, standing in for what a run fetches back, all built on the
+# series base (--base) with a real git history.
+orig_branch="$(git -C "$real_repo" rev-parse --abbrev-ref HEAD)"
+rgit() { git -C "$real_repo" "$@"; }
+rgit checkout -q --detach "$series_base_sha"
+printf 'int frob(void) { return 1; }\n' > "$real_repo/frob.c"
+rgit add frob.c; rgit commit -q -m "frob: add core"
+printf 'int frob(void) { return 2; }\n' > "$real_repo/frob.c"
+rgit commit -q -am "fixup! frob: add core"
+rgit branch -f fixup-branch HEAD
+
+rgit checkout -q --detach "$series_base_sha"
+printf 'int frob(void) { return 1; }\n' > "$real_repo/frob.c"
+rgit add frob.c; rgit commit -q -m "frob: add core"
+printf '/* frob returns one */\nint frob(void) { return 1; }\n' > "$real_repo/frob.c"
+rgit commit -q -am "frob: document the return value"
+rgit branch -f comment-branch HEAD
+
+rgit checkout -q --detach "$series_base_sha"
+printf 'int frob(void) { return 1; }\n' > "$real_repo/frob.c"
+rgit add frob.c; rgit commit -q -m "frob: add core, returning one"
+printf 'int main(void) { return frob() != 1; }\n' > "$real_repo/frob_test.c"
+rgit add frob_test.c; rgit commit -q -m "frob: add a self-test"
+rgit branch -f reroll-branch HEAD
+rgit checkout -q "$orig_branch"
+if rgit merge-base --is-ancestor "$somebranch_sha" reroll-branch; then
+    no "fixture: reroll-branch must NOT descend from the checkout tip"
+else
+    ok "fixture: reroll-branch does not descend from the checkout tip"
+fi
+if rgit merge-base --is-ancestor "$series_base_sha" reroll-branch; then
+    ok "fixture: reroll-branch descends from the boundary (the series base)"
+else
+    no "fixture: reroll-branch descends from the boundary (the series base)"
+fi
+
+printf '\n== the handoff names the frozen boundary and the re-roll rules ==\n'
+handoff_of() { tail -n1 "$run_prefix_dir/last-args"; }
+# Read from a run whose branch the gate refuses (fixup-branch, built below),
+# so it posts no version of widget-uh: the inheritance case further down
+# posts v3 and must find it free.
+r1_saved="$r1"; r1="$r_uh"
+write_stub 1 true 1 0 fixup-branch
+PATH="$stub_bin:$PATH" "$revise" widget-uh --project "$real_repo" \
+    --checkout somebranch --version 2 --base "$series_base_sha" \
+    --upstream-head somebranch >/dev/null 2>&1
+r1="$r1_saved"
+h_up="$(cat -- "$(handoff_of)")"
+contains "an --upstream-head names the full sha as frozen" "$h_up" \
+    "Commits up to and including $somebranch_sha are frozen: never rewrite them. Everything above it is your series; re-roll it."
+contains "the handoff tells the author to fold fixes into the right commit" "$h_up" "fold every fix into the commit it belongs to"
+contains "the handoff names the autosquash recipe with a no-op editor" "$h_up" "GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash $somebranch_sha"
+contains "the handoff forbids fixup!/squash! commits" "$h_up" "no fixup!, squash! or amend! commit"
+contains "the handoff asks for a ## Testing section with counts" "$h_up" "## Testing"
+contains "the handoff asks for accepted/adapted/refused per reviewer point" "$h_up" "accepted, adapted or refused"
+contains "the handoff says only the author writes patches" "$h_up" "Only you write patches"
+case "$h_up" in
+    *"commit early and often"*|*"one logical change per commit -- not one"*) no "the append-only advice is gone from the handoff" ;;
+    *) ok "the append-only advice is gone from the handoff" ;;
+esac
+
+printf '\n== the frozen boundary is the series base when nothing is stacked ==\n'
+# refuse_case <label> <branch> <violation-substring> [extra revise args]
+# One refusal: the run is stubbed to fetch <branch>; the gate must refuse,
+# the reply must still land, and nothing may be posted.
+refuse_case() {
+    local label="$1" branch="$2" want="$3"; shift 3
+    write_stub 1 true 1 1 "$branch"
+    local msgs_before msgs_after
+    msgs_before="$(find "$LKML_MAILBOX_ROOT/widget-frob/cur" -name '*.msg' | wc -l)"
+    out="$(PATH="$stub_bin:$PATH" "$revise" widget-frob --project "$real_repo" \
+        --checkout somebranch --version 9 --base "$series_base_sha" "$@" 2>&1)"
+    rc=$?
+    if (( rc != 0 )); then ok "$label: exits non-zero"; else no "$label: exits non-zero" "exit 0: $out"; fi
+    contains "$label: prints the violation" "$out" "$want"
+    contains "$label: says it refuses v10 and keeps the branch" "$out" \
+        "refusing to post v10: the series is not a clean re-roll; branch $branch kept for inspection"
+    contains "$label: the reply was still harvested" "$out" "harvested 1 repl"
+    msgs_after="$(find "$LKML_MAILBOX_ROOT/widget-frob/cur" -name '*.msg' | wc -l)"
+    check "$label: only the harvested reply was posted (no v10)" "$(( msgs_before + 1 ))" "$msgs_after"
+    case "$out" in *"posted v10"*) no "$label: v10 must not be posted" ;; *) ok "$label: v10 is not posted" ;; esac
+}
+refuse_case "a fixup! commit" fixup-branch "fixup! frob: add core: "
+h_base="$(cat -- "$(handoff_of)")"
+contains "no upstream: the handoff names the series base as the boundary" "$h_base" \
+    "Everything above the series base $series_base_sha is yours; re-roll it."
+refuse_case "a comment-only commit" comment-branch "frob: document the return value: changes only comments"
+
+printf '\n== --upstream-head is the boundary, and the branch must sit on it ==\n'
+refuse_case "a branch not on the --upstream-head" reroll-branch \
+    "the frozen commits were rewritten or the series is not on the boundary" --upstream-head somebranch
+contains "the refusal names the boundary" "$out" "Commits up to and including $somebranch_sha are frozen"
+
+printf '\n== a boundary the checkout tip does not contain is refused before launch ==\n'
+write_stub 1 true 1 1 reroll-branch
+msgs_before="$(find "$LKML_MAILBOX_ROOT/widget-frob/cur" -name '*.msg' | wc -l)"
+out="$(PATH="$stub_bin:$PATH" "$revise" widget-frob --project "$real_repo" \
+    --checkout somebranch --version 9 --base "$series_base_sha" \
+    --upstream-head reroll-branch 2>&1)"
+rc=$?
+if (( rc != 0 )); then ok "moved --upstream-head: exits non-zero"; else no "moved --upstream-head: exits non-zero" "exit 0: $out"; fi
+contains "moved --upstream-head: says the boundary is not an ancestor of --checkout" "$out" "is not an ancestor of --checkout"
+msgs_after="$(find "$LKML_MAILBOX_ROOT/widget-frob/cur" -name '*.msg' | wc -l)"
+check "moved --upstream-head: nothing was posted" "$msgs_before" "$msgs_after"
+
+printf '\n== a cover letter without ## Testing is refused ==\n'
+write_stub 1 true 1 1 reroll-branch 0
+msgs_before="$(find "$LKML_MAILBOX_ROOT/widget-frob/cur" -name '*.msg' | wc -l)"
+out="$(PATH="$stub_bin:$PATH" "$revise" widget-frob --project "$real_repo" \
+    --checkout somebranch --version 9 --base "$series_base_sha" 2>&1)"
+rc=$?
+if (( rc != 0 )); then ok "no ## Testing: exits non-zero"; else no "no ## Testing: exits non-zero" "exit 0: $out"; fi
+contains "no ## Testing: names the missing section" "$out" "## Testing"
+contains "no ## Testing: refuses v10" "$out" "refusing to post v10"
+contains "no ## Testing: names the branch" "$out" "reroll-branch"
+contains "no ## Testing: the reply was still harvested" "$out" "harvested 1 repl"
+msgs_after="$(find "$LKML_MAILBOX_ROOT/widget-frob/cur" -name '*.msg' | wc -l)"
+check "no ## Testing: only the harvested reply was posted" "$(( msgs_before + 1 ))" "$msgs_after"
+
+printf '\n== a clean re-roll, not a descendant of the checkout tip, posts ==\n'
+write_stub 1 true 1 1 reroll-branch
+out="$(PATH="$stub_bin:$PATH" "$revise" widget-frob --project "$real_repo" \
+    --checkout somebranch --version 9 --base "$series_base_sha" 2>&1)"
+rc=$?
+check "the re-rolled series exits 0" "0" "$rc"
+contains "the re-rolled series posts v10" "$out" "posted v10"
+tree_out="$("$mailbox" tree widget-frob)"
+contains "v10 is posted as the whole re-rolled series" "$tree_out" "PATCH v10 2/2"
+contains "v10 carries the re-rolled commit" "$tree_out" "frob: add core, returning one"
+
+printf '\n== an inherited upstream_head is the boundary when --upstream-head is omitted ==\n'
+# widget-uh v2 was posted above with --upstream-head somebranch; revising v2
+# without the flag must inherit that head from the ledger.
+r1_saved="$r1"; r1="$r_uh"
+write_stub 1 true 1 1
+r1="$r1_saved"
+out="$(PATH="$stub_bin:$PATH" "$revise" widget-uh --project "$real_repo" \
+    --checkout somebranch --version 2 --base "$series_base_sha" 2>&1)"
+rc=$?
+check "inherited boundary: exits 0 and posts v3" "0" "$rc"
+contains "inherited boundary: the handoff names the inherited head" "$(cat -- "$(handoff_of)")" \
+    "Commits up to and including $somebranch_sha are frozen"
+
+printf '\n== pr-author with no frozen boundary is refused at launch ==\n'
+pra_personas="$(mktemp -d)"
+cat > "$pra_personas/pr-author.md" <<'PERSONA'
+---
+persona: pr-author
+role: author
+display: The PR Author
+harness: claude
+---
+
+# The PR Author (AI persona)
+
+Body.
+PERSONA
+msgs_before="$(find "$LKML_MAILBOX_ROOT/widget-frob/cur" -name '*.msg' | wc -l)"
+n_runs_before=$(find "$run_prefix_dir" -maxdepth 1 -name 'run.*' | wc -l)
+out="$(PATH="$stub_bin:$PATH" "$revise" widget-frob --project "$real_repo" \
+    --checkout somebranch --version 9 --base "$series_base_sha" \
+    --author pr-author --personas-dir "$pra_personas" 2>&1)"
+rc=$?
+if (( rc != 0 )); then ok "pr-author, no upstream head: exits non-zero"; else no "pr-author, no upstream head: exits non-zero" "exit 0: $out"; fi
+contains "pr-author, no upstream head: tells the operator to pass --upstream-head" "$out" "Pass --upstream-head <pr-head>"
+n_runs_after=$(find "$run_prefix_dir" -maxdepth 1 -name 'run.*' | wc -l)
+check "pr-author, no upstream head: no run was launched" "$n_runs_before" "$n_runs_after"
+msgs_after="$(find "$LKML_MAILBOX_ROOT/widget-frob/cur" -name '*.msg' | wc -l)"
+check "pr-author, no upstream head: nothing was posted" "$msgs_before" "$msgs_after"
+out="$(PATH="$stub_bin:$PATH" "$revise" widget-frob --project "$real_repo" \
+    --checkout somebranch --version 9 --base "$series_base_sha" \
+    --author pr-author --personas-dir "$pra_personas" \
+    --upstream-head somebranch 2>&1)"
+case "$out" in
+    *"needs a frozen boundary"*) no "pr-author with --upstream-head is not refused for a missing boundary" "$out" ;;
+    *) ok "pr-author with --upstream-head is not refused for a missing boundary" ;;
+esac
+rm -rf -- "$pra_personas"
 
 printf '\n== --help ==\n'
 h_out="$("$revise" --help 2>&1)"; h_rc=$?

@@ -24,18 +24,24 @@
 #             with the branch the failed attempt already fetched).
 # --base      the series' ORIGINAL base -- the same ref v1's patches were
 #             formatted against (SKILL.md step 1's <base-ref>), NOT vN's
-#             tip. The author's commits land on top of vN, so formatting
-#             vN's tip..vN+1 would post only this round's fixups as if they
-#             were the whole series; formatting the ORIGINAL base..vN+1
-#             posts the complete series every time.
+#             tip. Every version is a clean re-roll of the whole series, so
+#             vN+1 is formatted as the ORIGINAL base..vN+1, and vN's tip is
+#             not an ancestor of it to start from; formatting vN's tip..
+#             vN+1 would post only a slice. With no --upstream-head (and
+#             none inherited) the series base is also the frozen boundary.
 # --upstream-head <ref> the commit the series is stacked on (e.g. a
 #             reviewed pull request's head), resolved to a full sha and
-#             passed to the new version's `init`. Omit it to inherit
+#             passed to the new version's `init`. It is the frozen
+#             boundary, so --checkout must already contain it (refused
+#             at launch otherwise). Omit it to inherit
 #             whatever an earlier version recorded -- see
 #             skills/lkml-mode/SKILL.md for what this and the other
 #             review-target headers mean.
 # --author    which persona file speaks for the series. Defaults to
 #             "author" -- see skills/lkml-mode/personas/author.md.
+#             `--author pr-author` requires a frozen boundary (an
+#             --upstream-head, or one inherited from the ledger) and is
+#             refused at launch without one.
 # --model-override <harness>[/<model>] overrides the author persona's own
 #             harness/model for this run only. A BARE harness (no /model)
 #             drops the persona's frontmatter model -- a model name belongs
@@ -64,18 +70,26 @@
 #             run dir named in the error.
 #
 # Unlike lkml-round.sh, this run is allowed to commit -- that is the whole
-# point. The handoff hands the author the full thread tree, a pointer to
-# the whole thread -- every message's body, mounted read-only at
-# /thread/thread.txt exactly as lkml-round.sh mounts it for reviewer seats
-# -- and everything `lkml-mailbox.sh open` flags, and asks it to, for
-# each open item, either
-# fix the code (and commit, one logical change per commit rather than one
-# squash) or reply on-thread explaining why not, then write the new cover
-# letter to `.git/lkml-out/cover-letter.md` before finishing -- under
-# .git/, not the working tree, so the "commit early and often" advice
-# below cannot sweep it into a commit by accident (git tracks nothing
-# under .git/; same convention fork-sandbox.sh itself uses for
-# review-verdict.md and pi's session dir).
+# point, and only the author writes patches: reviewers comment. The handoff
+# hands the author the full thread tree, a pointer to the whole thread --
+# every message's body, mounted read-only at /thread/thread.txt exactly as
+# lkml-round.sh mounts it for reviewer seats -- and everything
+# `lkml-mailbox.sh open` flags, and asks it to, for each open item, either
+# change the code or reply on-thread explaining why not, then write the new
+# cover letter to `.git/lkml-out/cover-letter.md` before finishing -- under
+# .git/, not the working tree, so a commit habit cannot sweep it into a
+# commit by accident (git tracks nothing under .git/; same convention
+# fork-sandbox.sh itself uses for review-verdict.md and pi's session dir).
+#
+# The series is re-rolled, never appended to, the way a mailing-list author
+# sends v2: accepted feedback is folded into the commit it belongs to, one
+# logical change per commit, no fixup!/squash! commit left behind. What is
+# frozen is everything up to and including the FROZEN BOUNDARY: the new
+# version's --upstream-head when given, else the head the version under
+# revision recorded, else the series base. Those commits are the reviewed
+# pull request's own (published, a human's); everything above the boundary
+# is the author's and is re-rolled freely. The boundary is resolved once,
+# before the launch, and named in the handoff.
 #
 # After the run: this waits for summary.json (fork-sandbox.sh's own signal
 # that the run -- and its fetch back into the real repo -- is fully over),
@@ -86,9 +100,14 @@
 #     a reply explaining a disagreement is still worth posting even on a
 #     round that changes no code.
 #   - If, and only if, the run committed at least one commit AND left a
-#     `.git/lkml-out/cover-letter.md`, runs `git format-patch` in the REAL repo
-#     (never the clone) over the fetched branch, and posts the result as
-#     the new version with `lkml-mailbox.sh init`.
+#     `.git/lkml-out/cover-letter.md`, gates the fetched branch, then runs
+#     `git format-patch` in the REAL repo (never the clone) over it and
+#     posts the result as the new version with `lkml-mailbox.sh init`. The
+#     gate is lkml-series-check.sh over <boundary>..<branch> (found next
+#     to this script, not on PATH), plus a `## Testing` heading in the
+#     cover letter. Either failing refuses the post -- after the replies
+#     are harvested, so they still land -- and keeps the branch for
+#     inspection.
 #
 # Exits non-zero, after still harvesting replies, when the run made no
 # commits: that is this project's "a version changes nothing" stop
@@ -286,6 +305,45 @@ if [[ -f "$versions_file" ]]; then
         "$versions_file" | tail -n1)"
 fi
 
+# The frozen boundary: the commits up to and including it are published and
+# belong to a human, so the author never rewrites them; everything above it
+# is the author's series and is re-rolled. Resolved once, here, before the
+# handoff names it and before an hour of author time is spent -- an
+# inherited ledger sha this repo cannot resolve would otherwise only
+# surface at the gate, after the run.
+if [[ -n "$upstream_head_sha" ]]; then
+    frozen_boundary_sha="$upstream_head_sha"
+    frozen_boundary_kind="upstream"
+elif [[ -n "$reviewed_upstream_head" ]]; then
+    frozen_boundary_kind="upstream"
+    frozen_boundary_sha="$(git -C "$real_repo" rev-parse --verify --quiet "${reviewed_upstream_head}^{commit}" 2>/dev/null)" || {
+        echo "Error: the upstream_head '$reviewed_upstream_head' recorded for $series v$version does not resolve in $real_repo; pass --upstream-head to name the frozen boundary." >&2
+        exit 1
+    }
+else
+    frozen_boundary_sha="$series_base_sha"
+    frozen_boundary_kind="base"
+fi
+
+# pr-author's series sits on someone else's published pull request. With no
+# head to freeze, "everything above the base" would be the PR's own commits
+# and the author would be told to rewrite them.
+if [[ "$author_persona" == "pr-author" && "$frozen_boundary_kind" == "base" ]]; then
+    echo "Error: --author pr-author needs a frozen boundary, and none is known for $series v$version: no --upstream-head was passed and none is recorded in the ledger." >&2
+    echo "  Pass --upstream-head <pr-head>; without it the pull request's own commits would count as the author's series." >&2
+    exit 1
+fi
+
+# The author starts on the checkout tip and is told never to move off it, so
+# a boundary that tip does not contain could only ever end in the gate's
+# "not on the boundary" refusal, after the whole run. Say so now, while it
+# costs nothing.
+if ! git -C "$real_repo" merge-base --is-ancestor "$frozen_boundary_sha" "$checkout_sha"; then
+    echo "Error: the frozen boundary ${frozen_boundary_sha} is not an ancestor of --checkout '$checkout_ref' (${checkout_sha}); the author starts on that tip and cannot move onto the boundary." >&2
+    echo "  If the reviewed pull request's head moved, rebase the series onto the new head yourself and pass that branch as --checkout." >&2
+    exit 1
+fi
+
 mkdir -p -- /var/tmp/claude-scratch
 thread_dir="$(mktemp -d /var/tmp/claude-scratch/lkml-revise-thread-XXXXXX)" || {
     echo "Error: mktemp failed for the thread directory of series '$series'." >&2
@@ -320,29 +378,49 @@ handoff_file="$(mktemp /var/tmp/claude-scratch/lkml-revise-XXXXXX.md)" || {
     printf 'replying, use the message id from the tree above (or the id on the\n'
     printf 'message'"'"'s header line in the thread file).\n'
     printf '\n## Open items -- these are what review has not resolved yet\n\n%s\n' "$open_text"
+    printf '\n## Which commits are yours\n\n'
+    if [[ "$frozen_boundary_kind" == "upstream" ]]; then
+        printf 'Commits up to and including %s are frozen: never rewrite them. Everything above it is your series; re-roll it.\n' "$frozen_boundary_sha"
+        printf '(The frozen commits are published and belong to a human.)\n'
+    else
+        printf 'Nothing is frozen below your series. Everything above the series base %s is yours; re-roll it.\n' "$frozen_boundary_sha"
+    fi
     cat <<RULES
 
 ## What to do
 
 For every open item above (and anything else tagged Question,
 Changes-requested or NAK anywhere in the tree, even if it also shows up as
-open), either fix the code and commit, or reply explaining why not -- see
-"How to reply" below. An item you say nothing about is indistinguishable
-from one you ignored.
+open), either change the code, or reply explaining why not -- see "How to
+reply" below. An item you say nothing about is indistinguishable from one
+you ignored. Only you write patches: a reviewer who pastes code in a reply
+is giving you input, which you accept, adapt or refuse.
 
-Commit as you address each item, one logical change per commit -- not one
-squash at the end. Uncommitted work is lost when this run ends, so commit
-early and often rather than saving it all for a final commit.
+Leave a re-roll, the way a mailing-list author sends v$next_version, not
+v$version plus a log of review:
 
-When you are done, write the new cover letter, including a section headed
-exactly \`## Changelog\` that says what changed because of which reviewer's
-comment, to:
+- Commit early so nothing is lost when this run ends, but before you
+  finish, fold every fix into the commit it belongs to. For example
+  \`git commit --fixup=<target>\`, then
+  \`GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash $frozen_boundary_sha\`
+  -- nobody is at a terminal, so the sequence editor must be a no-op.
+- Leave one logical change per commit, with commit messages that describe
+  the change and not the review, and no fixup!, squash! or amend! commit.
+  A commit that changes only comments is refused too, unless its message
+  carries a \`Comment-only: <reason>\` trailer -- legitimate only for a
+  comment in a frozen commit, which cannot be folded anywhere.
+- Run the project's test suite on the final tip. The cover letter carries
+  a section headed exactly \`## Testing\` with the exact command(s) and
+  the pass/fail counts.
+- The \`## Changelog\` section says, per reviewer point, whether it was
+  accepted, adapted or refused, and why.
+
+Write the new cover letter, with those two sections, to:
 
     .git/lkml-out/cover-letter.md
 
-Under \`.git/\`, not the working tree: git tracks nothing there, so it
-cannot end up staged or committed by the "commit early and often" habit
-above.
+Under \`.git/\`, not the working tree: git tracks nothing there, so a
+commit habit cannot sweep it into a commit.
 
 The cover letter's FIRST LINE becomes the mailbox Subject verbatim, so
 write it as a plain, short sentence -- no markdown heading marker, and no
@@ -553,6 +631,26 @@ if [[ ! -f "$cover_file" ]]; then
     echo "Error: the run committed $commits commit(s) but left no" >&2
     echo "$cover_file -- refusing to post v$next_version with no cover" >&2
     echo "letter. Read the branch $real_branch by hand." >&2
+    exit 1
+fi
+
+# The gate. Replies are already harvested, so a refusal here costs the new
+# version, not the answers. The checker is found next to this script, never
+# on PATH: it judges agent-written commits and must be the one that ships
+# with this checkout.
+series_check_out="$("$script_dir/lkml-series-check.sh" --repo "$real_repo" \
+    --boundary "$frozen_boundary_sha" "$real_branch" 2>&1)"
+series_check_rc=$?
+if (( series_check_rc != 0 )); then
+    printf '%s\n' "$series_check_out" >&2
+    (( series_check_rc == 1 )) || echo "Error: lkml-series-check.sh itself failed (exit $series_check_rc)." >&2
+    echo "Error: refusing to post v$next_version: the series is not a clean re-roll; branch $real_branch kept for inspection." >&2
+    echo "Commits up to and including $frozen_boundary_sha are frozen; everything above it must be re-rolled." >&2
+    exit 1
+fi
+if ! grep -Eq '^##[[:space:]]+Testing[[:space:]]*$' "$cover_file"; then
+    echo "Error: refusing to post v$next_version: the cover letter has no '## Testing' section" >&2
+    echo "(the exact test command(s) and their pass/fail counts); branch $real_branch kept for inspection." >&2
     exit 1
 fi
 
