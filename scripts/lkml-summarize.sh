@@ -60,7 +60,8 @@
 # for exactly this reason).
 #
 # The pipeline is sequential, one sandboxed run per tier:
-#   1. LOW tier (extraction): reads the whole --text thread and writes
+#   1. LOW tier (extraction): reads this version's own section of the
+#      --text thread, plus any late replies filed during it, and writes
 #      a structured intermediate to its run's OUTBOX. This script
 #      harvests it VERBATIM as <series>/results-v<N>.json and feeds it,
 #      plus the render's tally section for this version, inline to
@@ -628,8 +629,10 @@ You are the SYNTHESIS tier of a two-tier summary of the lkml-mode
 review series $series, version $version.
 
 You are handed (1) the structured intermediate the extraction tier
-pulled from the whole thread, verbatim, and (2) the thread's tally
-section for v$version. The intermediate was built from the entire
+pulled from v$version's own section of the thread, plus any late
+replies filed on an earlier version's thread while v$version was
+current, verbatim, and (2) the thread's tally section for v$version.
+The intermediate was built from that section alone, not the whole
 --text render of the mailbox, and it should make a source-dive
 unnecessary: you MAY read this clone to chase a lead, but start from
 the intermediate, not from the code.

@@ -1142,6 +1142,61 @@ esac
 contains "a v1-thread reply posted after v3's cover is in v3's late block" \
     "$vf3_v3_out" 'REPLY FILED AFTER V3 COVER'
 
+printf '\n== text mode: --version N section matches the full render'"'"'s slice ==\n'
+# The single-version render-fixture check above (line ~907) is
+# degenerate: with nothing else to slice, '--version 1' is trivially
+# the whole render. verflag (2 versions) and verflag3 (3 versions)
+# already exist, above, for the late-replies checks; reuse them here to
+# confirm a genuine multi-version slice -- each version's own section,
+# independent of late replies -- is byte-identical to the corresponding
+# slice of that same fixture's full --text render.
+vf_full="$work/vf-full.txt"
+python3 "$renderer" --text "$LKML_MAILBOX_ROOT/verflag" > "$vf_full"
+vf3_full="$work/vf3-full.txt"
+python3 "$renderer" --text "$LKML_MAILBOX_ROOT/verflag3" > "$vf3_full"
+vf3_v1_out="$(python3 "$renderer" --text --version 1 "$LKML_MAILBOX_ROOT/verflag3")"
+
+if python3 - <<PY
+import re
+
+def sections_of(path, name):
+    lines = open(path, encoding="utf-8").read().split("\n")
+    header_re = re.compile(r"^" + re.escape(name) + r" v(\d+)\$")
+    starts = [i for i, ln in enumerate(lines) if header_re.match(ln)]
+    starts.append(len(lines))
+    out = {}
+    for k in range(len(starts) - 1):
+        seg = lines[starts[k]:starts[k + 1]]
+        while seg and seg[-1] == "":
+            seg.pop()
+        out[int(header_re.match(seg[0]).group(1))] = "\n".join(seg)
+    return out
+
+def section_only(text):
+    marker = "\nlate replies ("
+    i = text.find(marker)
+    return (text[:i] if i != -1 else text).rstrip("\n")
+
+vf_sections = sections_of("$vf_full", "verflag")
+vf3_sections = sections_of("$vf3_full", "verflag3")
+
+cases = [
+    (vf_sections[1], section_only("""$vf_v1_out""")),
+    (vf_sections[2], section_only("""$vf_v2_out""")),
+    (vf3_sections[1], section_only("""$vf3_v1_out""")),
+    (vf3_sections[2], section_only("""$vf3_v2_out""")),
+    (vf3_sections[3], section_only("""$vf3_v3_out""")),
+]
+for expected, actual in cases:
+    if expected != actual:
+        raise SystemExit(1)
+PY
+then
+    ok "--version N's section (late replies aside) is byte-identical to the full render's slice, across two- and three-version fixtures"
+else
+    no "--version N's section (late replies aside) is byte-identical to the full render's slice, across two- and three-version fixtures"
+fi
+
 printf '\n== text mode: a body cannot forge a message header ==\n'
 # The 72-dash separator and the '== #' header line sit at column 0, so
 # a body carrying a line of 72 dashes and its own '== #' / From: /
