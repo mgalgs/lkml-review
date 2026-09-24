@@ -88,11 +88,21 @@ scheduling, not reading, and the reviewers' job is reading.
   it the round refuses at startup if `lkml-summarize.sh` is not on PATH,
   before any persona launches.
 - **`lkml-revise.sh`** — launches the author persona to answer open review
-  (fixing code and/or replying) and post the next version. The default
-  `author` persona respins the series, rebasing or amending its commits. When
-  the series is someone else's published pull request, pass `--author
-  pr-author` instead: it only adds new commits on top of the tip it was
-  given, so the PR's own commits are never rewritten. A large series'
+  (fixing code and/or replying) and post the next version. Only the author
+  writes patches -- reviewers comment, and any code they paste in a reply is
+  input the author accepts, adapts or refuses -- and every version is a clean
+  re-roll: fixes folded into the commit they belong to, one logical change
+  per commit, no `fixup!`/`squash!` commits. The default `author` persona
+  re-rolls everything above the series base. When the series is someone
+  else's published pull request, pass `--author pr-author --upstream-head
+  <pr-head>` instead: the PR's own commits, up to and including its head,
+  are frozen and never rewritten, and only what sits above them is
+  re-rolled. **`lkml-series-check.sh`** (`--repo <path> --boundary <sha>
+  <tip>`) gates every post -- it refuses a series that is not a clean
+  re-roll on that boundary (`fixup!`/`squash!`, merges, comment-only
+  commits, rewritten frozen commits), and the revise step also refuses a
+  cover letter with no `## Testing` section -- and should be run by hand
+  before a final series is bundled. A large series'
   revision round is a single long sandboxed run with no mid-run checkpoint
   today; a run that can resume itself from a hand-off in its own outbox
   (see the fork-sandbox skill and `fork-sandbox.sh`'s docs once that lands)
@@ -294,9 +304,8 @@ are not personas and keep their own env file.
    the author, run `lkml-revise.sh <series> --project <path> --checkout
    <branch> --version <N> --base <base-ref>` to produce vN+1, where
    `<base-ref>` is the SAME base you formatted v1 against in step 1, not
-   vN's branch -- the author's commits land on top of vN, so posting
-   against vN's tip would ship only this round's fixups as if they were
-   the whole series. This posts vN+1 on a NEW, timestamped branch named
+   vN's branch -- vN+1 is a re-roll of the whole series, so formatting
+   from vN's tip would ship only a slice of it. This posts vN+1 on a NEW, timestamped branch named
    `lkml/<series>-v<N+1>-<timestamp>` -- lkml-revise.sh's own report names
    the exact branch, which you need verbatim since the timestamp makes it
    unguessable. Go back

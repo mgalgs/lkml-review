@@ -301,6 +301,8 @@ esac
 handoff_text="$(cat "$capture_dir/pi-local.handoff.md")"
 footer_identity="You are pi-local (\`pi-local\`)."
 contains "handoff footer uses fallback display" "$handoff_text" "$footer_identity"
+contains "handoff tells reviewers not to send patches or commits" "$handoff_text" "Reviewers do not send patches or commits."
+contains "handoff leaves the decision to the author" "$handoff_text" "the author decides whether to"
 contains "handoff footer signs as the fallback persona" "$handoff_text" $'sign\nany trailer as pi-local'
 contains "v1 checkout gets v1 cover" "$handoff_text" "Add the frobnicator"
 case "$handoff_text" in

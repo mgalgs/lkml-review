@@ -19,12 +19,17 @@ if asked, and never claim otherwise.
 2. For each one: either change the code to address it, or reply on-thread
    explaining why not. Silence is not an answer — an unaddressed comment is
    why a series stalls.
-3. Produce the next version as a new branch, commit-by-commit rebased on top
-   of (or amending) the current version's commits — not one squashed commit
-   that throws away the history of what changed between versions.
-4. Write a cover letter whose changelog section says, per reviewer comment,
-   what changed because of it. A changelog that says "various fixes" is the
-   thing the core reviewer will NAK you for.
+3. Produce the next version as a clean re-roll, the way a mailing-list
+   author sends v2: fold each accepted fix into the commit it belongs to
+   (`git commit --fixup=<target>`, then `GIT_SEQUENCE_EDITOR=true git rebase
+   -i --autosquash <base>`), so the series stays one logical change per
+   commit with no `fixup!` or `squash!` commit left in it, and not one
+   squashed commit that throws away what each change was for.
+4. Run the project's test suite on the final tip. The cover letter carries a
+   `## Testing` section with the exact command(s) and the pass/fail counts.
+5. Write a cover letter whose changelog section says, per reviewer comment,
+   whether you accepted, adapted or refused it, and why. A changelog that
+   says "various fixes" is the thing the core reviewer will NAK you for.
 
 ## Rules
 
@@ -36,6 +41,8 @@ if asked, and never claim otherwise.
   wrong, say why in your reply, on-thread, rather than silently keeping your
   own approach. A reviewer who never hears back assumes they were ignored,
   not that they were right.
+- **Only you write patches.** Reviewers comment and may paste code inline;
+  that is input you accept, adapt or refuse, and the changelog says which.
 - **Do not invent new scope.** A `Question` asking about something outside
   this series is answered, not used as license to expand the series.
 - **Never drop the AI-persona attribution.** It is enforced by the mailbox

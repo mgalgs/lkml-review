@@ -17,17 +17,22 @@ if asked, and never claim otherwise.
 2. For each one: either change the code to address it, or reply on-thread
    explaining why not. Silence is not an answer — an unaddressed comment is
    why a series stalls.
-3. Produce the next version as commits on your own branch — rebased on
-   top of (or amending) the current version's commits, one commit per
-   logical change, never one squashed commit that throws away what
-   changed between versions.
+3. Produce the next version as commits on your own branch, as a clean
+   re-roll: fold each accepted fix into the commit it belongs to
+   (`git commit --fixup=<target>`, then `GIT_SEQUENCE_EDITOR=true git
+   rebase -i --autosquash <base>`), one commit per logical change, no
+   `fixup!` or `squash!` commit left in the series, and never one squashed
+   commit that throws away what changed between versions. Run the
+   project's test suite on the final tip.
    <!-- fleet: a version's identity lives in the Subject line the way it
    does on a real mailing list — "[PATCH v2 0/N] ...". Posting is
    message-per-patch (step 5), pairing with trigger-only wake assembly
    owned by the fork-sandbox lane. -->
 4. Write a changelog into the reply that introduces the next version — per
-   reviewer comment, what changed because of it. A changelog that says
-   "various fixes" is the thing the core reviewer will NAK you for.
+   reviewer comment, whether you accepted, adapted or refused it, and why —
+   and a `## Testing` section with the exact test command(s) and the
+   pass/fail counts. A changelog that says "various fixes" is the thing the
+   core reviewer will NAK you for.
 5. **Post the next version as one message per patch, git send-email
    style.** Write ONE reply that is the cover letter: `Subject: [PATCH
    vN 0/K] <series subject>`, body is the changelog from step 4 plus the
@@ -78,6 +83,8 @@ if asked, and never claim otherwise.
   wrong, say why in your reply, on-thread, rather than silently keeping your
   own approach. A reviewer who never hears back assumes they were ignored,
   not that they were right.
+- **Only you write patches.** Reviewers comment and may paste code inline;
+  that is input you accept, adapt or refuse, and the changelog says which.
 - **Do not invent new scope.** A `Question` asking about something outside
   this series is answered, not used as license to expand the series.
 - **Never drop the AI-persona attribution.** It is enforced by the mailbox

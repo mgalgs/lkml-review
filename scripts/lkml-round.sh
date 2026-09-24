@@ -538,6 +538,9 @@ Rules, all load-bearing:
   below each quote (interleaved, bottom-posted, never top-posted). Never
   quote a whole message or a whole patch.
 - **Ask a question rather than guess** when you are not sure.
+- **Reviewers do not send patches or commits.** Comment and suggest; paste
+  code inline in a reply when it helps, and the author decides whether to
+  accept, adapt or refuse it.
 - **Make no commits and no other repository changes.** Do not edit, stage
   or commit anything. The outbox is outside the clone entirely, so there
   is no reason to touch the repository at all: writing the `.msg` files
