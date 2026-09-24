@@ -64,8 +64,10 @@
 #             run dir named in the error.
 #
 # Unlike lkml-round.sh, this run is allowed to commit -- that is the whole
-# point. The handoff hands the author the full thread tree, every message's
-# body, and everything `lkml-mailbox.sh open` flags, and asks it to, for
+# point. The handoff hands the author the full thread tree, a pointer to
+# the whole thread -- every message's body, mounted read-only at
+# /thread/thread.txt exactly as lkml-round.sh mounts it for reviewer seats
+# -- and everything `lkml-mailbox.sh open` flags, and asks it to, for
 # each open item, either
 # fix the code (and commit, one logical change per commit rather than one
 # squash) or reply on-thread explaining why not, then write the new cover
@@ -265,7 +267,11 @@ open_text="$("$mailbox" open "$series" --version "$version" 2>/dev/null)"
 # below the author cannot see a single review comment, so this is a
 # precondition for launching at all, checked before the handoff (and
 # before anything is spent on a run) is even built. Same render
-# lkml-round.sh's secretary seat uses, same series directory resolution.
+# lkml-round.sh's secretary seat uses, mounted the same way -- once, into a
+# temp dir, passed to fork-sandbox.sh as --thread-dir <dir>, which mounts
+# it read-only at /thread/thread.txt in the sandbox -- rather than inlined
+# into the handoff, which forced the author onto a 1M-context model on a
+# long series and has caused a large-brief livelock before.
 ledger_root="${LKML_MAILBOX_ROOT:-/var/tmp/claude-scratch/lkml}"
 
 # The version under revision's OWN upstream_head, from the ledger -- NOT
@@ -281,9 +287,16 @@ if [[ -f "$versions_file" ]]; then
         "$versions_file" | tail -n1)"
 fi
 
-thread_text="$(python3 "$script_dir/lkml-render.py" --text "$ledger_root/$series" 2>/dev/null)" || thread_text=""
-if [[ -z "$thread_text" ]]; then
-    echo "Error: could not render the thread bodies for series '$series'; refusing to launch an author who cannot read the review." >&2
+mkdir -p -- /var/tmp/claude-scratch
+thread_dir="$(mktemp -d /var/tmp/claude-scratch/lkml-revise-thread-XXXXXX)" || {
+    echo "Error: mktemp failed for the thread directory of series '$series'." >&2
+    exit 1
+}
+render_err="$(python3 "$script_dir/lkml-render.py" --text "$ledger_root/$series" 2>&1 >"$thread_dir/thread.txt")"
+render_rc=$?
+if (( render_rc != 0 )) || [[ ! -s "$thread_dir/thread.txt" ]]; then
+    echo "Error: could not render the thread bodies for series '$series' (${render_err:-empty render}); refusing to launch an author who cannot read the review." >&2
+    rm -rf -- "$thread_dir"
     exit 1
 fi
 
@@ -296,13 +309,17 @@ handoff_file="$(mktemp /var/tmp/claude-scratch/lkml-revise-XXXXXX.md)" || {
     cat -- "$persona_file"
     printf '\n---\n\n# You are revising %s, currently at v%s\n\n%s\n' "$series" "$version" "$cover_text"
     printf '\n## The full thread tree\n\n%s\n' "$tree_text"
-    printf "\n## The thread's messages, bodies included\n\n"
+    printf "\n## The rest of the thread\n\n"
     printf 'The tree above is one line per message: id, persona, harness/model,\n'
-    printf 'tags and subject. This is the same thread with every message body,\n'
-    printf 'in thread order -- [PATCH] bodies keep the commit message and the\n'
-    printf 'diffstat, their diff is omitted (the patches are in this clone).\n'
-    printf 'You are revising v%s -- the section headed \"%s v%s\"; earlier\n' "$version" "$series" "$version"
-    printf 'versions are there as context.\n\n%s\n' "$thread_text"
+    printf 'tags and subject. Every message in the thread, bodies included, in\n'
+    printf 'thread order and across every version, is at /thread/thread.txt\n'
+    printf '(read-only). [PATCH] bodies there keep the commit message and the\n'
+    printf 'diffstat, their diff is cut, because the patches are applied in\n'
+    printf 'this clone. Read the section headed \"%s v%s\" IN FULL before\n' "$series" "$version"
+    printf 'acting -- that is the review you must answer -- and earlier\n'
+    printf 'sections too, wherever an open item below refers back to one. When\n'
+    printf 'replying, use the message id from the tree above (or the id on the\n'
+    printf 'message'"'"'s header line in the thread file).\n'
     printf '\n## Open items -- these are what review has not resolved yet\n\n%s\n' "$open_text"
     cat <<RULES
 
@@ -392,10 +409,11 @@ if [[ -n "$thinking" && "$harness" == "pi" ]]; then
     thinking_note=", thinking $thinking"
 fi
 
-echo "fork-sandbox lkml-revise: launching $author_persona ($harness_announce$thinking_note) for v$next_version..." >&2
+echo "fork-sandbox lkml-revise: launching $author_persona ($harness_announce$thinking_note) for v$next_version, thread dir $thread_dir..." >&2
 launch_out="$(fork-sandbox.sh --harness "$harness_spec" \
     "${network_args[@]}" --checkout "$checkout_ref" \
     "${pi_args[@]}" "${trust_args[@]}" \
+    --thread-dir "$thread_dir" \
     --branch "$branch" --task-meta "$task_meta" "$project" "$handoff_file" 2>&1)"
 rc=$?
 run_dir="$(printf '%s\n' "$launch_out" | sed -n 's/^  run dir:  *//p' | head -n1)"

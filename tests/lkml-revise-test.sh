@@ -205,22 +205,35 @@ rc_baduh=$?
 if (( rc_baduh != 0 )); then ok "an unresolvable --upstream-head exits non-zero"; else no "an unresolvable --upstream-head exits non-zero" "exit 0: $out_baduh"; fi
 contains "the refusal names the bad upstream-head ref" "$out_baduh" "nosuchupstreamref"
 
-printf '\n== the author handoff carries thread bodies, not just subjects ==\n'
+printf '\n== the thread is mounted at /thread, not inlined in the handoff ==\n'
 # r1's body ("please fix the return value") lives in the message BODY --
-# tree/open only ever show subjects -- so its presence proves the handoff
-# carries rendered bodies, not just the tree lines.
+# tree/open only ever show subjects -- so its presence in thread.txt (and
+# absence from the handoff) proves the thread is rendered once to a mounted
+# file rather than inlined.
+thread_dir_of() { awk '$0=="--thread-dir"{getline; print; exit}' "$1"; }
 handoff_path="$(tail -n1 "$run_prefix_dir/last-args")"
 handoff_text="$(cat -- "$handoff_path" 2>/dev/null)"
-contains "handoff carries a reply body, not just the tree" "$handoff_text" "please fix the return value"
-contains "handoff has the thread-bodies section" "$handoff_text" "## The thread's messages, bodies included"
-tree_pos=$(printf '%s' "$handoff_text" | grep -bo '## The full thread tree' | head -n1 | cut -d: -f1)
-bodies_pos=$(printf '%s' "$handoff_text" | grep -bo "## The thread's messages, bodies included" | head -n1 | cut -d: -f1)
-open_pos=$(printf '%s' "$handoff_text" | grep -bo '## Open items' | head -n1 | cut -d: -f1)
-if [[ -n "$tree_pos" && -n "$bodies_pos" && -n "$open_pos" \
-    && "$tree_pos" -lt "$bodies_pos" && "$bodies_pos" -lt "$open_pos" ]]; then
-    ok "bodies section sits between the tree and open items"
+thread_dir_arg="$(thread_dir_of "$run_prefix_dir/last-args")"
+if [[ "$thread_dir_arg" == /var/tmp/claude-scratch/lkml-revise-thread-* && -d "$thread_dir_arg" ]]; then
+    ok "fork-sandbox.sh is launched with --thread-dir under the scratch root"
 else
-    no "bodies section sits between the tree and open items" "tree=$tree_pos bodies=$bodies_pos open=$open_pos"
+    no "fork-sandbox.sh is launched with --thread-dir under the scratch root" "got '$thread_dir_arg'"
+fi
+if [[ -s "$thread_dir_arg/thread.txt" ]]; then ok "the thread dir holds a non-empty thread.txt"; else no "the thread dir holds a non-empty thread.txt"; fi
+contains "thread.txt carries a reply body, not just the tree" "$(cat -- "$thread_dir_arg/thread.txt" 2>/dev/null)" "please fix the return value"
+case "$handoff_text" in
+    *"please fix the return value"*) no "the handoff no longer inlines reply bodies" "body found inline" ;;
+    *) ok "the handoff no longer inlines reply bodies" ;;
+esac
+contains "handoff points at /thread/thread.txt" "$handoff_text" "/thread/thread.txt"
+tree_pos=$(printf '%s' "$handoff_text" | grep -bo '## The full thread tree' | head -n1 | cut -d: -f1)
+pointer_pos=$(printf '%s' "$handoff_text" | grep -bo '## The rest of the thread' | head -n1 | cut -d: -f1)
+open_pos=$(printf '%s' "$handoff_text" | grep -bo '## Open items' | head -n1 | cut -d: -f1)
+if [[ -n "$tree_pos" && -n "$pointer_pos" && -n "$open_pos" \
+    && "$tree_pos" -lt "$pointer_pos" && "$pointer_pos" -lt "$open_pos" ]]; then
+    ok "the pointer section sits between the tree and open items"
+else
+    no "the pointer section sits between the tree and open items" "tree=$tree_pos pointer=$pointer_pos open=$open_pos"
 fi
 
 printf '\n== a failed thread render refuses the launch, nothing is spent ==\n'
@@ -233,6 +246,7 @@ exit 1
 STUB
 chmod +x "$render_fail_bin/python3"
 n_runs_before=$(find "$run_prefix_dir" -maxdepth 1 -name 'run.*' | wc -l)
+thread_dirs_before="$(find /var/tmp/claude-scratch -maxdepth 1 -name 'lkml-revise-thread-*' 2>/dev/null | sort)"
 out_render="$(PATH="$render_fail_bin:$stub_bin:$PATH" "$revise" widget-frob --project "$real_repo" \
     --checkout somebranch --version 1 --base "$series_base_sha" 2>&1)"
 rc_render=$?
@@ -244,6 +258,14 @@ fi
 contains "names the render failure" "$out_render" "could not render the thread bodies"
 n_runs_after=$(find "$run_prefix_dir" -maxdepth 1 -name 'run.*' | wc -l)
 check "no run was launched when the render fails" "$n_runs_before" "$n_runs_after"
+thread_dirs_after="$(find /var/tmp/claude-scratch -maxdepth 1 -name 'lkml-revise-thread-*' 2>/dev/null | sort)"
+leaked_thread_dirs="$(comm -13 <(printf '%s\n' "$thread_dirs_before") <(printf '%s\n' "$thread_dirs_after") | grep -v '^$' || true)"
+if [[ -z "$leaked_thread_dirs" ]]; then
+    ok "a failed render leaves no thread dir behind"
+else
+    no "a failed render leaves no thread dir behind" "$leaked_thread_dirs"
+    printf '%s\n' "$leaked_thread_dirs" | xargs -r rm -rf --
+fi
 
 printf '\n== stop condition: commits == 0 ==\n'
 write_stub 0 true 0 1
