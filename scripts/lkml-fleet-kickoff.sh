@@ -8,7 +8,7 @@
 #            [--ci-first <ci-addr>] [--version <n>]
 #            [--allow-ambiguous-version] [--patches] [--seats <addr-list>]
 #            [--allow-namespace <ns[:port]>]... [--reach-probe <host:port>]...
-#            [--context-ro <dir>] [--send]
+#            [--context-ro <dir>] [--review-target <branch>:<sha>] [--send]
 #
 # <repo>       path to a local git repository.
 # <range>      a revision range passed straight to `git format-patch`
@@ -189,6 +189,28 @@
 #              `realpath -e --`) so a printed, not sent, command still
 #              works when pasted from another directory. A DIR that does
 #              not exist is refused before anything else is composed.
+# --review-target BRANCH:SHA
+#              names the branch and the exact commit this review is of;
+#              forwarded to the cover's `fork-sandbox mail send`, which
+#              records it on the NEW thread it creates. The caller supplies
+#              both parts -- this script and `mail` never run git to
+#              discover them. Split on the LAST ":". BRANCH must be a valid
+#              branch name (`git check-ref-format --branch`) and SHA 40 or
+#              64 lowercase hex. A single value: a second --review-target
+#              is a usage error. The range's tip (its right side, or the
+#              bare ref) is also resolved in <repo> with `git rev-parse
+#              --verify <tip>^{commit}`; if it resolves and is not SHA the
+#              kickoff is refused, since the panel would review a different
+#              commit than the one the series was formatted from. A tip
+#              that does not resolve in <repo> is not refused here (the
+#              CI checkout that formats the series need not hold the
+#              branch's ref). Same restrictions as --allow-namespace
+#              (cover only, refused alongside a ${FOCUS} template). It also
+#              stands in for the range's right side wherever the range
+#              would otherwise have to name a checkout-able branch: ${BRANCH}
+#              is filled with BRANCH, and the local branch-name check is
+#              skipped, because a range written as "<base-sha>..<head-sha>"
+#              has no branch on its right side to check.
 # --send       actually run the composed `fork-sandbox mail send`
 #              command. Without it, the command is printed, shell-quoted,
 #              and nothing is sent.
@@ -233,10 +255,12 @@ allow_namespace=()
 reach_probe=()
 context_ro=""
 context_ro_given=0
+review_target=""
+review_target_given=0
 
 while (( $# > 0 )); do
     case "$1" in
-        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats|--allow-namespace|--reach-probe|--context-ro)
+        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats|--allow-namespace|--reach-probe|--context-ro|--review-target)
             (( $# >= 2 )) || { echo "Error: $1 requires a value. See --help." >&2; exit 1; }
             ;;
     esac
@@ -257,6 +281,9 @@ while (( $# > 0 )); do
         --context-ro)
             (( ! context_ro_given )) || { echo "Error: --context-ro may only be given once. See --help." >&2; exit 1; }
             context_ro="$2"; context_ro_given=1; shift 2 ;;
+        --review-target)
+            (( ! review_target_given )) || { echo "Error: --review-target may only be given once. See --help." >&2; exit 1; }
+            review_target="$2"; review_target_given=1; shift 2 ;;
         --allow-ambiguous-version) allow_ambiguous_version=1; shift ;;
         --patches) post_patches=1; shift ;;
         --attach) post_patches=1; echo "Warning: --attach is a deprecated alias for --patches; attachments are never posted -- this now posts one mail reply per patch instead. Use --patches." >&2; shift ;;
@@ -286,6 +313,35 @@ context_ro_abs=""
 if (( context_ro_given )); then
     if ! context_ro_abs="$(realpath -e -- "$context_ro" 2>/dev/null)" || [[ ! -d "$context_ro_abs" ]]; then
         echo "Error: --context-ro '$context_ro' is not an existing directory." >&2
+        exit 1
+    fi
+fi
+
+review_target_branch=""
+review_target_sha=""
+if (( review_target_given )); then
+    if [[ "$review_target" != *:* ]]; then
+        echo "Error: --review-target '$review_target' is not <branch>:<sha>. See --help." >&2
+        exit 1
+    fi
+    review_target_branch="${review_target%:*}"
+    review_target_sha="${review_target##*:}"
+    if [[ -z "$review_target_branch" || "$review_target_branch" == "@" ]] \
+        || ! git check-ref-format --branch "$review_target_branch" >/dev/null 2>&1; then
+        echo "Error: --review-target branch '$review_target_branch' is not a valid branch name. See --help." >&2
+        exit 1
+    fi
+    if [[ ! "$review_target_sha" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+        echo "Error: --review-target sha '$review_target_sha' is not 40 or 64 lowercase hex characters. See --help." >&2
+        exit 1
+    fi
+    # The range's right side, or the whole range when it is a bare ref;
+    # "a.." means HEAD, the way git reads it.
+    review_tip="${range##*..}"
+    [[ -n "$review_tip" ]] || review_tip="HEAD"
+    if review_tip_sha="$(git -C "$repo" rev-parse --verify --quiet "${review_tip}^{commit}" 2>/dev/null)" \
+        && [[ "$review_tip_sha" != "$review_target_sha" ]]; then
+        echo "Error: --review-target names commit $review_target_sha but the range's tip '$review_tip' is commit $review_tip_sha in '$repo'; the panel would review a different commit than the one the series was formatted from." >&2
         exit 1
     fi
 fi
@@ -450,8 +506,8 @@ fi
 # unconditionally on --send -- the print-only path would otherwise
 # print a `mail send ... --allow-namespace ...` command a caller could
 # paste and believe is the right way to grant an existing thread.
-if [[ "$body" == *'${FOCUS}'* ]] && { (( ${#allow_namespace[@]} > 0 )) || (( ${#reach_probe[@]} > 0 )) || (( context_ro_given )); }; then
-    echo "Error: grant flags create a thread's grant, but a focused round is a reply inside an existing thread. Set the grant on that thread with \`fork-sandbox mail grant <thread-id> ...\` and compose without the grant flags." >&2
+if [[ "$body" == *'${FOCUS}'* ]] && { (( ${#allow_namespace[@]} > 0 )) || (( ${#reach_probe[@]} > 0 )) || (( context_ro_given )) || (( review_target_given )); }; then
+    echo "Error: grant and target flags apply to the thread a new \`mail send\` creates, but a focused round is a reply inside an existing thread. Set the grant on that thread with \`fork-sandbox mail grant <thread-id> ...\` and compose without these flags." >&2
     exit 1
 fi
 
@@ -690,7 +746,12 @@ branch="${range##*..}"
 # reviewer who takes that fallback with an unresolvable name silently
 # reviews the wrong tree, so this check applies whether or not
 # --patches was passed.
-resolved_branch="$(git -C "$repo" rev-parse --abbrev-ref "$branch" 2>/dev/null || true)"
+if (( review_target_given )); then
+    branch="$review_target_branch"
+    resolved_branch="$branch"
+else
+    resolved_branch="$(git -C "$repo" rev-parse --abbrev-ref "$branch" 2>/dev/null || true)"
+fi
 if [[ "$resolved_branch" != "$branch" ]]; then
     echo "Error: range '$range' does not resolve to a checkout-able branch name on its right side ('$branch'); the kickoff template always offers reviewers a fetch/checkout fallback and needs a real branch for it. Pass a range like '<base>..<branch>'." >&2
     exit 1
@@ -868,6 +929,7 @@ for grant_probe in "${reach_probe[@]}"; do
     cover_cmd+=(--reach-probe "$grant_probe")
 done
 (( context_ro_given )) && cover_cmd+=(--context-ro "$context_ro_abs")
+(( review_target_given )) && cover_cmd+=(--review-target "$review_target_branch:$review_target_sha")
 cover_cmd+=(--subject "$subject" --body "$body_file")
 
 if (( send )); then

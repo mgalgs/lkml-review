@@ -1107,6 +1107,98 @@ expected_no_grant_argv="mail send --from @author --to @lkml-panel --subject [PAT
 check "the cover argv carries no grant flags and no stray empty tokens when none are given" \
     "$expected_no_grant_argv" "$no_grant_argv"
 
+# kick runs the kickoff under the stub with each call's argv freshly
+# captured: k_out is stdout+stderr, k_rc the exit status, k_argv what the
+# stub fork-sandbox saw (empty when nothing ran). kick_range picks the
+# range; the default is the branch-name range the other sections use.
+kick_range="master...topic"
+kick() {
+    rm -f -- "$capture_dir/argv"
+    k_out="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" STUB_EXPAND_LOG="$expand_log" \
+        "$kickoff" "$project_dir" "$kick_range" "$@" 2>&1)"
+    k_rc=$?
+    k_argv="$(cat "$capture_dir/argv" 2>/dev/null || true)"
+}
+# refused asserts the last kick() failed, said $2, and ran nothing.
+refused() {
+    local label="$1" needle="$2"
+    if (( k_rc != 0 )); then ok "$label: exits non-zero"; else no "$label: exits non-zero" "exit 0: $k_out"; fi
+    contains "$label: says why" "$k_out" "$needle"
+    if [[ -z "$k_argv" ]]; then ok "$label: ran no fork-sandbox command"; else no "$label: ran no fork-sandbox command" "$k_argv"; fi
+}
+kick_base=(--from '@author' --to '@lkml-panel' --subject 'subj')
+rt_tip="$(git -C "$project_dir" rev-parse topic)"
+rt_base="$(git -C "$project_dir" rev-parse master)"
+
+printf '\n== --review-target: forwarded to the cover only ==\n'
+kick "${kick_base[@]}" --review-target "topic:$rt_tip" --send
+check "--send with --review-target exits 0" "0" "$k_rc"
+contains "the sent cover carries --review-target <branch>:<sha> right before --subject" \
+    "$k_argv" "--review-target topic:$rt_tip --subject"
+kick "${kick_base[@]}" --review-target "topic:$rt_tip" --patches --send
+check "--send --patches with --review-target exits 0" "0" "$k_rc"
+contains "the posted cover carries --review-target" "$(grep -m1 -- '^mail send' <<<"$k_argv")" "--review-target topic:$rt_tip"
+case "$(grep -- '^mail reply' <<<"$k_argv")" in
+    *"--review-target"*) no "no per-patch reply carries --review-target" "$k_argv" ;;
+    *) ok "no per-patch reply carries --review-target" ;;
+esac
+kick "${kick_base[@]}" --review-target "topic:$rt_tip" --patches
+check "print-only --patches with --review-target exits 0" "0" "$k_rc"
+contains "the printed cover carries --review-target" "$(grep -m1 -- 'cover_id=\$(' <<<"$k_out")" "--review-target topic:$rt_tip"
+case "$(grep -- '^fork-sandbox mail reply' <<<"$k_out")" in
+    *"--review-target"*) no "no printed per-patch reply carries --review-target" "$k_out" ;;
+    *) ok "no printed per-patch reply carries --review-target" ;;
+esac
+kick "${kick_base[@]}" --review-target "topic:$rt_tip"
+contains "the printed (no --send) cover carries --review-target" "$k_out" "--review-target topic:$rt_tip"
+
+printf '\n== --review-target: a <base-sha>..<head-sha> range composes, with the target branch as ${BRANCH} ==\n'
+kick_range="$rt_base..$rt_tip"
+kick "${kick_base[@]}" --review-target "feature/x:$rt_tip"
+check "a sha..sha range with --review-target exits 0" "0" "$k_rc"
+rt_body="$(grep -o -- '--body [^ ]*' <<<"$k_out" | awk '{print $2}')"
+contains "\${BRANCH} is filled with the --review-target branch" "$(cat "$rt_body" 2>/dev/null)" "Branch: feature/x"
+kick "${kick_base[@]}"
+refused "a sha..sha range without --review-target" "does not resolve to a checkout-able branch name"
+kick_range="master...topic"
+
+printf '\n== --review-target validation ==\n'
+kick "${kick_base[@]}" --review-target "topic" --send
+refused "no colon" "is not <branch>:<sha>"
+kick "${kick_base[@]}" --review-target ":$rt_tip" --send
+refused "an empty branch" "not a valid branch name"
+kick "${kick_base[@]}" --review-target "a b:$rt_tip" --send
+refused "a branch with a space" "not a valid branch name"
+kick "${kick_base[@]}" --review-target "a:b:$rt_tip" --send
+refused "a colon in the branch (split is on the LAST colon)" "'a:b' is not a valid branch name"
+kick "${kick_base[@]}" --review-target "-x:$rt_tip" --send
+refused "a branch that starts with a dash" "not a valid branch name"
+kick "${kick_base[@]}" --review-target "topic:${rt_tip:0:12}" --send
+refused "an abbreviated sha" "not 40 or 64 lowercase hex"
+kick "${kick_base[@]}" --review-target "topic:${rt_tip^^}" --send
+refused "an uppercase sha" "not 40 or 64 lowercase hex"
+kick "${kick_base[@]}" --review-target "topic:${rt_tip:0:39}g" --send
+refused "a non-hex sha" "not 40 or 64 lowercase hex"
+kick "${kick_base[@]}" --review-target "topic:$rt_tip" --review-target "topic:$rt_tip" --send
+refused "a second --review-target" "--review-target may only be given once"
+kick "${kick_base[@]}" --review-target "topic:$rt_base" --send
+refused "a sha that is not the range's tip" "would review a different commit"
+contains "the tip mismatch names both commits" "$k_out" "$rt_tip"
+kick_range="$rt_base..$rt_tip"
+kick "${kick_base[@]}" --review-target "topic:$rt_base" --send
+refused "a sha range whose tip differs from the target" "would review a different commit"
+kick_range="master...topic"
+kick "${kick_base[@]}" --review-target --send
+refused "a --review-target with no usable value" "is not <branch>:<sha>"
+
+printf '\n== --review-target refuses against a focused (${FOCUS}) template ==\n'
+kick "${kick_base[@]}" --subject '[PATCH v3 0/2] improve the thing' --focus 'patch 2 only' \
+    --template "$focused_template" --review-target "topic:$rt_tip"
+refused "a focused template with --review-target (print-only)" "reply inside an existing thread"
+kick "${kick_base[@]}" --subject '[PATCH v3 0/2] improve the thing' --focus 'patch 2 only' \
+    --template "$focused_template" --review-target "topic:$rt_tip" --send
+refused "a focused template with --review-target (--send)" "fork-sandbox mail grant"
+
 printf '\n== kickoff templates keep the no-attachment guard on the author reply ==\n'
 # A wake's harvested reply carries no attachment path (the postmaster
 # builds `mail reply` without --attach), so the "Next version" sections
