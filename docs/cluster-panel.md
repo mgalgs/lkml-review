@@ -63,8 +63,19 @@ lkml-fleet-kickoff.sh "$WORKSPACE" "$BASE_SHA..$HEAD_SHA" \
   --allow-namespace "example-ns" \
   --reach-probe "svc-a.example-ns.svc.cluster.local:8080" \
   --header "X-Preview-PR: <n>" \
-  --remote --send
+  --remote --send --unless-exists
 ```
+
+`--unless-exists` makes a re-run of the same CI job safe. Before sending,
+the kickoff looks for a thread whose root carries every `--header` given
+and the same review target. If one exists, open or closed, nothing is sent:
+the existing thread's id is printed on stdout, where a fresh send prints
+its new id, and the kickoff exits 0. A new head sha is a new review target,
+so a push to the PR still opens a new panel.
+
+The lookup needs a `fork-sandbox` whose `mail list` honours `--header`
+filters. An older one ignores them and returns every thread; the kickoff
+notices that and refuses, rather than reading it as "no panel yet".
 
 `--template pr-review` takes its roster from `fleet/kickoffs/pr-review.roster`.
 `--author`, `--panel`, `--secretary` and `--version-limit` override it one
@@ -277,5 +288,3 @@ when the install will carry a claude credential.
 - A reviewer that Cc's another seat can buy that seat an extra wake on the
   same version. The author and the secretary both read a seat's *latest*
   reply on vN, so an extra reply can replace the seat's earlier verdict.
-- The kickoff has no "unless a panel is already open for this PR" check yet.
-  A CI job that runs twice opens two threads.
