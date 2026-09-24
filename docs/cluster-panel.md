@@ -176,22 +176,23 @@ An example, with invented names throughout:
 
 ```yaml
 agents:
+  # claude/opus from the persona frontmatter: the seats whose judgment
+  # decides the outcome.
   pr-author:
-    harness: pi
-    model: example-coder-large
     network: pinned
     backend: k8s
-    endpoint: gpu-pool-a
     review-target: sets          # the only seat that moves the target
     grant: required              # only if its tests must reach the preview environment
   core:
-    harness: pi
-    model: example-coder-large
     network: pinned
     backend: k8s
-    endpoint: gpu-pool-a
     review-target: follow
     grant: required
+  secretary:
+    network: pinned
+    backend: k8s
+    review-target: follow        # required; see below
+  # pi on a cluster model endpoint for the other reviewers.
   tests:
     harness: pi
     model: example-coder-medium
@@ -209,13 +210,14 @@ agents:
     review-target: follow        # reads code only; no grant needed
   # architecture, newcomer and security follow the same shape as docs,
   # with grant: required on any seat that must reach the preview environment.
-  secretary:
+  # author, ci and distiller are not on the roster; see below.
+  author:
     harness: pi
-    model: example-coder-large
+    model: example-coder-medium
     network: pinned
     backend: k8s
     endpoint: gpu-pool-a
-    review-target: follow        # required; see below
+  # ci and distiller: the same shape as author.
 ```
 
 What each key does here:
@@ -239,15 +241,36 @@ What each key does here:
   kickoff sent none, the postmaster flags the thread (`no-grant`) and
   `lkml-panel-state.py` reports `NEEDS-OPERATOR`.
 
-The personas' frontmatter names `harness: claude` for every seat above, with
-`model: opus` for the author, core, security and secretary. The fleet entry
-wins field by field. The example uses `harness: pi` because a cluster may run pi seats
-only. Those personas were written and tuned against a claude model. Their
-behaviour on another model is unproven until a panel has shown it.
+- **Every persona file is an agent**, including the ones the pr-review
+  roster never addresses (`author`, `ci`, `distiller`). A cluster postmaster
+  refuses local seats, so each of those needs a `backend: k8s` entry too.
+  Putting them on pi means a stray address never spends a claude
+  subscription.
+
+The fleet entry wins over the persona frontmatter field by field, and it
+cannot unset a field. Every persona except `ci` names `harness: claude`,
+with `model: opus` for the author, core, security and secretary and
+`sonnet` for the rest. So a seat moved to pi must name a model its endpoint
+serves, or it inherits a claude model name.
+
+A claude seat in the cluster needs a claude credential installed with the
+postmaster. See "Claude seats in a cluster postmaster" in fork-sandbox's
+`docs/cluster-postmaster.md`. The personas were written and tuned against
+claude. On pi, their behaviour is unproven until a panel has shown it.
 
 The postmaster routing the thread must see this fleet file and this repo's
-`fleet/personas/`. Locally, `lkml-fleet.sh` arranges that. For a postmaster
-installed in the cluster, see fork-sandbox's `docs/kubernetes-runs.md`.
+`fleet/personas/`. `lkml-fleet.sh` exports both as
+`FORK_SANDBOX_FLEET_FILE` and `FORK_SANDBOX_PERSONAS_DIR`, and
+`install --postmaster` reads the same two variables. So the cluster install
+is:
+
+```bash
+LKML_FLEET_FILE=<cluster fleet file> lkml-fleet.sh k8s install --postmaster
+```
+
+Check the file first with `lkml-fleet.sh fleet check --cluster` under the
+same `LKML_FLEET_FILE`. Set `FORK_SANDBOX_CLUSTER_CLAUDE=1` for that check
+when the install will carry a claude credential.
 
 ## Known limits
 
