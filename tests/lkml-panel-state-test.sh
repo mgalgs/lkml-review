@@ -102,6 +102,25 @@ def panel_positive(sha=A, ver=1, start=2, who=("@core", "@tests", "@docs")):
     return [msg(start + i, w, "Reviewed-by: %s <%s@example.com>" % (w, w[1:]),
                 sha=sha, ver=ver) for i, w in enumerate(who)]
 
+def sec(seq=20, status="CONVERGED", pver=1, verdict="SIGNED-OFF", sha=A, ver=1,
+        prose="All in.", body=None):
+    if body is None:
+        lines = [prose, "", "Panel-Version: %s" % pver, "Panel-Status: %s" % status]
+        if verdict:
+            lines.append("Panel-Verdict: %s" % verdict)
+        body = "\n".join(lines)
+    return msg(seq, "@secretary", body, sha=sha, ver=ver)
+
+def green(sha=A, ver=1, verdict=None):
+    if verdict is None:
+        verdict = "SIGNED-OFF" if ver == 1 else "RESPIN"
+    return ([root(sha=sha, ver=ver)] + panel_positive(sha=sha, ver=ver)
+            + [sec(20, "CONVERGED", ver, verdict, sha, ver)])
+
+def run(rid, state, agent="@core"):
+    return {"run_id": rid, "agent": agent, "state": state,
+            "run_dir": "/run/" + rid, "resumed": False}
+
 def write(d, exp, st):
     with open(os.path.join(d, "export.json"), "w") as f:
         json.dump(exp, f)
@@ -121,9 +140,10 @@ exec(sys.stdin.read())
 '
 }
 
-OUT=""; RC=0
+OUT=""; RC=0; cases_run=()
 run_case() {
     local d="$work/case-$1"
+    cases_run+=("$1")
     OUT="$("$ps" --export-file "$d/export.json" --status-file "$d/status.json" 2>"$work/err")"; RC=$?
 }
 j() { jq -c "$1" <<<"$OUT"; }
@@ -678,6 +698,498 @@ run_case xcli
 check "end to end: quoted trailer -> silent" "silent" "$(seat @core state)"
 check "end to end: NAK first line -> NAK" "NAK" "$(seat @tests verdict)"
 check "end to end: Question last line -> Question" "Question" "$(seat @docs verdict)"
+
+printf '\n== status: CONVERGED needs every fact ==\n'
+gen g1 <<'PY'
+write(D, export(green()), status())
+PY
+run_case g1
+check "all-positive + secretary CONVERGED + quiescent: CONVERGED" "CONVERGED" "$(jr .status)"
+check "v1: verdict SIGNED-OFF" "SIGNED-OFF" "$(jr .verdict)"
+check "CONVERGED: no reasons" "[]" "$(j .reasons)"
+check "v1 SIGNED-OFF: no bundle" "null" "$(j .bundle)"
+check "secretary object on target, well-formed" \
+    '{"message_id":"m020","version":1,"status":"CONVERGED","verdict":"SIGNED-OFF","on_target":true,"malformed":null}' \
+    "$(j .secretary)"
+check "postmaster facts of a quiet thread" \
+    '{"quiescent":true,"flagged":false,"flag_reason":null,"live_runs":0,"pending_retries":0,"held":0,"unrouted":0}' \
+    "$(j .postmaster)"
+
+gen g3 <<'PY'
+write(D, export(green(sha=B, ver=3)), status(sha=B, ver=3))
+PY
+run_case g3
+check "v3 RESPIN: CONVERGED" "CONVERGED" "$(jr .status)"
+check "v3: verdict RESPIN" "RESPIN" "$(jr .verdict)"
+check "v3 RESPIN + Frozen-Head: bundle base/tip/branch" \
+    "{\"base\":\"$(printf 'f%.0s' $(seq 40))\",\"tip\":\"$(printf 'b%.0s' $(seq 40))\",\"branch\":\"pr/example\"}" \
+    "$(j .bundle)"
+check "v3: no reasons" "[]" "$(j .reasons)"
+
+gen g3nf <<'PY'
+body = ROOT_BODY.replace("Frozen-Head: " + "f" * 40, "")
+e = green(sha=B, ver=3)
+e[0] = root(sha=B, ver=3, body=body)
+write(D, export(e), status(sha=B, ver=3))
+PY
+run_case g3nf
+check "RESPIN without a Frozen-Head: still CONVERGED" "CONVERGED" "$(jr .status)"
+check "RESPIN without a Frozen-Head: bundle null" "null" "$(j .bundle)"
+
+gen g2r <<'PY'
+write(D, export(green(sha=B, ver=2)), status(sha=B, ver=2))
+PY
+run_case g2r
+check "v2 RESPIN: CONVERGED" "CONVERGED" "$(jr .status)"
+check "v2 RESPIN: the bundle is for the respin" "bbbbbbbb" "$(jr '.bundle.tip[:8]')"
+
+gen g1nf <<'PY'
+e = green()
+e[0] = root(body=ROOT_BODY.replace("Frozen-Head: " + "f" * 40, ""))
+write(D, export(e), status())
+PY
+run_case g1nf
+check "a v1 sign-off never carries a bundle" "null" "$(j .bundle)"
+
+gen gnewest <<'PY'
+older = sec(20, "IN-PROGRESS", 1, None)
+newer = sec(21, "CONVERGED", 1, "SIGNED-OFF")
+write(D, export(green()[:-1] + [older, newer]), status())
+PY
+run_case gnewest
+check "the newest secretary message counts (IN-PROGRESS then CONVERGED)" "CONVERGED" "$(jr .status)"
+check "and it is the newest one" "m021" "$(jr .secretary.message_id)"
+
+printf '\n== status: a quiet seat is not an agreeing seat ==\n'
+gen q1 <<'PY'
+e = green()
+e = [m for m in e if m["from"] != "@docs"]
+write(D, export(e), status())
+PY
+run_case q1
+check "one seat silent + secretary CONVERGED + quiescent: not CONVERGED" "STALLED" "$(jr .status)"
+check "verdict is null when not CONVERGED" "null" "$(j .verdict)"
+check "the silent seat's state" "silent" "$(seat @docs state)"
+reason_has "the silent seat's reason" "@docs: no verdict on v1 (aaaaaaaa)"
+reason_has "the false green is named" "secretary says CONVERGED but @docs is silent"
+
+gen q2 <<'PY'
+e = green()
+e = [m for m in e if m["from"] != "@docs"]
+write(D, export(e), status(runs=[run("r1", "live", "@docs")]))
+PY
+run_case q2
+check "one seat silent, a run still live: IN-PROGRESS" "IN-PROGRESS" "$(jr .status)"
+reason_has "the silent seat is still named" "@docs: no verdict on v1"
+reason_has "the live run is named" "1 live run"
+
+gen q3 <<'PY'
+e = [m for m in green() if m["from"] not in ("@core", "@tests", "@docs")]
+write(D, export(e), status())
+PY
+run_case q3
+check "ALL seats silent, secretary CONVERGED, quiescent: not CONVERGED" "STALLED" "$(jr .status)"
+check "all three seats silent" "silent silent silent" "$(seat @core state) $(seat @tests state) $(seat @docs state)"
+reason_has "the secretary's claim is contradicted by name" "secretary says CONVERGED but @core is silent"
+
+gen q4 <<'PY'
+e = [m for m in green() if m["from"] != "@secretary"]
+write(D, export(e), status())
+PY
+run_case q4
+check "every seat positive but no secretary message: not CONVERGED" "STALLED" "$(jr .status)"
+check "secretary object null when it never reported" "null" "$(j .secretary)"
+reason_has "the missing report is a reason" "@secretary has not reported"
+
+gen q5 <<'PY'
+body = "\n".join(l for l in ROOT_BODY.split("\n") if not l.startswith("Secretary:"))
+e = green()
+e[0] = root(body=body)
+write(D, export(e), status())
+PY
+run_case q5
+check "no Secretary on the roster: not CONVERGED" "STALLED" "$(jr .status)"
+check "no Secretary on the roster: secretary null" "null" "$(j .secretary)"
+reason_has "no Secretary on the roster: named" "roster has no usable Secretary"
+
+printf '\n== status: stale, blocking, and the secretary contradicting the facts ==\n'
+gen s1 <<'PY'
+m = [root(sha=B, ver=2),
+     msg(2, "@core", "Reviewed-by: Core", sha=A, ver=1),
+     msg(3, "@tests", "Reviewed-by: Tests", sha=B, ver=2),
+     msg(4, "@docs", "Reviewed-by: Docs", sha=B, ver=2),
+     sec(20, "CONVERGED", 2, "RESPIN", B, 2)]
+write(D, export(m), status(sha=B, ver=2))
+PY
+run_case s1
+check "a seat positive only on an OLD target is stale" "stale" "$(seat @core state)"
+check "so the panel is not CONVERGED" "STALLED" "$(jr .status)"
+reason_has "the stale seat is named with both targets" "@core: verdict is on v1 (aaaaaaaa), none on v2 (bbbbbbbb)"
+reason_has "the secretary is caught claiming CONVERGED over a stale seat" "secretary says CONVERGED but @core is stale"
+
+gen s2 <<'PY'
+e = green()
+e[2] = msg(3, "@tests", "Changes-requested\nAdd a test for the error path.", sha=A, ver=1)
+write(D, export(e), status(runs=[run("r7", "live", "@tests")]))
+PY
+run_case s2
+check "secretary CONVERGED while a seat is blocking, work in flight: IN-PROGRESS" "IN-PROGRESS" "$(jr .status)"
+reason_has "the contradiction is named" "secretary says CONVERGED but @tests is blocking"
+reason_has "the blocking verdict is itself a reason" "@tests: Changes-requested on v1"
+check "verdict null" "null" "$(j .verdict)"
+
+gen s2q <<'PY'
+e = green()
+e[2] = msg(3, "@tests", "Changes-requested\nAdd a test for the error path.", sha=A, ver=1)
+write(D, export(e), status())
+PY
+run_case s2q
+check "the same, but nobody is going to wake: STALLED" "STALLED" "$(jr .status)"
+reason_has "the contradiction is named (quiescent)" "secretary says CONVERGED but @tests is blocking"
+
+gen s3 <<'PY'
+e = green()
+e[1] = msg(2, "@core", "NAK\nThis cannot work.", sha=A, ver=1)
+e[3] = msg(4, "@docs", "Is this documented anywhere?\nQuestion", sha=A, ver=1)
+write(D, export(e), status())
+PY
+run_case s3
+reason_has "a NAK under a CONVERGED secretary" "secretary says CONVERGED but @core is blocking"
+reason_has "an open Question under a CONVERGED secretary" "secretary says CONVERGED but @docs has an open Question"
+check "a seat with a Question is not positive" "question" "$(seat @docs state)"
+
+gen s4 <<'PY'
+write(D, export(green()[:-1] + [sec(20, "IN-PROGRESS", 1, None)]), status())
+PY
+run_case s4
+check "every seat positive but the secretary says IN-PROGRESS: not CONVERGED" "STALLED" "$(jr .status)"
+reason_has "the secretary's IN-PROGRESS is a reason" "secretary says IN-PROGRESS"
+check "an IN-PROGRESS secretary is well-formed and on target" "true null" \
+    "$(jr '[.secretary.on_target, .secretary.malformed] | map(tostring) | join(" ")')"
+reason_lacks "no false-green contradiction against an honest secretary" "secretary says CONVERGED"
+
+gen s5 <<'PY'
+write(D, export(green()[:-1] + [sec(20, "IN-PROGRESS", 1, None)]), status(runs=[run("r1", "live")]))
+PY
+run_case s5
+check "secretary IN-PROGRESS and a live run: IN-PROGRESS" "IN-PROGRESS" "$(jr .status)"
+
+printf '\n== status: NEEDS-OPERATOR, STALLED and IN-PROGRESS precedence ==\n'
+gen f1 <<'PY'
+write(D, export(green()), status(flag={"reason": "spawn budget exhausted", "events": 2}))
+PY
+run_case f1
+check "flagged wins even over an all-green thread" "NEEDS-OPERATOR" "$(jr .status)"
+check "flagged: verdict null" "null" "$(j .verdict)"
+check "flagged: postmaster.flagged" "true" "$(jr .postmaster.flagged)"
+check "flagged: postmaster.flag_reason" "spawn budget exhausted" "$(jr .postmaster.flag_reason)"
+reason_has "flagged: the reason carries the flag's own text" "flagged for the operator: spawn budget exhausted"
+reason_has "flagged: the secretary is caught claiming CONVERGED" "secretary says CONVERGED but the thread is flagged"
+
+gen f2 <<'PY'
+e = [root()]
+write(D, export(e), status(flag={"reason": "loop guard", "events": 1}, runs=[run("r1", "live")]))
+PY
+run_case f2
+check "flagged wins over IN-PROGRESS" "NEEDS-OPERATOR" "$(jr .status)"
+
+gen f3 <<'PY'
+e = [root()]
+write(D, export(e), status())
+PY
+run_case f3
+check "quiescent + not converged: STALLED" "STALLED" "$(jr .status)"
+check "STALLED: postmaster.quiescent true" "true" "$(jr .postmaster.quiescent)"
+
+gen f4 <<'PY'
+write(D, export([root()]), status(runs=[run("r1", "live")]))
+PY
+run_case f4
+check "not quiescent + not converged: IN-PROGRESS" "IN-PROGRESS" "$(jr .status)"
+
+gen f5 <<'PY'
+write(D, export(green()), status(flag={"reason": None, "events": 0}))
+PY
+run_case f5
+check "a flag with no reason text is still a flag" "NEEDS-OPERATOR" "$(jr .status)"
+check "and its flag_reason is null" "null" "$(j .postmaster.flag_reason)"
+
+printf '\n== status: roster and target damage never converges ==\n'
+gen r1 <<'PY'
+body = "\n".join(l for l in ROOT_BODY.split("\n") if not l.startswith("Panel:"))
+e = green()
+e[0] = root(body=body)
+write(D, export(e), status())
+PY
+run_case r1
+check "no Panel line: not CONVERGED" "STALLED" "$(jr .status)"
+reason_has "no Panel line: the named reason" "no panel roster on the thread root"
+check "no Panel line: no seats" "[]" "$(j .seats)"
+
+gen r2 <<'PY'
+body = ROOT_BODY.replace("Panel: @core, @tests, @docs", "Panel: @core, @tests, @docs, docs-two")
+write(D, export([root(body=body)] + green()[1:]), status())
+PY
+run_case r2
+check "a dropped malformed seat keeps the panel from CONVERGED" "STALLED" "$(jr .status)"
+reason_has "the dropped seat is named" "'docs-two'"
+
+gen t1 <<'PY'
+rr = msg(30, "@pr-author", "re-roll", sha=B, ver=2, set_target=B, subject="[PATCH v2] Fix the thing")
+write(D, export(green() + [rr]), status())
+PY
+run_case t1
+check "postmaster and mail targets disagree: not CONVERGED" "STALLED" "$(jr .status)"
+check "the postmaster's target is kept" "postmaster $(printf 'a%.0s' $(seq 40))" "$(jr '.target.source + " " + .target.sha')"
+reason_has "the disagreement is a reason" "disagrees with the newest X-Review-Target-Set in mail"
+
+gen t2 <<'PY'
+write(D, export(green()), status(target=None))
+PY
+run_case t2
+check "mail-only target (postmaster has none): not CONVERGED" "STALLED" "$(jr .status)"
+check "the fallback target is used for the seats" "positive" "$(seat @core state)"
+reason_has "the fallback is a reason" "postmaster has no review target"
+
+gen t3 <<'PY'
+e = green()[:-1]
+e[0] = root()
+e[0]["headers"] = [h for h in e[0]["headers"] if h[0] != "X-Review-Target-Set"]
+write(D, export(e), status(target=None))
+PY
+run_case t3
+check "no target anywhere: not CONVERGED" "STALLED" "$(jr .status)"
+check "no target anywhere: target null" "null" "$(j .target)"
+check "no target anywhere: bundle null" "null" "$(j .bundle)"
+
+gen t4 <<'PY'
+write(D, export(green(sha=B, ver=2)), status(sha=B, ver=2, runs=[run("r1", "harvested")]))
+PY
+run_case t4
+check "a harvested run alone does not block CONVERGED" "CONVERGED" "$(jr .status)"
+
+printf '\n== the secretary: malformed trailers never converge ==\n'
+mal_names=(order unknown-status unknown-verdict verdict-under-inprogress no-verdict
+           bad-version prose-after quoted-after panel-line-midbody extra-key duplicate)
+mal_bodies=(
+    $'Panel-Status: CONVERGED\nPanel-Version: 1\nPanel-Verdict: SIGNED-OFF'
+    $'Panel-Version: 1\nPanel-Status: DONE\nPanel-Verdict: SIGNED-OFF'
+    $'Panel-Version: 1\nPanel-Status: CONVERGED\nPanel-Verdict: APPROVED'
+    $'Panel-Version: 1\nPanel-Status: IN-PROGRESS\nPanel-Verdict: SIGNED-OFF'
+    $'Panel-Version: 1\nPanel-Status: CONVERGED'
+    $'Panel-Version: one\nPanel-Status: CONVERGED\nPanel-Verdict: SIGNED-OFF'
+    $'Panel-Version: 1\nPanel-Status: CONVERGED\nPanel-Verdict: SIGNED-OFF\nThanks everyone.'
+    $'Panel-Version: 1\nPanel-Status: CONVERGED\nPanel-Verdict: SIGNED-OFF\n> Panel-Status: IN-PROGRESS'
+    $'Panel-Status: IN-PROGRESS\nsome discussion\nPanel-Version: 1\nPanel-Status: CONVERGED\nPanel-Verdict: SIGNED-OFF'
+    $'Panel-Version: 1\nPanel-Status: CONVERGED\nPanel-Verdict: SIGNED-OFF\nPanel-Extra: x'
+    $'Panel-Version: 1\nPanel-Version: 1\nPanel-Status: CONVERGED\nPanel-Verdict: SIGNED-OFF'
+)
+for i in "${!mal_names[@]}"; do
+    n="${mal_names[$i]}"
+    SECBODY="${mal_bodies[$i]}" gen "mal-$n" <<'PY'
+write(D, export(green()[:-1] + [sec(body=os.environ["SECBODY"])]), status())
+PY
+    run_case "mal-$n"
+    check "malformed ($n): not CONVERGED" "STALLED" "$(jr .status)"
+    check "malformed ($n): secretary.malformed is set" "true" "$(jr '.secretary.malformed != null')"
+    check "malformed ($n): never on target" "false" "$(jr .secretary.on_target)"
+    check "malformed ($n): version/status/verdict are null" '[null,null,null]' "$(j '.secretary | [.version, .status, .verdict]')"
+    reason_has "malformed ($n): a reason says so" "malformed trailer"
+    check "malformed ($n): verdict null" "null" "$(j .verdict)"
+done
+
+gen mal-fallback <<'PY'
+good = sec(20, "CONVERGED", 1, "SIGNED-OFF")
+bad = sec(21, body="Panel-Version: 1\nPanel-Status: CONVERGED")
+write(D, export(green()[:-1] + [good, bad]), status())
+PY
+run_case mal-fallback
+check "a newer malformed trailer is not skipped for an older good one" "STALLED" "$(jr .status)"
+check "the malformed one is the one reported" "m021" "$(jr .secretary.message_id)"
+
+gen mal-prose <<'PY'
+body = "I think we are done.\nPanel-Version: 1 is what I am reading from.\nThanks."
+write(D, export(green()[:-1] + [sec(body=body)]), status())
+PY
+run_case mal-prose
+check "prose that merely starts with 'Panel-Version:' but is not a trailer block: never CONVERGED" "STALLED" "$(jr .status)"
+
+gen sec-nopanel <<'PY'
+write(D, export(green()[:-1] + [sec(body="Looks good to me. CONVERGED, signed off.")]), status())
+PY
+run_case sec-nopanel
+check "a secretary message with no Panel-* line is not a report" "null" "$(j .secretary)"
+check "so the panel is not CONVERGED" "STALLED" "$(jr .status)"
+
+printf '\n== the secretary: on target, and verdict vs version ==\n'
+gen o1 <<'PY'
+m = [root(sha=B, ver=2)] + panel_positive(sha=B, ver=2) + [sec(20, "CONVERGED", 1, "SIGNED-OFF", A, 1)]
+write(D, export(m), status(sha=B, ver=2))
+PY
+run_case o1
+check "a secretary report about the OLD target: not on target" "false" "$(jr .secretary.on_target)"
+check "and the panel is not CONVERGED" "STALLED" "$(jr .status)"
+reason_has "the off-target report is a reason" "secretary's Panel-Status is for v1 (aaaaaaaa), not the current target v2 (bbbbbbbb)"
+
+gen o2 <<'PY'
+m = [root(sha=B, ver=2)] + panel_positive(sha=B, ver=2) + [sec(20, "CONVERGED", 1, "RESPIN", B, 2)]
+write(D, export(m), status(sha=B, ver=2))
+PY
+run_case o2
+check "right sha, wrong Panel-Version: not on target" "false" "$(jr .secretary.on_target)"
+check "right sha, wrong Panel-Version: not CONVERGED" "STALLED" "$(jr .status)"
+reason_has "right sha, wrong Panel-Version: named" "secretary's Panel-Status is for v1 (bbbbbbbb)"
+
+gen o3 <<'PY'
+m = [root(sha=B, ver=2)] + panel_positive(sha=B, ver=2) + [sec(20, "CONVERGED", 2, "RESPIN", A, 1)]
+write(D, export(m), status(sha=B, ver=2))
+PY
+run_case o3
+check "right Panel-Version, wrong sha: not on target" "false" "$(jr .secretary.on_target)"
+check "right Panel-Version, wrong sha: not CONVERGED" "STALLED" "$(jr .status)"
+
+gen v1 <<'PY'
+write(D, export(green(sha=B, ver=2, verdict="SIGNED-OFF")), status(sha=B, ver=2))
+PY
+run_case v1
+check "SIGNED-OFF on a v2 target: not CONVERGED" "STALLED" "$(jr .status)"
+check "SIGNED-OFF on v2: verdict null" "null" "$(j .verdict)"
+check "SIGNED-OFF on v2: the secretary object still shows what it said" "SIGNED-OFF" "$(jr .secretary.verdict)"
+reason_has "SIGNED-OFF on v2: the contradiction is named" "SIGNED-OFF contradicts target v2"
+
+gen v2 <<'PY'
+write(D, export(green(sha=A, ver=1, verdict="RESPIN")), status())
+PY
+run_case v2
+check "RESPIN on a v1 target: not CONVERGED" "STALLED" "$(jr .status)"
+reason_has "RESPIN on v1: the contradiction is named" "RESPIN contradicts target v1"
+check "RESPIN on v1: no bundle" "null" "$(j .bundle)"
+
+gen v3 <<'PY'
+write(D, export(green(sha=C, ver=4)), status(sha=C, ver=4))
+PY
+run_case v3
+check "v4 RESPIN: CONVERGED" "CONVERGED" "$(jr .status)"
+
+printf '\n== postmaster facts: what counts as live and pending ==\n'
+gen p1 <<'PY'
+write(D, export(green()), status(runs=[run("r1", "live"), run("r2", "harvested"), run("r3", "live", "@docs")]))
+PY
+run_case p1
+check "two live runs, one harvested: IN-PROGRESS" "IN-PROGRESS" "$(jr .status)"
+check "live_runs counts only live" "2" "$(jr .postmaster.live_runs)"
+check "not quiescent" "false" "$(jr .postmaster.quiescent)"
+reason_has "'2 live runs' is a reason" "2 live runs"
+reason_has "the secretary is caught claiming CONVERGED on a busy thread" "secretary says CONVERGED but the thread is not quiescent"
+
+gen p2 <<'PY'
+write(D, export(green()), status(runs=[run("r1", "weird")]))
+PY
+run_case p2
+check "an unrecognized run state is treated as live" "1" "$(jr .postmaster.live_runs)"
+reason_has "and says so" "run r1: unrecognized state 'weird', treated as live"
+check "so the thread is not converged" "IN-PROGRESS" "$(jr .status)"
+
+gen p2n <<'PY'
+write(D, export(green()), status(runs=[run("r1", None)]))
+PY
+run_case p2n
+check "a run with no state is treated as live" "1" "$(jr .postmaster.live_runs)"
+
+gen p3 <<'PY'
+retries = [{"agent": "@core", "state": "pending", "attempt": 1, "due_s": 30},
+           {"agent": "@tests", "state": "exhausted", "attempt": 3, "due_s": 0},
+           {"agent": "@docs", "state": "recovered", "attempt": 2, "due_s": 0},
+           {"agent": "@docs", "state": None, "attempt": 1, "due_s": 0}]
+write(D, export(green()), status(retries=retries))
+PY
+run_case p3
+check "only a pending retry is pending" "1" "$(jr .postmaster.pending_retries)"
+reason_has "'1 pending retry' is a reason" "1 pending retry"
+reason_lacks "a known state raises no 'unrecognized' reason" "unrecognized"
+check "a pending retry: IN-PROGRESS" "IN-PROGRESS" "$(jr .status)"
+
+gen p3h <<'PY'
+retries = [{"agent": "@tests", "state": "exhausted", "attempt": 3, "due_s": 0},
+           {"agent": "@docs", "state": "recovered", "attempt": 2, "due_s": 0},
+           {"agent": "@docs", "state": None, "attempt": 1, "due_s": 0}]
+write(D, export(green()), status(retries=retries))
+PY
+run_case p3h
+check "exhausted / recovered / stateless retries are history: CONVERGED" "CONVERGED" "$(jr .status)"
+check "history retries: pending_retries 0" "0" "$(jr .postmaster.pending_retries)"
+
+gen p4 <<'PY'
+write(D, export(green()), status(retries=[{"agent": "@core", "state": "backoff", "attempt": 1, "due_s": 5}]))
+PY
+run_case p4
+check "an unrecognized retry state is treated as pending" "1" "$(jr .postmaster.pending_retries)"
+reason_has "and says so" "retry for @core: unrecognized state 'backoff', treated as pending"
+
+gen p5 <<'PY'
+held = [{"agent": "@core", "trigger": "reply", "age_s": 40}, {"agent": "@docs", "trigger": "reply", "age_s": 9}]
+write(D, export(green()), status(held=held, unrouted=3))
+PY
+run_case p5
+check "held seats and unrouted mail: not quiescent" "false" "$(jr .postmaster.quiescent)"
+check "held count" "2" "$(jr .postmaster.held)"
+check "unrouted count" "3" "$(jr .postmaster.unrouted)"
+reason_has "'2 held seats' is a reason" "2 held seats"
+reason_has "'3 unrouted messages' is a reason" "3 unrouted messages"
+check "so IN-PROGRESS" "IN-PROGRESS" "$(jr .status)"
+
+gen p5h <<'PY'
+write(D, export(green()), status(held=[{"agent": "@core", "trigger": "reply", "age_s": 40}]))
+PY
+run_case p5h
+check "a single held seat alone blocks CONVERGED" "IN-PROGRESS" "$(jr .status)"
+reason_has "'1 held seat' (singular)" "1 held seat"
+
+gen p5u <<'PY'
+write(D, export(green()), status(unrouted=1))
+PY
+run_case p5u
+check "one unrouted message alone blocks CONVERGED" "IN-PROGRESS" "$(jr .status)"
+reason_has "'1 unrouted message' (singular)" "1 unrouted message"
+
+gen p6 <<'PY'
+write(D, export(green()), status(unrouted=None))
+PY
+run_case p6
+check "an unreadable unrouted count is not quiescent" "false" "$(jr .postmaster.quiescent)"
+reason_has "an unreadable unrouted count is a reason" "unrouted count is unreadable"
+check "and is not CONVERGED" "IN-PROGRESS" "$(jr .status)"
+
+printf '\n== invariants over every case above ==\n'
+inv_bad=""; inv_n=0; inv_conv=0
+for c in "${cases_run[@]}"; do
+    d="$work/case-$c"
+    o="$("$ps" --export-file "$d/export.json" --status-file "$d/status.json" 2>/dev/null)" || { inv_bad+=" $c(exit)"; continue; }
+    inv_n=$(( inv_n + 1 ))
+    if ! jq -e '
+        (["schema","thread","subject","status","verdict","target","roster","seats","secretary","postmaster","bundle","reasons"]
+         - keys | length) == 0
+        and (.status | IN("CONVERGED","IN-PROGRESS","STALLED","NEEDS-OPERATOR"))
+        and ((.status == "CONVERGED") == (.reasons | length == 0))
+        and (.verdict == null or .status == "CONVERGED")
+        and (.bundle == null or .verdict == "RESPIN")
+        and (.postmaster | has("quiescent") and has("flagged") and has("flag_reason") and has("live_runs")
+             and has("pending_retries") and has("held") and has("unrouted"))
+        and (.roster | has("author") and has("panel") and has("secretary") and has("version_limit") and has("frozen_head"))
+        and all(.seats[]; has("seat") and has("state") and has("verdict") and has("message_id") and has("version") and has("sha"))
+        and (.secretary == null or (.secretary | has("message_id") and has("version") and has("status")
+             and has("verdict") and has("on_target") and has("malformed")))
+        and (.target == null or (.target | has("branch") and has("sha") and has("version") and has("set_by") and has("set_at") and has("source")))
+        and (.status != "CONVERGED" or (.seats | length > 0 and all(.[]; .state == "positive")))
+        and (.status != "CONVERGED" or (.secretary.on_target == true and .secretary.status == "CONVERGED"))
+        and (.status != "CONVERGED" or .postmaster.quiescent == true)
+    ' <<<"$o" >/dev/null; then inv_bad+=" $c"; fi
+    [[ "$(jq -r .status <<<"$o")" == CONVERGED ]] && inv_conv=$(( inv_conv + 1 ))
+done
+check "every case obeys the output invariants (keys present; reasons empty iff CONVERGED; CONVERGED implies every seat positive, secretary on target, quiescent)" "" "$inv_bad"
+if [[ "$inv_n" -ge 60 ]]; then ok "the invariants ran over $inv_n cases"; else no "the invariants ran over too few cases" "$inv_n"; fi
+if [[ "$inv_conv" -ge 5 ]]; then ok "and $inv_conv of them were CONVERGED (the check is not vacuous)"
+else no "too few CONVERGED cases for the invariants to bite" "$inv_conv"; fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

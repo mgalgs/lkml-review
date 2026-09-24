@@ -73,6 +73,63 @@ Changes-requested, Question, then the -by trailers). state is:
     stale      no on-target tagged message, but a tagged message about
                another target exists
     silent     no tagged message from the seat at all
+
+Secretary -- the roster's Secretary seat reports the panel's overall
+state in the LAST non-empty lines of a message body, in this order:
+
+    Panel-Version: <n>
+    Panel-Status: CONVERGED|IN-PROGRESS
+    Panel-Verdict: SIGNED-OFF|RESPIN      (only with CONVERGED)
+
+The newest secretary message carrying any Panel-* line is the one that
+counts (a later malformed one is not quietly skipped in favour of an
+older good one). It is on_target when its X-Review-Target sha is the
+current target's AND its Panel-Version is the target's version. A
+trailer out of order, with an unknown value, with a Panel-Verdict under
+IN-PROGRESS, without one under CONVERGED, or with a Panel-* line outside
+the trailing block, is recorded as malformed with a reason and never
+counts as CONVERGED.
+
+Postmaster facts -- from `postmaster status`. quiescent means unrouted
+== 0, no live run, no pending retry and no held seat. A run is live
+unless its state is "harvested" (the postmaster writes only "live" and
+"harvested"); a retry is pending only when its state is "pending" (the
+postmaster's own quiescence test; "exhausted", "recovered" and a
+FAILS-only record with no state are history). A state this script does
+not recognize is treated as live/pending, with a reason. flagged means
+the postmaster's flag is not null.
+
+Status -- precedence top to bottom, first match wins:
+
+    NEEDS-OPERATOR  the thread is flagged
+    CONVERGED       usable roster; a current target; every panel seat
+                    positive; the secretary's message on target,
+                    well-formed and saying CONVERGED; quiescent; the
+                    target sources agree; no other reason. verdict is
+                    the secretary's Panel-Verdict -- but SIGNED-OFF on a
+                    target version above 1, or RESPIN on version 1, is a
+                    contradiction and not CONVERGED
+    STALLED         quiescent but not converged: nobody will wake, the
+                    operator must look
+    IN-PROGRESS     otherwise
+
+A secretary saying CONVERGED while the facts disagree is a named reason
+("secretary says CONVERGED but @tests is blocking"): that is the false
+green this script exists to catch.
+
+Output (null, never an omitted key, for what is unknown):
+
+    {"schema": "lkml-panel-state/1", "thread", "subject",
+     "status", "verdict",          # verdict only when CONVERGED
+     "target": {"branch","sha","version","set_by","set_at","source"},
+     "roster": {"author","panel","secretary","version_limit","frozen_head"},
+     "seats": [{"seat","state","verdict","message_id","version","sha"}],
+     "secretary": {"message_id","version","status","verdict",
+                   "on_target","malformed"},
+     "postmaster": {"quiescent","flagged","flag_reason","live_runs",
+                    "pending_retries","held","unrouted"},
+     "bundle": {"base","tip","branch"},   # RESPIN + a Frozen-Head only
+     "reasons": [...]}                    # empty only for CONVERGED
 """
 
 import json
@@ -102,6 +159,9 @@ HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
 FROZEN_HEAD_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
 ROSTER_KEYS = ("Author", "Panel", "Secretary", "Version-Limit", "Frozen-Head")
 ROSTER_LINE_RE = re.compile(r"^(" + "|".join(ROSTER_KEYS) + r"):(.*)$")
+PANEL_LINE_RE = re.compile(r"^Panel-[A-Za-z]+:")
+PANEL_KNOWN_RE = re.compile(r"^Panel-(?:Version|Status|Verdict):")
+SECRETARY_KEYS = ("Panel-Version", "Panel-Status", "Panel-Verdict")
 
 USAGE = """\
 Usage: lkml-panel-state.py <thread-id> [--remote]
@@ -381,6 +441,142 @@ def judge_seat(seat, msgs, target):
     return entry, f"{seat}: no verdict on {target_label(target)}"
 
 
+SEAT_PHRASE = {"blocking": "is blocking", "question": "has an open Question",
+               "stale": "is stale", "silent": "is silent",
+               "positive": "is positive"}
+
+
+def plural(n, one, many=None):
+    return f"{n} {one if n == 1 else (many or one + 's')}"
+
+
+def parse_trailer(body):
+    """The secretary's trailer block -> (fields|None, malformed-reason|None).
+    None/None means the body carries no Panel-* line at all."""
+    lines = [ln.strip(SPACE) for ln in body.split("\n") if ln.strip(SPACE) != ""]
+    if not any(PANEL_KNOWN_RE.match(ln) for ln in lines):
+        return None, None
+    k = len(lines)
+    while k > 0 and PANEL_LINE_RE.match(lines[k - 1]):
+        k -= 1
+    block = lines[k:]
+    if not block:
+        return None, "a Panel-* line is not in the last lines of the body"
+    if any(PANEL_LINE_RE.match(ln) for ln in lines[:k]):
+        return None, "a Panel-* line sits outside the trailing trailer block"
+    keys = tuple(ln.split(":", 1)[0] for ln in block)
+    vals = [ln.split(":", 1)[1].strip(SPACE) for ln in block]
+    if keys not in (SECRETARY_KEYS[:2], SECRETARY_KEYS):
+        return None, ("trailer block is not Panel-Version, Panel-Status "
+                      "[, Panel-Verdict] in that order")
+    fields = {"version": None, "status": None, "verdict": None}
+    if not re.fullmatch(r"[0-9]+", vals[0]):
+        return None, f"Panel-Version {vals[0]!r} is not a number"
+    fields["version"] = int(vals[0])
+    if vals[1] not in ("CONVERGED", "IN-PROGRESS"):
+        return None, f"unknown Panel-Status {vals[1]!r}"
+    fields["status"] = vals[1]
+    if len(vals) == 3:
+        if vals[2] not in ("SIGNED-OFF", "RESPIN"):
+            return None, f"unknown Panel-Verdict {vals[2]!r}"
+        if vals[1] != "CONVERGED":
+            return None, "Panel-Verdict present under IN-PROGRESS"
+        fields["verdict"] = vals[2]
+    elif vals[1] == "CONVERGED":
+        return None, "Panel-Status CONVERGED without a Panel-Verdict"
+    return fields, None
+
+
+def verdict_contradiction(verdict, target):
+    v = target["version"] if target else None
+    if v is None:
+        return None
+    if verdict == "SIGNED-OFF" and v > 1:
+        return (f"secretary verdict SIGNED-OFF contradicts target v{v} "
+                f"(SIGNED-OFF is only possible on v1)")
+    if verdict == "RESPIN" and v == 1:
+        return "secretary verdict RESPIN contradicts target v1 (nothing to respin yet)"
+    return None
+
+
+def judge_secretary(msgs, roster, target):
+    """-> (secretary entry|None, reasons)."""
+    sec = roster["secretary"]
+    if sec is None:
+        return None, ["roster has no usable Secretary"]
+    cands = [m for m in msgs
+             if m["ok"] and m["from"] == sec and parse_trailer(m["body"]) != (None, None)]
+    if not cands:
+        return None, [f"secretary {sec} has not reported a Panel-Status"]
+    m = cands[-1]
+    fields, bad = parse_trailer(m["body"])
+    entry = {"message_id": m["id"], "version": None, "status": None,
+             "verdict": None, "on_target": False, "malformed": bad}
+    if bad:
+        return entry, [f"secretary {sec} message {m['id']}: malformed trailer: {bad}"]
+    entry.update(fields)
+    reasons = []
+    tsha = target["sha"] if target else None
+    tver = target["version"] if target else None
+    entry["on_target"] = (tsha is not None and m["sha"] == tsha
+                          and tver is not None and fields["version"] == tver)
+    if not entry["on_target"]:
+        said = f"v{fields['version']}" + (f" ({m['sha'][:8]})" if m["sha"] else "")
+        reasons.append(f"secretary's Panel-Status is for {said}, "
+                       f"not the current target {target_label(target)}")
+    elif fields["status"] != "CONVERGED":
+        reasons.append("secretary says IN-PROGRESS")
+    return entry, reasons
+
+
+def postmaster_facts(status):
+    reasons = []
+    unrouted = opt_int(status["unrouted"])
+    live = pending = 0
+    for r in status["runs"]:
+        state = r.get("state") if isinstance(r, dict) else None
+        if state == "harvested":
+            continue
+        live += 1
+        if state != "live":
+            rid = r.get("run_id") if isinstance(r, dict) else None
+            reasons.append(f"run {rid}: unrecognized state {state!r}, treated as live")
+    for r in status["retries"]:
+        state = r.get("state") if isinstance(r, dict) else "unreadable"
+        if state in (None, "exhausted", "recovered"):
+            continue
+        pending += 1
+        if state != "pending":
+            agent = r.get("agent") if isinstance(r, dict) else None
+            reasons.append(
+                f"retry for {agent}: unrecognized state {state!r}, treated as pending")
+    held = len(status["held"])
+    flag = status["flag"]
+    flag_reason = None
+    if isinstance(flag, dict):
+        flag_reason = opt_str(flag.get("reason"))
+    elif flag is not None:
+        flag_reason = opt_str(flag)
+    if unrouted is None:
+        reasons.append("postmaster unrouted count is unreadable")
+    elif unrouted:
+        reasons.append(plural(unrouted, "unrouted message"))
+    if live:
+        reasons.append(plural(live, "live run"))
+    if pending:
+        reasons.append(plural(pending, "pending retry", "pending retries"))
+    if held:
+        reasons.append(plural(held, "held seat"))
+    if flag is not None:
+        reasons.append("the thread is flagged for the operator"
+                       + (f": {flag_reason}" if flag_reason else ""))
+    facts = {"quiescent": unrouted == 0 and not live and not pending and not held,
+             "flagged": flag is not None, "flag_reason": flag_reason,
+             "live_runs": live, "pending_retries": pending, "held": held,
+             "unrouted": unrouted}
+    return facts, reasons
+
+
 def build_state(export, status):
     if not isinstance(export, dict) or not isinstance(export.get("thread"), str) \
             or not isinstance(export.get("messages"), list):
@@ -392,6 +588,9 @@ def build_state(export, status):
     for key in ("unrouted", "flag", "review_target", "runs", "retries", "held"):
         if key not in status:
             raise InputError(f"postmaster status is missing '{key}'")
+    for key in ("runs", "retries", "held"):
+        if not isinstance(status[key], list):
+            raise InputError(f"postmaster status: '{key}' is not a list")
     if export["thread"] != status["thread"]:
         raise InputError(
             f"thread ids disagree: export is {export['thread']!r}, "
@@ -421,14 +620,63 @@ def build_state(export, status):
         if why:
             reasons.append(why)
 
+    secretary, sec_reasons = judge_secretary(msgs, roster, target)
+    reasons += sec_reasons
+
+    pm, pm_reasons = postmaster_facts(status)
+    reasons += pm_reasons
+
+    seats_ok = bool(seats) and all(s["state"] == "positive" for s in seats)
+    sec_says_converged = (secretary is not None and secretary["on_target"]
+                          and secretary["status"] == "CONVERGED")
+    if sec_says_converged:
+        for s in seats:
+            if s["state"] != "positive":
+                reasons.append(
+                    f"secretary says CONVERGED but {s['seat']} {SEAT_PHRASE[s['state']]}")
+        if not pm["quiescent"]:
+            reasons.append("secretary says CONVERGED but the thread is not quiescent")
+        if pm["flagged"]:
+            reasons.append("secretary says CONVERGED but the thread is flagged")
+        contradiction = verdict_contradiction(secretary["verdict"], target)
+        if contradiction:
+            reasons.append(contradiction)
+
+    reasons = list(dict.fromkeys(reasons))
+    facts_ok = (bool(roster["panel"]) and target is not None and seats_ok
+                and sec_says_converged and bool(pm["quiescent"]))
+    if not facts_ok and not reasons:
+        reasons.append("internal: not converged for a cause that was not "
+                       "recorded; treat as IN-PROGRESS")
+
+    if pm["flagged"]:
+        status_word = "NEEDS-OPERATOR"
+    elif not reasons:
+        status_word = "CONVERGED"
+    elif pm["quiescent"]:
+        status_word = "STALLED"
+    else:
+        status_word = "IN-PROGRESS"
+
+    verdict = secretary["verdict"] if status_word == "CONVERGED" else None
+    bundle = None
+    if verdict == "RESPIN" and roster["frozen_head"]:
+        bundle = {"base": roster["frozen_head"], "tip": target["sha"],
+                  "branch": target["branch"]}
+
     return {
         "schema": SCHEMA,
         "thread": export["thread"],
         "subject": opt_str(root["subject"]) if root and root["ok"] else None,
+        "status": status_word,
+        "verdict": verdict,
         "target": target,
         "roster": roster,
         "seats": seats,
-        "reasons": list(dict.fromkeys(reasons)),
+        "secretary": secretary,
+        "postmaster": pm,
+        "bundle": bundle,
+        "reasons": reasons,
     }
 
 
