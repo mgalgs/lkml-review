@@ -425,6 +425,8 @@ commit habit cannot sweep it into a commit.
 The cover letter's FIRST LINE becomes the mailbox Subject verbatim, so
 write it as a plain, short sentence -- no markdown heading marker, and no
 "v2:" prefix (the mailbox already adds the version and patch numbering).
+Do not write a \`## Diffstat\` section: posting appends one, computed
+from the branch.
 
 That file's presence is how the next step knows a new version is ready to
 post. If you end this run having made no commits at all, still say so

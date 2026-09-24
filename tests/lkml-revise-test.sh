@@ -499,6 +499,7 @@ contains "the handoff forbids fixup!/squash! commits" "$h_up" "no fixup!, squash
 contains "the handoff asks for a ## Testing section with counts" "$h_up" "## Testing"
 contains "the handoff asks for accepted/adapted/refused per reviewer point" "$h_up" "accepted, adapted or refused"
 contains "the handoff says only the author writes patches" "$h_up" "Only you write patches"
+contains "the handoff leaves the Diffstat to posting" "$h_up" "Do not write a \`## Diffstat\` section"
 case "$h_up" in
     *"commit early and often"*|*"one logical change per commit -- not one"*) no "the append-only advice is gone from the handoff" ;;
     *) ok "the append-only advice is gone from the handoff" ;;
