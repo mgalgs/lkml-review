@@ -720,7 +720,8 @@ sentence, from the cover letter), the review arc (how many versions
 were posted, what the review panel found at each version, what the
 author changed in response -- from the intermediates and the
 tallies), where the series stands now (the latest version's tally
-state), and what happens next. Do NOT explain the review mechanism
+state, corrected for any late-reply verdict its intermediate
+records), and what happens next. Do NOT explain the review mechanism
 (AI personas, sandboxes, how the review was run) -- the rendered
 page's footer already carries that disclosure.
 
