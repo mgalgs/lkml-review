@@ -1190,6 +1190,13 @@ kick_range="$rt_base..$rt_tip"
 kick "${kick_base[@]}" --review-target "topic:$rt_base" --send
 refused "a sha range whose tip differs from the target" "would review a different commit"
 kick_range="master...topic"
+# A bare ref is format-patch's "<ref>..HEAD": HEAD (topic) is the tip, not the ref.
+kick_range="master"
+kick "${kick_base[@]}" --review-target "master:$rt_base" --send
+refused "a bare-ref range whose ref (not HEAD) is the target" "would review a different commit"
+kick "${kick_base[@]}" --review-target "topic:$rt_tip"
+check "a bare-ref range whose HEAD is the target composes" "0" "$k_rc"
+kick_range="master...topic"
 kick "${kick_base[@]}" --review-target --send
 refused "a --review-target with no usable value" "is not <branch>:<sha>"
 

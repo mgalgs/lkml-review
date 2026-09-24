@@ -246,8 +246,9 @@
 #              discover them. Split on the LAST ":". BRANCH must be a valid
 #              branch name (`git check-ref-format --branch`) and SHA 40 or
 #              64 lowercase hex. A single value: a second --review-target
-#              is a usage error. The range's tip (its right side, or the
-#              bare ref) is also resolved in <repo> with `git rev-parse
+#              is a usage error. The range's tip (its right side; HEAD for
+#              a bare ref or "a..", which format-patch reads as "<ref>..HEAD")
+#              is also resolved in <repo> with `git rev-parse
 #              --verify <tip>^{commit}`; if it resolves and is not SHA the
 #              kickoff is refused, since the panel would review a different
 #              commit than the one the series was formatted from. A tip
@@ -651,9 +652,14 @@ if (( review_target_given )); then
         echo "Error: --review-target sha '$review_target_sha' is not 40 or 64 lowercase hex characters. See --help." >&2
         exit 1
     fi
-    # The range's right side, or the whole range when it is a bare ref;
-    # "a.." means HEAD, the way git reads it.
-    review_tip="${range##*..}"
+    # The range's right side. A range with no ".." is a bare rev, which
+    # format-patch reads as "<rev>..HEAD", so its tip is HEAD; "a.." means
+    # HEAD too, the way git reads it.
+    if [[ "$range" == *..* ]]; then
+        review_tip="${range##*..}"
+    else
+        review_tip=""
+    fi
     [[ -n "$review_tip" ]] || review_tip="HEAD"
     if review_tip_sha="$(git -C "$repo" rev-parse --verify --quiet "${review_tip}^{commit}" 2>/dev/null)" \
         && [[ "$review_tip_sha" != "$review_target_sha" ]]; then
