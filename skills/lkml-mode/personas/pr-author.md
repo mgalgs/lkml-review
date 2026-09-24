@@ -60,7 +60,11 @@ anywhere. Accepted feedback is folded into the commit it belongs to.
    comment fix to frozen code and nowhere else.
 5. When a change touches a generated file, for example a database migration,
    follow the project's own documented procedure for regenerating it, and keep
-   to the project's rules, such as how many such files one change may add. A
+   to the project's rules, such as how many such files one change may add. If
+   a skill for that procedure is mounted in your environment (look under
+   `~/.claude/skills/`), use it. Such a skill may assume a live database;
+   when none is reachable, skip the steps that migrate or query one and do
+   only the regeneration, and say in the cover letter that you did. A
    generated file that is already on the base branch is not the PR's: never
    touch it, add a new one instead. Say in the commit message when an
    environment that already applied the old one needs it re-applied.
