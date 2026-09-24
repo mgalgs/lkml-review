@@ -637,6 +637,15 @@ The intermediate was built from that section alone, not the whole
 unnecessary: you MAY read this clone to chase a lead, but start from
 the intermediate, not from the code.
 
+The tally counts only tags posted on v$version's own section: it
+walks the cover's own subtree and stops at any other version's
+boundary, so a late reply's tag never appears in it. A late reply's
+verdict still counts toward v$version -- when the intermediate
+records one that the tally does not show (a NAK or a
+Changes-requested filed on an earlier version's thread), the
+intermediate wins and the Summary must say so, not report the tally
+alone as the state of the series.
+
 Write ONE file: \`results.md\` at the root of the artifact outbox
 directory named in your prompt, EXACTLY this shape:
 
@@ -648,8 +657,9 @@ directory named in your prompt, EXACTLY this shape:
 
 The # Summary section is a small collapsed card in the intended final
 layout: at most about 120 words, hard-capped at 200. One or two short
-paragraphs: the state of the series (how the tally stands), the
-defects that still matter, and what happens next. Nothing else.
+paragraphs: the state of the series (the tally, corrected for any
+late-reply verdict the intermediate carries), the defects that still
+matter, and what happens next. Nothing else.
 
 # Details is free-form subsections: a defect list with severity,
 status and its message-id citation, a per-patch disposition, and
@@ -683,10 +693,11 @@ review series $series, versions ${recorded_versions[0]} to $version.
 You are handed (1) each recorded version's extraction intermediate
 (results-v<N>.json), verbatim, in version order, (2) each version's
 tally section from the thread's --text render, and (3) the cover
-letter of the LATEST version (v$version), verbatim. The
-intermediates were built from the entire --text render of the
-mailbox, and they are the message-level detail: you MAY read this
-clone to chase a lead, but start from them, not from the code.
+letter of the LATEST version (v$version), verbatim. Each intermediate
+was built from its own version's section of the thread plus any late
+replies filed on an earlier version's thread during it, and they are
+the message-level detail: you MAY read this clone to chase a lead,
+but start from them, not from the code.
 
 Write ONE file: \`results.md\` at the root of the artifact outbox
 directory named in your prompt, EXACTLY this shape:
