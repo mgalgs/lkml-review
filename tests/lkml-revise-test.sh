@@ -178,6 +178,8 @@ rc=$?
 check "exits 0 and posts v2" "0" "$rc"
 contains "reports harvesting the reply" "$out" "harvested 1 repl"
 contains "reports posting v2" "$out" "posted v2"
+contains "v1 was posted --no-checkout, so there is no ledger sha: warns and omits the flag" "$out" \
+    "no ledger sha for v1; the v2 cover will carry no \"## Since\" section."
 
 tree_out="$("$mailbox" tree widget-frob)"
 contains "v2 shows up in the tree" "$tree_out" "=== v2 ==="
@@ -204,6 +206,10 @@ contains "the new cover carries X-Base with the series' original base" \
 case "$v2_cover_msg" in
     *"X-Upstream-Head:"*) no "no --upstream-head was given; the new cover carries no X-Upstream-Head" ;;
     *) ok "no --upstream-head was given; the new cover carries no X-Upstream-Head" ;;
+esac
+case "$v2_cover_msg" in
+    *"## Since"*) no "no ledger sha for v1: the new cover carries no ## Since section" "$v2_cover_msg" ;;
+    *) ok "no ledger sha for v1: the new cover carries no ## Since section" ;;
 esac
 
 printf '\n== an unresolvable --checkout is refused before any launch ==\n'
@@ -499,7 +505,8 @@ contains "the handoff forbids fixup!/squash! commits" "$h_up" "no fixup!, squash
 contains "the handoff asks for a ## Testing section with counts" "$h_up" "## Testing"
 contains "the handoff asks for accepted/adapted/refused per reviewer point" "$h_up" "accepted, adapted or refused"
 contains "the handoff says only the author writes patches" "$h_up" "Only you write patches"
-contains "the handoff leaves the Diffstat to posting" "$h_up" "Do not write a \`## Diffstat\` section"
+contains "the handoff leaves the Diffstat to posting" "$h_up" "Do not write a \`## Diffstat\` or a \`## Since vN\` section"
+contains "the handoff mentions ## Since" "$h_up" "## Since"
 case "$h_up" in
     *"commit early and often"*|*"one logical change per commit -- not one"*) no "the append-only advice is gone from the handoff" ;;
     *) ok "the append-only advice is gone from the handoff" ;;
@@ -622,6 +629,61 @@ case "$out" in
     *) ok "pr-author with --upstream-head is not refused for a missing boundary" ;;
 esac
 rm -rf -- "$pra_personas"
+
+printf '\n== --previous-tip: the ledger sha is used, not --checkout or the new tip ==\n'
+# A distinct branch standing in for what v1 was ACTUALLY posted from --
+# different from both "somebranch" (this round's --checkout) and
+# "v2-branch" (what gets fetched back as v2), so a test that used either
+# of those instead of the ledger sha would be caught.
+git -C "$real_repo" checkout -b v1-posted-branch "$series_base_sha" -q
+printf 'this is what v1 was actually posted from\n' > "$real_repo/posted-marker.txt"
+git -C "$real_repo" add posted-marker.txt
+git -C "$real_repo" commit -q -m "repo: v1 posted-branch marker"
+v1_posted_sha="$(git -C "$real_repo" rev-parse --verify --quiet HEAD)"
+git -C "$real_repo" checkout - -q
+
+(cd "$real_repo" && "$mailbox" init widget-ledger-sha --cover "$work/cover.txt" --patches "$work/patches" \
+    --from author --harness claude --model opus --checkout v1-posted-branch >/dev/null 2>&1)
+
+write_stub 1 true 1 0
+out_ledger="$(PATH="$stub_bin:$PATH" "$revise" widget-ledger-sha --project "$real_repo" \
+    --checkout somebranch --version 1 --base "$series_base_sha" 2>&1)"
+rc_ledger=$?
+check "ledger-sha run posts v2" "0" "$rc_ledger"
+case "$out_ledger" in
+    *"no ledger sha for v1"*) no "a recorded ledger sha does not warn" "$out_ledger" ;;
+    *) ok "a recorded ledger sha does not warn" ;;
+esac
+
+ledger_tree_out="$("$mailbox" tree widget-ledger-sha)"
+ledger_v2_cover_id="$(printf '%s\n' "$ledger_tree_out" | awk '/^=== v2 ===/{found=1; next} found && /^[[:alnum:]]/{print $1; exit}')"
+ledger_v2_cover_msg="$("$mailbox" show widget-ledger-sha "$ledger_v2_cover_id")"
+contains "the Since section is keyed on the ledger's v1 sha" "$ledger_v2_cover_msg" "v1  $v1_posted_sha  tree"
+case "$ledger_v2_cover_msg" in
+    *"$somebranch_sha"*) no "the Since section does not use --checkout's sha instead of the ledger" "$ledger_v2_cover_msg" ;;
+    *) ok "the Since section does not use --checkout's sha instead of the ledger" ;;
+esac
+
+printf '\n== --previous-tip: an unresolvable ledger sha warns and omits the flag ==\n'
+(cd "$real_repo" && "$mailbox" init widget-bad-ledger-sha --cover "$work/cover.txt" --patches "$work/patches" \
+    --from author --harness claude --model opus --no-checkout >/dev/null 2>&1)
+printf '{"version":1,"branch":"nosuchbranch","sha":"%s"}\n' "$(printf 'e%.0s' {1..40})" \
+    > "$LKML_MAILBOX_ROOT/widget-bad-ledger-sha/versions.jsonl"
+
+write_stub 1 true 1 0
+out_badledger="$(PATH="$stub_bin:$PATH" "$revise" widget-bad-ledger-sha --project "$real_repo" \
+    --checkout somebranch --version 1 --base "$series_base_sha" 2>&1)"
+rc_badledger=$?
+check "an unresolvable ledger sha still posts v2" "0" "$rc_badledger"
+contains "an unresolvable ledger sha warns and omits the flag" "$out_badledger" \
+    "ledger sha $(printf 'e%.0s' {1..40}) for v1 does not resolve in $real_repo; the v2 cover will carry no \"## Since\" section."
+badledger_tree_out="$("$mailbox" tree widget-bad-ledger-sha)"
+badledger_v2_cover_id="$(printf '%s\n' "$badledger_tree_out" | awk '/^=== v2 ===/{found=1; next} found && /^[[:alnum:]]/{print $1; exit}')"
+badledger_v2_cover_msg="$("$mailbox" show widget-bad-ledger-sha "$badledger_v2_cover_id")"
+case "$badledger_v2_cover_msg" in
+    *"## Since"*) no "an unresolvable ledger sha: the new cover carries no ## Since section" "$badledger_v2_cover_msg" ;;
+    *) ok "an unresolvable ledger sha: the new cover carries no ## Since section" ;;
+esac
 
 printf '\n== --help ==\n'
 h_out="$("$revise" --help 2>&1)"; h_rc=$?

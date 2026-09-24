@@ -305,6 +305,22 @@ if [[ -f "$versions_file" ]]; then
         "$versions_file" | tail -n1)"
 fi
 
+# vN's POSTED tip, from the ledger -- not $checkout_sha: a resumed author
+# run checks out a failed attempt's branch while --version still names vN.
+# Missing is a warning, not a refusal: the version outweighs the comparison.
+previous_tip_sha=""
+if [[ -f "$versions_file" ]]; then
+    previous_tip_sha="$(jq -r --argjson v "$version" \
+        'select((.version|type)=="number" and .version==$v and (.sha|type)=="string") | .sha' \
+        "$versions_file" | tail -n1)"
+fi
+if [[ -z "$previous_tip_sha" ]]; then
+    echo "fork-sandbox lkml-revise: no ledger sha for v$version; the v$next_version cover will carry no \"## Since\" section." >&2
+elif ! git -C "$real_repo" rev-parse --verify --quiet "${previous_tip_sha}^{commit}" >/dev/null 2>&1; then
+    echo "fork-sandbox lkml-revise: ledger sha $previous_tip_sha for v$version does not resolve in $real_repo; the v$next_version cover will carry no \"## Since\" section." >&2
+    previous_tip_sha=""
+fi
+
 # The frozen boundary: the commits up to and including it are published and
 # belong to a human, so the author never rewrites them; everything above it
 # is the author's series and is re-rolled. Resolved once, here, before the
@@ -425,8 +441,8 @@ commit habit cannot sweep it into a commit.
 The cover letter's FIRST LINE becomes the mailbox Subject verbatim, so
 write it as a plain, short sentence -- no markdown heading marker, and no
 "v2:" prefix (the mailbox already adds the version and patch numbering).
-Do not write a \`## Diffstat\` section: posting appends one, computed
-from the branch.
+Do not write a \`## Diffstat\` or a \`## Since vN\` section: posting
+appends both, computed from the branches.
 
 That file's presence is how the next step knows a new version is ready to
 post. If you end this run having made no commits at all, still say so
@@ -674,12 +690,14 @@ real_branch_sha="$(cd "$real_repo" && git rev-parse --verify --quiet "${real_bra
 }
 upstream_head_args=()
 [[ -n "$upstream_head_sha" ]] && upstream_head_args=(--upstream-head "$upstream_head_sha")
+previous_tip_args=()
+[[ -n "$previous_tip_sha" ]] && previous_tip_args=(--previous-tip "$previous_tip_sha")
 new_cover_id="$(cd "$real_repo" && "$mailbox" init "$series" --cover "$cover_file" --patches "$patch_dir" \
     --from "$author_persona" --display "$display" --version "$next_version" \
     --harness "$harness" --model "$model" --network "$network" \
     --diffstat "$series_base_sha..$real_branch" --checkout "$real_branch" \
     --review-target-set "$real_branch $real_branch_sha" --base-sha "$series_base_sha" \
-    "${upstream_head_args[@]}")" || {
+    "${upstream_head_args[@]}" "${previous_tip_args[@]}")" || {
     echo "Error: lkml-mailbox.sh init failed -- v$next_version was not posted." >&2
     echo "Patches are sitting at $patch_dir; branch $real_branch was not" >&2
     echo "recorded in $ledger_root/$series/versions.jsonl." >&2
