@@ -1255,6 +1255,73 @@ kick "${kick_base[@]}" --subject '[PATCH v3 0/2] improve the thing' --focus 'pat
     --template "$focused_template" --context-secret one --send
 refused "a focused template with --context-secret (--send)" "fork-sandbox mail grant"
 
+printf '\n== --header: forwarded in order to the cover only ==\n'
+kick "${kick_base[@]}" --seats '@ci' --header 'X-Preview-PR: 42' --header 'X-Other: two words' \
+    --allow-namespace example-ns --send
+check "--send with --header exits 0" "0" "$k_rc"
+contains "the sent cover carries the headers in order, after X-Seats and before the grants" \
+    "$k_argv" "--header X-Seats: @ci --header X-Preview-PR: 42 --header X-Other: two words --allow-namespace example-ns --subject"
+kick "${kick_base[@]}" --header 'X-Preview-PR: 42' --patches --send
+check "--send --patches with --header exits 0" "0" "$k_rc"
+contains "the posted cover carries --header" "$(grep -m1 -- '^mail send' <<<"$k_argv")" "--header X-Preview-PR: 42"
+case "$(grep -- '^mail reply' <<<"$k_argv")" in
+    *"--header"*) no "no per-patch reply carries --header" "$k_argv" ;;
+    *) ok "no per-patch reply carries --header" ;;
+esac
+kick "${kick_base[@]}" --header 'X-Preview-PR: 42' --patches
+contains "the printed cover carries --header (shell-quoted)" "$(grep -m1 -- 'cover_id=\$(' <<<"$k_out")" 'X-Preview-PR:\ 42'
+case "$(grep -- '^fork-sandbox mail reply' <<<"$k_out")" in
+    *"--header"*) no "no printed per-patch reply carries --header" "$k_out" ;;
+    *) ok "no printed per-patch reply carries --header" ;;
+esac
+kick "${kick_base[@]}" --header 'X-Preview-PR: 42'
+contains "the printed (no --send) cover carries --header" "$k_out" 'X-Preview-PR:\ 42'
+kick "${kick_base[@]}" --header 'x-lowercase-ok: fine'
+check "a lowercase header name composes" "0" "$k_rc"
+kick "${kick_base[@]}" --header 'X-Trailing-Colon: a: b'
+check "a value containing ': ' composes" "0" "$k_rc"
+
+printf '\n== --header validation ==\n'
+kick "${kick_base[@]}" --header 'no-space:value' --send
+refused "no space after the colon" "is not \"Name: value\""
+kick "${kick_base[@]}" --header 'X-Empty: ' --send
+refused "an empty value" "has an empty value"
+kick "${kick_base[@]}" --header 'X-Blank:    ' --send
+refused "a whitespace-only value" "has an empty value"
+kick "${kick_base[@]}" --header 'X-Name' --send
+refused "no colon at all" "is not \"Name: value\""
+kick "${kick_base[@]}" --header '1Bad: v' --send
+refused "a name starting with a digit" "is not \"Name: value\""
+kick "${kick_base[@]}" --header 'Bad_Name: v' --send
+refused "an underscore in the name" "is not \"Name: value\""
+kick "${kick_base[@]}" --header 'X-Space : v' --send
+refused "a space before the colon" "is not \"Name: value\""
+kick "${kick_base[@]}" --header '' --send
+refused "an empty --header" "is not \"Name: value\""
+kick "${kick_base[@]}" --header $'X-Multi: line one\nX-Injected: two' --send
+refused "a value with a newline" "must be a single line"
+kick "${kick_base[@]}" --header $'X-Cr: one\rtwo' --send
+refused "a value with a carriage return" "must be a single line"
+for owned in 'X-Version: 2' 'x-version: 2' 'X-Review-Target: a:b' 'X-REVIEW-TARGET-SHA: abc' 'x-review-target-branch: b' \
+    'X-AI-Persona: x' 'x-ai-anything: y' 'X-Seats: @a' 'x-seats: @a'; do
+    kick "${kick_base[@]}" --header "$owned" --send
+    refused "the reserved header '$owned'" "'${owned%%:*}'"
+done
+kick "${kick_base[@]}" --header 'X-Seats: @a' --seats '@ci' --send
+contains "the X-Seats refusal points at --seats" "$k_out" "use --seats"
+kick "${kick_base[@]}" --header 'X-Versions-Not: ok' --header 'X-Airline: ok' --header 'X-Review-Targets: no'
+refused "X-Review-Targets (the family is a prefix match)" "'X-Review-Targets'"
+kick "${kick_base[@]}" --header 'X-Versions-Not: ok' --header 'X-Airline: ok'
+check "near-miss names (X-Versions-Not, X-Airline) are not refused" "0" "$k_rc"
+
+printf '\n== --header refuses against a focused (${FOCUS}) template ==\n'
+kick "${kick_base[@]}" --subject '[PATCH v3 0/2] improve the thing' --focus 'patch 2 only' \
+    --template "$focused_template" --header 'X-Preview-PR: 42'
+refused "a focused template with --header (print-only)" "reply inside an existing thread"
+kick "${kick_base[@]}" --subject '[PATCH v3 0/2] improve the thing' --focus 'patch 2 only' \
+    --template "$focused_template" --header 'X-Preview-PR: 42' --send
+refused "a focused template with --header (--send)" "fork-sandbox mail grant"
+
 printf '\n== kickoff templates keep the no-attachment guard on the author reply ==\n'
 # A wake's harvested reply carries no attachment path (the postmaster
 # builds `mail reply` without --attach), so the "Next version" sections

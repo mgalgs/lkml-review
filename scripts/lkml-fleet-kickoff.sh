@@ -9,7 +9,8 @@
 #            [--allow-ambiguous-version] [--patches] [--seats <addr-list>]
 #            [--allow-namespace <ns[:port]>]... [--reach-probe <host:port>]...
 #            [--context-ro <dir>] [--context-secret <name>]
-#            [--review-target <branch>:<sha>] [--send]
+#            [--review-target <branch>:<sha>] [--header "Name: value"]...
+#            [--send]
 #
 # <repo>       path to a local git repository.
 # <range>      a revision range passed straight to `git format-patch`
@@ -222,6 +223,20 @@
 #              is filled with BRANCH, and the local branch-name check is
 #              skipped, because a range written as "<base-sha>..<head-sha>"
 #              has no branch on its right side to check.
+# --header "NAME: VALUE"
+#              forwarded, repeatable, order preserved, to the cover's
+#              `fork-sandbox mail send` as an extra header on the NEW
+#              thread's root mail, after the X-Seats header this script
+#              stamps for --seats. NAME is letters, digits and '-', starting
+#              with a letter; it is followed by ": " and a non-empty,
+#              single-line VALUE. Refused, case-insensitively, are the
+#              headers something else owns: X-Version and X-Review-Target*
+#              (the mail layer stamps them; --review-target is the way to
+#              set the latter), X-AI-* (the transport's own), and X-Seats
+#              (this script's --seats or roster owns it). Same
+#              restrictions as --allow-namespace otherwise: cover only,
+#              never on a per-patch reply, and refused alongside a ${FOCUS}
+#              template.
 # --send       actually run the composed `fork-sandbox mail send`
 #              command. Without it, the command is printed, shell-quoted,
 #              and nothing is sent.
@@ -268,12 +283,13 @@ context_ro=""
 context_ro_given=0
 context_secret=""
 context_secret_given=0
+headers=()
 review_target=""
 review_target_given=0
 
 while (( $# > 0 )); do
     case "$1" in
-        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats|--allow-namespace|--reach-probe|--context-ro|--context-secret|--review-target)
+        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats|--header|--allow-namespace|--reach-probe|--context-ro|--context-secret|--review-target)
             (( $# >= 2 )) || { echo "Error: $1 requires a value. See --help." >&2; exit 1; }
             ;;
     esac
@@ -294,6 +310,7 @@ while (( $# > 0 )); do
         --context-ro)
             (( ! context_ro_given )) || { echo "Error: --context-ro may only be given once. See --help." >&2; exit 1; }
             context_ro="$2"; context_ro_given=1; shift 2 ;;
+        --header) headers+=("$2"); shift 2 ;;
         --context-secret)
             (( ! context_secret_given )) || { echo "Error: --context-secret may only be given once. See --help." >&2; exit 1; }
             context_secret="$2"; context_secret_given=1; shift 2 ;;
@@ -343,6 +360,31 @@ if (( context_secret_given )); then
         exit 1
     fi
 fi
+
+for header in "${headers[@]}"; do
+    if [[ "$header" == *$'\n'* || "$header" == *$'\r'* ]]; then
+        echo "Error: --header must be a single line; got a line break in '${header//[$'\r\n']/ }'. See --help." >&2
+        exit 1
+    fi
+    if [[ ! "$header" =~ ^([A-Za-z][A-Za-z0-9-]*):\ (.*)$ ]]; then
+        echo "Error: --header '$header' is not \"Name: value\" (a name of letters, digits and '-', then ': ', then a value). See --help." >&2
+        exit 1
+    fi
+    header_name="${BASH_REMATCH[1]}"
+    if [[ -z "${BASH_REMATCH[2]//[[:space:]]/}" ]]; then
+        echo "Error: --header '$header' has an empty value. See --help." >&2
+        exit 1
+    fi
+    header_lc="${header_name,,}"
+    case "$header_lc" in
+        x-version|x-review-target*|x-ai-*)
+            echo "Error: --header '$header_name' is set by the mail layer and cannot be given here. See --help." >&2
+            exit 1 ;;
+        x-seats)
+            echo "Error: --header '$header_name' is owned by this script (X-Seats); use --seats. See --help." >&2
+            exit 1 ;;
+    esac
+done
 
 review_target_branch=""
 review_target_sha=""
@@ -533,8 +575,8 @@ fi
 # unconditionally on --send -- the print-only path would otherwise
 # print a `mail send ... --allow-namespace ...` command a caller could
 # paste and believe is the right way to grant an existing thread.
-if [[ "$body" == *'${FOCUS}'* ]] && { (( ${#allow_namespace[@]} > 0 )) || (( ${#reach_probe[@]} > 0 )) || (( context_ro_given )) || (( context_secret_given )) || (( review_target_given )); }; then
-    echo "Error: grant and target flags apply to the thread a new \`mail send\` creates, but a focused round is a reply inside an existing thread. Set the grant on that thread with \`fork-sandbox mail grant <thread-id> ...\` and compose without these flags." >&2
+if [[ "$body" == *'${FOCUS}'* ]] && { (( ${#allow_namespace[@]} > 0 )) || (( ${#reach_probe[@]} > 0 )) || (( context_ro_given )) || (( context_secret_given )) || (( review_target_given )) || (( ${#headers[@]} > 0 )); }; then
+    echo "Error: grant, target and header flags apply to the thread a new \`mail send\` creates, but a focused round is a reply inside an existing thread. Set the grant on that thread with \`fork-sandbox mail grant <thread-id> ...\` and compose without these flags." >&2
     exit 1
 fi
 
@@ -949,6 +991,9 @@ cover_cmd=(fork-sandbox mail send --from "$from" --to "$to")
 [[ -n "$cc" ]] && cover_cmd+=(--cc "$cc")
 [[ -n "$hops" ]] && cover_cmd+=(--hops "$hops")
 [[ -n "$seats_header" ]] && cover_cmd+=(--header "X-Seats: $seats_header")
+for extra_header in "${headers[@]}"; do
+    cover_cmd+=(--header "$extra_header")
+done
 for grant_ns in "${allow_namespace[@]}"; do
     cover_cmd+=(--allow-namespace "$grant_ns")
 done
