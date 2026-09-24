@@ -119,6 +119,13 @@ for f in "$personas_dir"/*.md; do
         no "$name carries the Reply format section" "no '## Reply format' heading"
         continue
     fi
+    # pr-author is the one seat whose stanza may carry Version:, so its
+    # section is the shared text plus a documented extension, checked
+    # against the baseline after the loop rather than byte-compared here.
+    if [[ "$name" == "pr-author" ]]; then
+        pr_author_reply_format="$section"
+        continue
+    fi
     if [[ -z "$baseline" ]]; then
         baseline="$section"
         baseline_name="$name"
@@ -131,10 +138,37 @@ for f in "$personas_dir"/*.md; do
         no "$name's Reply format section matches $baseline_name's" "section text diverges"
     fi
 done
-if (( count == 10 )); then
-    ok "fleet/personas holds exactly ten personas"
+if (( count == 11 )); then
+    ok "fleet/personas holds exactly eleven personas"
 else
-    no "fleet/personas holds exactly ten personas" "found $count"
+    no "fleet/personas holds exactly eleven personas" "found $count"
+fi
+if [[ -n "$baseline" && -n "${pr_author_reply_format:-}" ]]; then
+    if [[ "$pr_author_reply_format" == "$baseline"* ]]; then
+        ok "pr-author's Reply format section is the shared section plus an extension"
+    else
+        no "pr-author's Reply format section is the shared section plus an extension" "shared text diverges"
+    fi
+    ext="${pr_author_reply_format#"$baseline"}"
+    # shellcheck disable=SC2016  # literal backticks in the needle
+    if grep -qF 'legal for this seat alone: `Version: <n>`' <<<"$ext"; then
+        ok "pr-author's Reply format extension documents Version: as legal for this seat alone"
+    else
+        no "pr-author's Reply format extension documents Version: as legal for this seat alone"
+    fi
+    # No other persona may document Version: as a legal key.
+    others=""
+    for f in "$personas_dir"/*.md; do
+        [[ "$(basename "$f" .md)" == "pr-author" ]] && continue
+        if grep -qF 'Version: <n>' "$f"; then others+=" $(basename "$f" .md)"; fi
+    done
+    if [[ -z "$others" ]]; then
+        ok "no persona but pr-author documents a Version: stanza key"
+    else
+        no "no persona but pr-author documents a Version: stanza key" "found in:$others"
+    fi
+else
+    no "pr-author's Reply format section is the shared section plus an extension" "missing baseline or pr-author section"
 fi
 if [[ -n "$baseline" ]]; then
     if grep -q 'Reply-To-Id:' <<<"$baseline" && ! grep -q 'In-Reply-To:' <<<"$baseline"; then
@@ -170,6 +204,16 @@ triage_baseline_set=0
 for f in "$personas_dir"/*.md; do
     name="$(basename "$f" .md)"
     section="$(extract_triage "$f")"
+    # pr-author replaces the generic triage with its own wake checklist
+    # (pinned in its own block near the end of this file).
+    if [[ "$name" == "pr-author" ]]; then
+        if [[ -z "$section" ]]; then
+            ok "pr-author.md does not carry the generic Triage the wake first section"
+        else
+            no "pr-author.md does not carry the generic Triage the wake first section" "found the heading"
+        fi
+        continue
+    fi
     if (( ! triage_baseline_set )); then
         triage_baseline="$section"
         triage_baseline_name="$name"
@@ -246,10 +290,10 @@ for f in "$personas_dir"/*.md; do
         no "$name's Addressing the distiller section matches $addressing_baseline_name's" "section text diverges"
     fi
 done
-if (( addressing_count == 9 )); then
-    ok "Addressing the distiller section appears in exactly the nine non-distiller personas"
+if (( addressing_count == 10 )); then
+    ok "Addressing the distiller section appears in exactly the ten non-distiller personas"
 else
-    no "Addressing the distiller section appears in exactly the nine non-distiller personas" "found in $addressing_count"
+    no "Addressing the distiller section appears in exactly the ten non-distiller personas" "found in $addressing_count"
 fi
 
 # The byte-identity comparison above only proves the nine copies agree
@@ -363,6 +407,51 @@ if grep -qF 'paste each patch into the reply' "$personas_dir/author.md"; then
 else
     ok "author.md no longer instructs inlining the whole series into one reply"
 fi
+
+# pr-author: the fleet's in-cluster PR author. Its wake checklist IS the
+# round protocol (no orchestrator drives the rounds), so the strings
+# that carry the protocol are pinned, not just the frontmatter.
+pra="$personas_dir/pr-author.md"
+pra_fm="$(awk 'NR == 1 && /^---$/ { f = 1; next } f && /^---$/ { exit } f { print }' "$pra")"
+if grep -qE '^description: .+' <<<"$pra_fm"; then
+    ok "pr-author.md frontmatter has a description"
+else
+    no "pr-author.md frontmatter has a description"
+fi
+pra_resolved="$(fork-sandbox fleet resolve pr-author 2>&1)"
+if [[ "$(sed -n '1p' <<<"$pra_resolved")" == "claude" && "$(sed -n '2p' <<<"$pra_resolved")" == "opus" ]]; then
+    ok "pr-author resolves harness=claude model=opus"
+else
+    no "pr-author resolves harness=claude model=opus" "$pra_resolved"
+fi
+# backend and review-target are fleet.yaml-only; the real parser refuses
+# them in frontmatter, and the persona must not try.
+if grep -qE '^(backend|review-target):' <<<"$pra_fm"; then
+    no "pr-author.md frontmatter carries no fleet.yaml-only keys" "found backend: or review-target:"
+else
+    ok "pr-author.md frontmatter carries no fleet.yaml-only keys"
+fi
+has "$pra" '## The wake checklist' \
+    "pr-author.md carries the wake checklist section"
+has "$pra" 'Frozen-Head:' \
+    "pr-author.md reads the frozen head from the root's Frozen-Head line"
+has "$pra" 'X-Version' \
+    "pr-author.md counts replies per version by X-Version"
+has "$pra" 'write no reply file and end the' \
+    "pr-author.md ends the wake with no reply until every Panel seat has replied"
+# shellcheck disable=SC2016  # literal backticks in the needle
+has "$pra" '`Version:` is N+1' \
+    "pr-author.md documents the Version: N+1 cover"
+has "$pra" 'per wake, on the cover only' \
+    "pr-author.md allows one Version: per wake, on the cover only"
+has "$pra" 'Post no per-patch messages' \
+    "pr-author.md says no per-patch messages"
+has "$pra" 'git range-diff' \
+    "pr-author.md puts a range-diff in the cover's Since section"
+has "$pra" 'GIT_SEQUENCE_EDITOR=true' \
+    "pr-author.md re-rolls with autosquash"
+has "$pra" 'Comment-only:' \
+    "pr-author.md keeps the Comment-only trailer rule"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))
