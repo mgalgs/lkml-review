@@ -269,9 +269,8 @@ open_text="$("$mailbox" open "$series" --version "$version" 2>/dev/null)"
 # before anything is spent on a run) is even built. Same render
 # lkml-round.sh's secretary seat uses, mounted the same way -- once, into a
 # temp dir, passed to fork-sandbox.sh as --thread-dir <dir>, which mounts
-# it read-only at /thread/thread.txt in the sandbox -- rather than inlined
-# into the handoff, which forced the author onto a 1M-context model on a
-# long series and has caused a large-brief livelock before.
+# it read-only at /thread/thread.txt in the sandbox. Do not inline it into
+# the handoff: on a long series that brief outgrows the author's context.
 ledger_root="${LKML_MAILBOX_ROOT:-/var/tmp/claude-scratch/lkml}"
 
 # The version under revision's OWN upstream_head, from the ledger -- NOT
