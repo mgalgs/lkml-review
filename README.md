@@ -79,6 +79,10 @@ overrides; `fleet roster` and `fleet check` need that optional file. See
 `docs/RETIRED.md` for how each old script below maps onto the new
 transport, and where a gap still has no replacement.
 
+To review an open pull request with a panel that runs in a Kubernetes
+cluster, with no orchestrator between rounds, see
+[`docs/cluster-panel.md`](docs/cluster-panel.md).
+
 ## Install
 
 ```bash
