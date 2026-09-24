@@ -532,6 +532,12 @@ Rules, all load-bearing:
   but you have not verified every line. `NAK` means this must not be
   merged as it stands. `Changes-requested` and `Question` are for exactly
   what they say.
+- **Mark a nit as a nit.** Start a comment about naming, style or
+  preference with `nit:`, and never tag `Changes-requested` or `NAK` for
+  nits alone: a patch whose only open comments are nits gets `Reviewed-by`
+  or `Acked-by`, with the nits in the body. The author may decline a nit
+  with a reason. Push back on the next version only if you think it was
+  not a nit after all.
 - **Quote the way mailing-list etiquette does.** Quote only the lines
   you are responding to, with `> ` at the start of each quoted line. Trim
   everything else and mark each cut with `[...]`. Put your reply directly

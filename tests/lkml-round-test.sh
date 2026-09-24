@@ -1430,5 +1430,10 @@ h2_out="$("$round" -h 2>&1)"; h2_rc=$?
 if (( h2_rc == 0 )); then ok "-h alone exits 0"; else no "-h alone exits 0" "exit $h2_rc: $h2_out"; fi
 contains "-h prints the header usage" "$h2_out" "lkml-round.sh — Launch one fork-sandbox run per persona"
 
+# The reviewer brief keeps nits from blocking convergence.
+round_src="$(cat "$round")"
+contains "reviewer brief marks nits as nits" "$round_src" "**Mark a nit as a nit.**"
+contains "reviewer brief: nits alone never block" "$round_src" 'never tag `Changes-requested` or `NAK` for'
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 (( fail == 0 )) || exit 1
