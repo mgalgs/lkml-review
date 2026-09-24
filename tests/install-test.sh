@@ -94,12 +94,14 @@ PORCELAIN=(
     lkml-revise.sh
     lkml-round.sh
     lkml-series.sh
+    lkml-series-check.sh
     lkml-status.sh
     lkml-summarize.sh
 )
 PLUMBING=(
     lkml-seats-parse.py
     lkml-seats-resolve
+    lkml-series-check-py.py
 )
 FARMS=(
     "$home_dir/.claude/skills"

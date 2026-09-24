@@ -65,6 +65,7 @@ PORCELAIN=(
     lkml-revise.sh
     lkml-round.sh
     lkml-series.sh
+    lkml-series-check.sh
     lkml-status.sh
     lkml-summarize.sh
 )
@@ -72,6 +73,7 @@ PORCELAIN=(
 PLUMBING=(
     lkml-seats-parse.py
     lkml-seats-resolve
+    lkml-series-check-py.py
 )
 
 usage() {
