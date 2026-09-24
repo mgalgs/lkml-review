@@ -1199,6 +1199,62 @@ kick "${kick_base[@]}" --subject '[PATCH v3 0/2] improve the thing' --focus 'pat
     --template "$focused_template" --review-target "topic:$rt_tip" --send
 refused "a focused template with --review-target (--send)" "fork-sandbox mail grant"
 
+printf '\n== --context-secret: forwarded to the cover only ==\n'
+kick "${kick_base[@]}" --allow-namespace example-ns --reach-probe 'svc-a.example-ns.svc.cluster.local:8001' \
+    --context-secret 'slot-07-context' --review-target "topic:$rt_tip" --send
+check "--send with --context-secret exits 0" "0" "$k_rc"
+contains "the sent cover carries --context-secret after the other grants, before --review-target" \
+    "$k_argv" "--reach-probe svc-a.example-ns.svc.cluster.local:8001 --context-secret slot-07-context --review-target topic:$rt_tip --subject"
+kick "${kick_base[@]}" --context-secret 'slot-07-context' --patches --send
+check "--send --patches with --context-secret exits 0" "0" "$k_rc"
+contains "the posted cover carries --context-secret" "$(grep -m1 -- '^mail send' <<<"$k_argv")" "--context-secret slot-07-context"
+case "$(grep -- '^mail reply' <<<"$k_argv")" in
+    *"--context-secret"*) no "no per-patch reply carries --context-secret" "$k_argv" ;;
+    *) ok "no per-patch reply carries --context-secret" ;;
+esac
+kick "${kick_base[@]}" --context-secret 'slot-07-context' --patches
+contains "the printed cover carries --context-secret" "$(grep -m1 -- 'cover_id=\$(' <<<"$k_out")" "--context-secret slot-07-context"
+case "$(grep -- '^fork-sandbox mail reply' <<<"$k_out")" in
+    *"--context-secret"*) no "no printed per-patch reply carries --context-secret" "$k_out" ;;
+    *) ok "no printed per-patch reply carries --context-secret" ;;
+esac
+kick "${kick_base[@]}" --context-secret 'a.b-c.d1'
+check "a dotted DNS-1123 subdomain composes" "0" "$k_rc"
+kick "${kick_base[@]}" --context-secret "$(printf 'a%.0s' $(seq 253))"
+check "a 253-character name composes" "0" "$k_rc"
+
+printf '\n== --context-secret validation ==\n'
+kick "${kick_base[@]}" --context-secret 'Slot-07' --send
+refused "an uppercase name" "is not a valid Secret name"
+kick "${kick_base[@]}" --context-secret '-slot' --send
+refused "a leading dash" "is not a valid Secret name"
+kick "${kick_base[@]}" --context-secret 'slot-' --send
+refused "a trailing dash" "is not a valid Secret name"
+kick "${kick_base[@]}" --context-secret 'a..b' --send
+refused "an empty dotted label" "is not a valid Secret name"
+kick "${kick_base[@]}" --context-secret 'a_b' --send
+refused "an underscore" "is not a valid Secret name"
+kick "${kick_base[@]}" --context-secret '' --send
+refused "an empty name" "is not a valid Secret name"
+kick "${kick_base[@]}" --context-secret "$(printf 'a%.0s' $(seq 254))" --send
+refused "a 254-character name" "is not a valid Secret name"
+kick "${kick_base[@]}" --context-secret one --context-secret two --send
+refused "a second --context-secret" "--context-secret may only be given once"
+kick "${kick_base[@]}" --context-secret one --context-ro "$grant_ctx_dir" --send
+refused "--context-secret with --context-ro" "--context-secret and --context-ro are mutually exclusive"
+kick "${kick_base[@]}" --context-ro "$grant_ctx_dir" --context-secret one --send
+refused "--context-ro then --context-secret (either order)" "--context-secret and --context-ro are mutually exclusive"
+kick "${kick_base[@]}" --context-secret one --context-ro "$missing_ctx_dir" --send
+refused "--context-secret with a nonexistent --context-ro still names both" "--context-secret and --context-ro"
+
+printf '\n== --context-secret refuses against a focused (${FOCUS}) template ==\n'
+kick "${kick_base[@]}" --subject '[PATCH v3 0/2] improve the thing' --focus 'patch 2 only' \
+    --template "$focused_template" --context-secret one
+refused "a focused template with --context-secret (print-only)" "reply inside an existing thread"
+kick "${kick_base[@]}" --subject '[PATCH v3 0/2] improve the thing' --focus 'patch 2 only' \
+    --template "$focused_template" --context-secret one --send
+refused "a focused template with --context-secret (--send)" "fork-sandbox mail grant"
+
 printf '\n== kickoff templates keep the no-attachment guard on the author reply ==\n'
 # A wake's harvested reply carries no attachment path (the postmaster
 # builds `mail reply` without --attach), so the "Next version" sections

@@ -8,7 +8,8 @@
 #            [--ci-first <ci-addr>] [--version <n>]
 #            [--allow-ambiguous-version] [--patches] [--seats <addr-list>]
 #            [--allow-namespace <ns[:port]>]... [--reach-probe <host:port>]...
-#            [--context-ro <dir>] [--review-target <branch>:<sha>] [--send]
+#            [--context-ro <dir>] [--context-secret <name>]
+#            [--review-target <branch>:<sha>] [--send]
 #
 # <repo>       path to a local git repository.
 # <range>      a revision range passed straight to `git format-patch`
@@ -189,6 +190,16 @@
 #              `realpath -e --`) so a printed, not sent, command still
 #              works when pasted from another directory. A DIR that does
 #              not exist is refused before anything else is composed.
+# --context-secret NAME
+#              same forwarding and restrictions as --allow-namespace, but
+#              a single value (a second is a usage error): the name of a
+#              k8s Secret holding the run's context, in place of the host
+#              directory --context-ro names. NAME must be a DNS-1123
+#              subdomain (lowercase alphanumerics, '-' and '.', at most
+#              253 characters, alphanumeric at both ends of each dot-
+#              separated label). Mutually exclusive with --context-ro.
+#              Whether the Secret exists is fork-sandbox's to say, not
+#              this script's.
 # --review-target BRANCH:SHA
 #              names the branch and the exact commit this review is of;
 #              forwarded to the cover's `fork-sandbox mail send`, which
@@ -255,12 +266,14 @@ allow_namespace=()
 reach_probe=()
 context_ro=""
 context_ro_given=0
+context_secret=""
+context_secret_given=0
 review_target=""
 review_target_given=0
 
 while (( $# > 0 )); do
     case "$1" in
-        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats|--allow-namespace|--reach-probe|--context-ro|--review-target)
+        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats|--allow-namespace|--reach-probe|--context-ro|--context-secret|--review-target)
             (( $# >= 2 )) || { echo "Error: $1 requires a value. See --help." >&2; exit 1; }
             ;;
     esac
@@ -281,6 +294,9 @@ while (( $# > 0 )); do
         --context-ro)
             (( ! context_ro_given )) || { echo "Error: --context-ro may only be given once. See --help." >&2; exit 1; }
             context_ro="$2"; context_ro_given=1; shift 2 ;;
+        --context-secret)
+            (( ! context_secret_given )) || { echo "Error: --context-secret may only be given once. See --help." >&2; exit 1; }
+            context_secret="$2"; context_secret_given=1; shift 2 ;;
         --review-target)
             (( ! review_target_given )) || { echo "Error: --review-target may only be given once. See --help." >&2; exit 1; }
             review_target="$2"; review_target_given=1; shift 2 ;;
@@ -309,10 +325,21 @@ if [[ -n "$ci_first" && -n "$cc" ]]; then
     echo "Error: --cc is incompatible with --ci-first: the kickoff must address the CI seat alone so Cc recipients are not woken before its results." >&2
     exit 1
 fi
+if (( context_secret_given && context_ro_given )); then
+    echo "Error: --context-secret and --context-ro are mutually exclusive: a run's context is either a Secret or a host directory, not both. See --help." >&2
+    exit 1
+fi
 context_ro_abs=""
 if (( context_ro_given )); then
     if ! context_ro_abs="$(realpath -e -- "$context_ro" 2>/dev/null)" || [[ ! -d "$context_ro_abs" ]]; then
         echo "Error: --context-ro '$context_ro' is not an existing directory." >&2
+        exit 1
+    fi
+fi
+if (( context_secret_given )); then
+    if (( ${#context_secret} > 253 )) \
+        || [[ ! "$context_secret" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$ ]]; then
+        echo "Error: --context-secret '$context_secret' is not a valid Secret name (a DNS-1123 subdomain: lowercase alphanumerics, '-' and '.', at most 253 characters). See --help." >&2
         exit 1
     fi
 fi
@@ -506,7 +533,7 @@ fi
 # unconditionally on --send -- the print-only path would otherwise
 # print a `mail send ... --allow-namespace ...` command a caller could
 # paste and believe is the right way to grant an existing thread.
-if [[ "$body" == *'${FOCUS}'* ]] && { (( ${#allow_namespace[@]} > 0 )) || (( ${#reach_probe[@]} > 0 )) || (( context_ro_given )) || (( review_target_given )); }; then
+if [[ "$body" == *'${FOCUS}'* ]] && { (( ${#allow_namespace[@]} > 0 )) || (( ${#reach_probe[@]} > 0 )) || (( context_ro_given )) || (( context_secret_given )) || (( review_target_given )); }; then
     echo "Error: grant and target flags apply to the thread a new \`mail send\` creates, but a focused round is a reply inside an existing thread. Set the grant on that thread with \`fork-sandbox mail grant <thread-id> ...\` and compose without these flags." >&2
     exit 1
 fi
@@ -929,6 +956,7 @@ for grant_probe in "${reach_probe[@]}"; do
     cover_cmd+=(--reach-probe "$grant_probe")
 done
 (( context_ro_given )) && cover_cmd+=(--context-ro "$context_ro_abs")
+(( context_secret_given )) && cover_cmd+=(--context-secret "$context_secret")
 (( review_target_given )) && cover_cmd+=(--review-target "$review_target_branch:$review_target_sha")
 cover_cmd+=(--subject "$subject" --body "$body_file")
 
