@@ -120,8 +120,8 @@
 #     run: the operator relaunched a dead attempt with --checkout pointed
 #     at that attempt's fetched branch and --version unchanged, so the
 #     commits already exist on the checkout and this run adds none of its
-#     own). If, and only if, that target left a `.git/lkml-out/cover-
-#     letter.md`, gates it, then runs `git format-patch` in the REAL repo
+#     own). If, and only if, the run left a `.git/lkml-out/cover-
+#     letter.md`, gates that target, then runs `git format-patch` in the REAL repo
 #     (never the clone) over it and posts the result as the new version
 #     with `lkml-mailbox.sh init`. The gate is lkml-series-check.sh over
 #     <boundary>..<target> (found next to this script, not on PATH), plus
@@ -749,9 +749,9 @@ echo "fork-sandbox lkml-revise: harvested $harvested reply/replies onto the curr
 # run's own commits (case 1); a resumed round -- relaunched with
 # --checkout pointed at a dead attempt's fetched branch and --version
 # unchanged -- commits nothing of its own because the commits already sit
-# on --checkout, so case 2 posts the checkout itself when it already
-# differs from vN's POSTED tip (previous_tip_sha, from the ledger, not
-# $checkout_sha). With no ledger sha there is no way to tell that resumed
+# on --checkout, so case 2 posts the checkout itself when it descends
+# from, and differs from, vN's POSTED tip (previous_tip_sha, from the
+# ledger, not $checkout_sha). With no ledger sha there is no way to tell that resumed
 # case from an ordinary unchanged checkout, so case 3 stays conservative
 # and stops either way.
 post_ref=""
