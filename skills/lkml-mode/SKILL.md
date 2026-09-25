@@ -97,7 +97,14 @@ scheduling, not reading, and the reviewers' job is reading.
   else's published pull request, pass `--author pr-author --upstream-head
   <pr-head>` instead: the PR's own commits, up to and including its head,
   are frozen and never rewritten, and only what sits above them is
-  re-rolled. **`lkml-series-check.sh`** (`--repo <path> --boundary <sha>
+  re-rolled. To review one slice of a long published stack, add
+  `--frozen-fixups <lo>..<hi>` (with an upstream boundary, and `<hi>` at or
+  below it): a fix to a commit in that slice is left as a `fixup!`/`squash!`/
+  `amend!` commit aimed at it, on top of the frozen head, for a human to
+  fold later, and the gate passes those (`lkml-series-check.sh
+  --allow-fixups-for <lo>..<hi>`) and no others. The posted version is
+  then only the author's commits above the boundary, and its base is the
+  boundary. **`lkml-series-check.sh`** (`--repo <path> --boundary <sha>
   <tip>`) gates every post -- it refuses a series that is not a clean
   re-roll on that boundary (`fixup!`/`squash!`, merges, comment-only
   commits, rewritten frozen commits), and the revise step also refuses a
