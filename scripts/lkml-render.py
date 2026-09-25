@@ -501,7 +501,7 @@ def build_old_layout(series_dir):
         else:
             roots.append(m)
     for m in msgs.values():
-        m["children"].sort(key=lambda x: (x["seq"], x["date"] or datetime.min))
+        m["children"].sort(key=lambda x: (x["seq"], utc_iso(x["date"]) or ""))
     roots.sort(key=lambda x: (x["version"], x["seq"]))
     # The old layout has no nested-version-boundary concept: every
     # posting is already its own structural root, so "version roots"
@@ -636,7 +636,7 @@ def build_fleet_layout(series_dir, assume_root_version=None):
         cover["children"].append(m)
         m["parent"] = cover["id"]
     for m in msgs.values():
-        m["children"].sort(key=lambda x: (x["seq"], x["date"] or datetime.min))
+        m["children"].sort(key=lambda x: (x["seq"], utc_iso(x["date"]) or ""))
 
     # An unmarked root opens no version, so its whole subtree renders
     # under none; --assume-root-version supplies the missing marker (a
@@ -2245,19 +2245,25 @@ def render_text_one_version(series_dir, version, assume_root_version=None):
     return "\n".join(lines) + "\n"
 
 
+def utc_iso(date):
+    """A parsed Date as ISO-8601 UTC ('...Z'), or None. A naive datetime
+    (a '-0000' Date header) is taken as UTC. The strings sort in time
+    order, which is why every date-keyed sort uses them: a raw datetime key
+    raises TypeError comparing naive with aware, or a date with None."""
+    if date is None:
+        return None
+    if date.tzinfo is None:
+        date = date.replace(tzinfo=timezone.utc)
+    return date.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def message_json(m, series_dir):
     """One message of the lkml-thread/1 block. `from` and `role` use the
     persona, not the display name that who_of escapes for HTML: the
     consumer gets the raw persona slug (or the From: name part when no
     persona is stamped) and the role_of-lookup keyed on that persona.
     Body and subject are verbatim -- raw, not escaped, not rendered."""
-    date = m["date"]
-    if date is not None:
-        if date.tzinfo is None:
-            date = date.replace(tzinfo=timezone.utc)
-        date_s = date.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    else:
-        date_s = None
+    date_s = utc_iso(m["date"])
     name_part = m["from"].split(" (AI persona)")[0].split(" <")[0]
     from_field = m["persona"] if m["persona"] else name_part
     return {
@@ -2291,7 +2297,7 @@ def series_json(series_dir, assume_root_version=None):
         compute_version_sections(series_dir, assume_root_version)
     text = render_text_series_from_sections(
         series_dir, name, msgs, versions, version_data, fleet_cover_ids, rendered_ids)
-    messages = sorted(msgs.values(), key=lambda m: (m["seq"], m["date"] or datetime.min, m["id"]))
+    messages = sorted(msgs.values(), key=lambda m: (m["seq"], utc_iso(m["date"]) or "", m["id"]))
     return {
         "name": name,
         "versions": [{"n": v, "cover_id": version_data[v]["cover"]["id"]} for v in versions],

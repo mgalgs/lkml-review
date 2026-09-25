@@ -3323,5 +3323,52 @@ else
     no "schema shape: names, versions/cover ids, message counts, keys, short_id, parent_id, is_patch/patch_index, order"
 fi
 
+printf '\n== lkml-thread/1: messages sharing a seq: undated, naive, aware ==\n'
+# Three replies with the same X-Seq: no Date header, a '-0000' Date
+# (parses naive) and a '+0000' Date (parses aware). Sorting them must
+# not compare naive with aware.
+mkdir -p "$work/patches-tjd"
+cp "$work/patches/0001-one.patch" "$work/patches-tjd/"
+"$mailbox" init tj-dates --cover "$work/cover.txt" --patches "$work/patches-tjd" \
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
+tjd_p1="$("$mailbox" tree tj-dates | awk '/\[PATCH v1 1\/1\]/{print $1}')"
+tjd_p1_full="$(basename "$(grep -l "^Message-ID: <${tjd_p1}" "$LKML_MAILBOX_ROOT"/tj-dates/cur/*.msg)" .msg)"
+for spec in 'aaaaaaaa-0000-4000-8000-000000000001|' \
+            'aaaaaaaa-0000-4000-8000-000000000002|Date: Mon, 17 Sep 2001 00:00:00 -0000' \
+            'aaaaaaaa-0000-4000-8000-000000000003|Date: Mon, 17 Sep 2001 01:00:00 +0000'; do
+    uuid="${spec%%|*}"
+    date_line="${spec#*|}"
+    {
+        printf '%s\n' "Message-ID: <${uuid}@lkml.local>" \
+            "In-Reply-To: <${tjd_p1_full}@lkml.local>"
+        [[ -n "$date_line" ]] && printf '%s\n' "$date_line"
+        printf '%s\n' 'From: Anon (AI persona) <anon.ai@lkml.local>' \
+            'Subject: Re: [PATCH v1 1/1] demo: add one' \
+            'X-AI-Persona: anon' 'X-Series: tj-dates' 'X-Version: 1' \
+            'X-Depth: 2' 'X-Tags: ' 'X-Seq: 5' '' 'a reply'
+    } > "$LKML_MAILBOX_ROOT/tj-dates/cur/${uuid}.msg"
+done
+tjd_html="$work/tj-dates.html"
+if python3 "$renderer" "$LKML_MAILBOX_ROOT/tj-dates" -o "$tjd_html" 2>"$work/tj-dates.err" \
+    && python3 - "$tjd_html" <<'PY'
+import json
+import re
+import sys
+
+t = open(sys.argv[1], encoding="utf-8").read()
+block = re.search(r'<script type="application/json" id="lkml-thread">(.*?)</script>', t, re.S)
+msgs = {m["id"]: m for m in json.loads(block.group(1))["series"][0]["messages"]}
+a = msgs.get("aaaaaaaa-0000-4000-8000-000000000001")
+b = msgs.get("aaaaaaaa-0000-4000-8000-000000000002")
+c = msgs.get("aaaaaaaa-0000-4000-8000-000000000003")
+sys.exit(0 if a and b and c and a["date"] is None and b["date"] == "2001-09-17T00:00:00Z"
+         and c["date"] == "2001-09-17T01:00:00Z" else 1)
+PY
+then
+    ok "same-seq messages, undated, naive and aware, render with date null / UTC Z"
+else
+    no "same-seq messages, undated, naive and aware, render with date null / UTC Z" "$(cat "$work/tj-dates.err")"
+fi
+
 printf '%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))
