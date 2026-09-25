@@ -17,6 +17,10 @@
 #     violation, a .md-only change is clean, a mixed commit is clean, and
 #     added files, a preprocessor `#` line in a C file and a chmod are not
 #     comment-only.
+#   - --allow-fixups-for <lo>..<hi>: fixup!/squash!/amend! aimed at a
+#     commit in the range (by subject, subject prefix or sha) pass and are
+#     exempt from the comment-only check; a target below lo, above hi or
+#     among the author's own commits is refused; a bad range exits 2.
 #   - usage and git errors exit 2, --help prints the header.
 
 set -uo pipefail
@@ -316,6 +320,169 @@ sed -i 's#// old note#// a clearer note#' "$r/src/app.js"
 printf 'a second file\n' > "$r/README.md"; stage
 commit "app: reword a comment and rewrite the readme"
 expect_clean "a comment change alongside a real change in another file"
+
+printf '\n== --allow-fixups-for: fixups aimed at a slice of the frozen commits ==\n'
+# stack_repo <name>: frozen stack s1..s5 (tag `frozen` = s5). The slice
+# under review is s2..s4, i.e. the commits "stack: three" and "stack: four".
+stack_repo() {
+    local n names=(zero one two three four five)
+    fresh_repo "$1"
+    for n in 1 2 3 4 5; do
+        printf 'const stack%s = %s;\n' "$n" "$n" >> "$r/src/app.js"; stage
+        commit "stack: ${names[n]}"
+        git -C "$r" tag "s$n"
+    done
+    git -C "$r" tag -f frozen s5 >/dev/null
+}
+slice="s2..s4"
+run_allow() {
+    OUT="$("$checker" --repo "$r" --boundary frozen --allow-fixups-for "${1:-$slice}" "${2:-HEAD}" 2>&1)"; RC=$?
+}
+author_commit() {
+    printf 'const own%s = 1;\n' "$RANDOM" >> "$r/src/app.js"; stage
+    commit "$@"
+}
+expect_allowed() {
+    run_allow
+    check "$1: exits 0" "0" "$RC"
+    check "$1: prints nothing" "" "$OUT"
+}
+expect_refused_target() {
+    run_allow
+    check "$1: exits 1" "1" "$RC"
+    contains "$1: names the commit" "$OUT" "$(git -C "$r" rev-parse --short HEAD) $2: "
+    contains "$1: says the target is outside the range" "$OUT" "fixup target is not a commit in $slice"
+}
+
+stack_repo allow-subject
+author_commit "fixup! stack: three"
+expect_allowed "fixup! by exact subject in range"
+
+stack_repo allow-squash
+author_commit "squash! stack: four"
+expect_allowed "squash! in range"
+
+stack_repo allow-amend
+author_commit "amend! stack: three" -m "" -m "stack: three, reworded"
+expect_allowed "amend! in range"
+
+stack_repo allow-prefix
+author_commit "fixup! stack: thr"
+expect_allowed "fixup! by subject prefix in range"
+
+stack_repo allow-nested
+author_commit "fixup! fixup! stack: four"
+expect_allowed "fixup! fixup! stack: four"
+
+stack_repo allow-sha
+author_commit "fixup! $(git -C "$r" rev-parse --short=10 s3)"
+expect_allowed "fixup! by sha prefix in range"
+
+stack_repo allow-fullsha
+author_commit "fixup! $(git -C "$r" rev-parse s4)"
+expect_allowed "fixup! by full sha in range"
+
+stack_repo allow-below
+author_commit "fixup! stack: two"
+expect_refused_target "fixup at lo (below the slice)" "fixup! stack: two"
+
+stack_repo allow-below2
+author_commit "fixup! stack: one"
+expect_refused_target "fixup deep below the slice" "fixup! stack: one"
+
+stack_repo allow-above
+author_commit "fixup! stack: five"
+expect_refused_target "fixup above hi but still frozen" "fixup! stack: five"
+
+stack_repo allow-sha-out
+author_commit "fixup! $(git -C "$r" rev-parse --short=10 s5)"
+expect_refused_target "fixup by sha of a frozen commit above hi" "fixup! $(git -C "$r" rev-parse --short=10 s5)"
+
+stack_repo allow-own
+author_commit "series: my own change"
+author_commit "fixup! series: my own change"
+expect_refused_target "fixup at the author's own commit" "fixup! series: my own change"
+
+stack_repo allow-dup
+git -C "$r" commit -q --allow-empty -m "stack: three"
+git -C "$r" tag -f frozen HEAD >/dev/null
+author_commit "fixup! stack: three"
+expect_allowed "a duplicate subject above hi does not confuse the slice match"
+
+stack_repo allow-partial
+author_commit "fixup! stack: thr"
+author_commit "fixup! stack: two"
+run_allow
+check "one ok and one refused: exits 1" "1" "$RC"
+check "one ok and one refused: one line" "1" "$(printf '%s\n' "$OUT" | wc -l | tr -d '[:space:]')"
+contains "one ok and one refused: the bad one is named" "$OUT" "fixup! stack: two: "
+
+stack_repo allow-comment
+printf '// a note\n' >> "$r/src/app.js"; stage
+commit "fixup! stack: three"
+expect_allowed "comment-only fixup in range is exempt from check 5"
+
+stack_repo allow-comment-plain
+printf '// a note\n' >> "$r/src/app.js"; stage
+commit "app: explain things"
+run_allow
+check "comment-only non-fixup still fails: exits 1" "1" "$RC"
+contains "comment-only non-fixup still fails: says why" "$OUT" "changes only comments"
+
+stack_repo allow-comment-bad
+printf '// a note\n' >> "$r/src/app.js"; stage
+commit "fixup! stack: two"
+run_allow
+check "comment-only fixup outside the range: exits 1" "1" "$RC"
+contains "comment-only fixup outside the range: refused on the target" "$OUT" "fixup target is not a commit in $slice"
+
+stack_repo allow-mixed
+author_commit "fixup! stack: three"
+author_commit "series: a real change"
+expect_allowed "fixups and ordinary commits together"
+
+stack_repo allow-space
+author_commit "fixup!stack: three"
+run_allow
+check "fixup! with no space is not a valid fixup: exits 1" "1" "$RC"
+
+stack_repo noopt
+author_commit "fixup! stack: three"
+run_check
+check "no option: a fixup aimed at the slice is still refused" "1" "$RC"
+contains "no option: today's message" "$OUT" "fixup! commit; fold it into the commit it belongs to"
+
+printf '\n== --allow-fixups-for: bad ranges exit 2 ==\n'
+stack_repo allow-bad
+author_commit "fixup! stack: three"
+run_allow "s4..s2"
+check "lo not an ancestor of hi: exits 2" "2" "$RC"
+contains "lo not an ancestor of hi: says so" "$OUT" "is not an ancestor"
+git -C "$r" tag off-branch s5
+git -C "$r" checkout -q -b side s1
+printf 'side\n' > "$r/side.txt"; stage
+commit "side: unrelated"
+git -C "$r" tag side
+git -C "$r" checkout -q main
+run_allow "s1..side"
+check "hi not under the boundary: exits 2" "2" "$RC"
+contains "hi not under the boundary: says so" "$OUT" "not at or below the boundary"
+run_allow "s2..HEAD"
+check "hi above the boundary: exits 2" "2" "$RC"
+run_allow "s2..nosuchref"
+check "unknown hi: exits 2" "2" "$RC"
+run_allow "nosuchref..s4"
+check "unknown lo: exits 2" "2" "$RC"
+run_allow "s2"
+check "no .. in the range: exits 2" "2" "$RC"
+run_allow "s2...s4"
+check "three dots: exits 2" "2" "$RC"
+run_allow "..s4"
+check "empty lo: exits 2" "2" "$RC"
+run_allow "s2.."
+check "empty hi: exits 2" "2" "$RC"
+run_allow "s2..s5"
+check "hi equal to the boundary is fine: exits 0" "0" "$RC"
 
 printf '\n== usage and git errors exit 2 ==\n'
 fresh_repo usage

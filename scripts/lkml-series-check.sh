@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # lkml-series-check.sh — Refuse a series that is not a clean re-roll.
 #
-# Usage: lkml-series-check.sh --repo <path> --boundary <sha-or-ref> <tip>
+# Usage: lkml-series-check.sh --repo <path> --boundary <sha-or-ref>
+#            [--allow-fixups-for <lo>..<hi>] <tip>
 #
 # A series in this project must read like a real mailing-list series, not
 # a review log: every version is a clean re-roll, accepted feedback is
@@ -22,7 +23,21 @@
 #      were rewritten, or the series is not on the boundary.
 #   2. The range is not empty.
 #   3. No merge commits: a series is linear.
-#   4. No subject starting fixup!, squash! or amend!.
+#   4. No subject starting fixup!, squash! or amend!. With
+#      `--allow-fixups-for <lo>..<hi>` such a commit passes IFF its target
+#      is a commit in <lo>..<hi> (a slice of the frozen commits under
+#      review, whose fixes are left unfolded for a human). <lo> and <hi>
+#      must name commits, <lo> must be an ancestor of <hi>, and <hi> an
+#      ancestor of (or equal to) <boundary>; otherwise exit 2. The target
+#      is resolved the way `git rebase --autosquash` does: strip the
+#      prefix (repeatedly, for `fixup! fixup! X`); if the rest is a sha
+#      (prefix) naming a commit in the range, that is the target; else the
+#      rest is matched against the subjects of the range commits, an exact
+#      match first, else a subject that STARTS WITH the rest; when several
+#      match, the most recent wins. No match in the range is a violation:
+#      `<short> <subject>: fixup target is not a commit in <lo>..<hi>`.
+#      A fixup that passes this way is exempt from check 5, because it
+#      folds into its target.
 #   5. No comment-only commit, unless the message carries a trailer
 #      `Comment-only: <reason>` (non-empty reason, on any line of
 #      the message body). The legitimate case
@@ -73,10 +88,12 @@ done
 repo=""
 boundary=""
 tip=""
+allow_spec=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --repo) repo="${2:?--repo requires a path}"; shift 2 ;;
         --boundary) boundary="${2:?--boundary requires a sha or ref}"; shift 2 ;;
+        --allow-fixups-for) allow_spec="${2:?--allow-fixups-for requires <lo>..<hi>}"; shift 2 ;;
         -*) die2 "unknown option '$1'." ;;
         *)
             [[ -z "$tip" ]] || die2 "more than one <tip> given."
@@ -96,6 +113,24 @@ boundary_sha="$(git -C "$repo" rev-parse --verify --quiet "${boundary}^{commit}"
     die2 "--boundary '$boundary' does not name a commit in $repo."
 tip_sha="$(git -C "$repo" rev-parse --verify --quiet "${tip}^{commit}" 2>/dev/null)" ||
     die2 "tip '$tip' does not name a commit in $repo."
+
+allow_lo_sha=""
+allow_hi_sha=""
+if [[ -n "$allow_spec" ]]; then
+    allow_lo="${allow_spec%%..*}"
+    allow_hi="${allow_spec#*..}"
+    [[ "$allow_spec" == *..* && -n "$allow_lo" && -n "$allow_hi" &&
+        "$allow_hi" != .* && "$allow_lo" != -* && "$allow_hi" != -* ]] ||
+        die2 "--allow-fixups-for '$allow_spec' is not of the form <lo>..<hi>."
+    allow_lo_sha="$(git -C "$repo" rev-parse --verify --quiet "${allow_lo}^{commit}" 2>/dev/null)" ||
+        die2 "--allow-fixups-for: '$allow_lo' does not name a commit in $repo."
+    allow_hi_sha="$(git -C "$repo" rev-parse --verify --quiet "${allow_hi}^{commit}" 2>/dev/null)" ||
+        die2 "--allow-fixups-for: '$allow_hi' does not name a commit in $repo."
+    git -C "$repo" merge-base --is-ancestor "$allow_lo_sha" "$allow_hi_sha" ||
+        die2 "--allow-fixups-for: '$allow_lo' is not an ancestor of '$allow_hi'."
+    git -C "$repo" merge-base --is-ancestor "$allow_hi_sha" "$boundary_sha" ||
+        die2 "--allow-fixups-for: '$allow_hi' is not at or below the boundary."
+fi
 
 tmp="$(mktemp -d)" || die2 "mktemp failed."
 trap 'rm -rf -- "$tmp"' EXIT
@@ -197,6 +232,45 @@ has_comment_only_trailer() {
         grep -Eiq '^Comment-only:[[:space:]]*[^[:space:]]'
 }
 
+# Slice commits for --allow-fixups-for, oldest first, with their subjects.
+slice_shas=()
+slice_subjects=()
+declare -A in_slice=()
+if [[ -n "$allow_spec" ]]; then
+    while IFS= read -r -d '' rec; do
+        slice_shas+=("${rec%% *}")
+        slice_subjects+=("${rec#* }")
+        in_slice["${rec%% *}"]=1
+    done < <(git -C "$repo" log --reverse -z --format='%H %s' "$allow_lo_sha..$allow_hi_sha")
+fi
+
+# True when the fixup!/squash!/amend! subject in $1 targets a slice
+# commit, resolved the way `git rebase --autosquash` does.
+fixup_targets_slice() {
+    local rest="$1" i full
+    while :; do
+        case "$rest" in
+            "fixup! "*) rest="${rest#fixup! }" ;;
+            "squash! "*) rest="${rest#squash! }" ;;
+            "amend! "*) rest="${rest#amend! }" ;;
+            *) break ;;
+        esac
+    done
+    [[ -n "$rest" ]] || return 1
+    if [[ "$rest" =~ ^[0-9a-fA-F]{4,40}$ ]] &&
+        full="$(git -C "$repo" rev-parse --verify --quiet "${rest}^{commit}" 2>/dev/null)" &&
+        [[ -n "${in_slice[$full]:-}" ]]; then
+        return 0
+    fi
+    for (( i = ${#slice_shas[@]} - 1; i >= 0; i-- )); do
+        [[ "${slice_subjects[i]}" == "$rest" ]] && return 0
+    done
+    for (( i = ${#slice_shas[@]} - 1; i >= 0; i-- )); do
+        [[ "${slice_subjects[i]}" == "$rest"* ]] && return 0
+    done
+    return 1
+}
+
 for sha in "${range[@]}"; do
     subject="$(git -C "$repo" log -1 --format=%s "$sha")"
     read -r -a parents <<< "$(git -C "$repo" rev-list --parents -n1 "$sha")"
@@ -205,6 +279,15 @@ for sha in "${range[@]}"; do
         continue
     fi
     case "$subject" in
+        "fixup! "*|"squash! "*|"amend! "*)
+            if [[ -n "$allow_spec" ]]; then
+                if fixup_targets_slice "$subject"; then
+                    continue
+                fi
+                flag "$sha" "fixup target is not a commit in $allow_spec"
+                continue
+            fi
+            flag "$sha" "${subject%%!*}! commit; fold it into the commit it belongs to" ;;
         fixup!*|squash!*|amend!*)
             flag "$sha" "${subject%%!*}! commit; fold it into the commit it belongs to" ;;
     esac
