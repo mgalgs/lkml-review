@@ -185,6 +185,18 @@ case "$persona" in
         printf '# self-refresh handoff\n\nThis file must never be harvested.\n' \
             > "$run_dir/outbox/handoff.md"
         ;;
+    tag-nit)
+        printf 'In-Reply-To: %s\nX-Tags: nit\n\nMARK-tag-nit\n' "$STUB_REPLY_TO" > "$run_dir/outbox/1.msg"
+        ;;
+    tag-mixed)
+        printf 'In-Reply-To: %s\nX-Tags: nit, Reviewed-by\n\nMARK-tag-mixed\n' "$STUB_REPLY_TO" > "$run_dir/outbox/1.msg"
+        ;;
+    tag-valid)
+        printf 'In-Reply-To: %s\nX-Tags: Acked-by,Tested-by\n\nMARK-tag-valid\n' "$STUB_REPLY_TO" > "$run_dir/outbox/1.msg"
+        ;;
+    tag-case)
+        printf 'In-Reply-To: %s\nX-Tags:reviewed-by\n\nMARK-tag-case\n' "$STUB_REPLY_TO" > "$run_dir/outbox/1.msg"
+        ;;
     seal)
         # A sealed seat that writes a reply, so the harvest can post it
         # with its network mode (the outbox path, like core's).
@@ -1433,6 +1445,7 @@ contains "-h prints the header usage" "$h2_out" "lkml-round.sh — Launch one fo
 # The reviewer brief keeps nits from blocking convergence.
 round_src="$(cat "$round")"
 contains "reviewer brief marks nits as nits" "$round_src" "**Mark a nit as a nit.**"
+# shellcheck disable=SC2016
 contains "reviewer brief: nits alone never block" "$round_src" 'never tag `Changes-requested` or `NAK` for'
 
 # The brief a seat actually receives (captured from the stub launch above).
@@ -1442,6 +1455,48 @@ contains "brief lists exactly the accepted X-Tags, Tested-by included" "$handoff
 # shellcheck disable=SC2016
 contains "brief says nit: goes in the body, never in X-Tags" "$handoff_text" \
     '`nit:` goes at'$'\n''  the start of a comment in the BODY, never in `X-Tags`.'
+
+printf '\n== X-Tags the mailbox would refuse never lose the reply ==\n'
+for p in tag-nit tag-mixed tag-valid tag-case; do
+    printf -- '---\npersona: %s\nharness: pi-local\n---\nTag test reviewer.\n' "$p" > "$work/$p.md"
+done
+cap_tags="$(mktemp -d)"; tmpdirs+=("$cap_tags")
+out_tags="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_tags" STUB_RUN_PREFIX="$run_prefix_dir" \
+    STUB_REPLY_TO="$patch2_id" STUB_REPLY_TO_BRACKETED="$patch_id_bracketed" \
+    "$round" widget-frob --project "$project_dir" --checkout otherbranch \
+    --personas tag-nit,tag-mixed,tag-valid,tag-case --personas-dir "$work" \
+    --reply-to "$patch2_id" --no-summarize 2>&1)"
+rc_tags=$?
+if (( rc_tags == 0 )); then ok "tag round exits 0"; else no "tag round exits 0" "exit $rc_tags: $out_tags"; fi
+# The X-Tags header of the posted reply whose body carries the marker.
+tags_of_reply() {
+    local f
+    f="$(grep -l -- "$1" "$LKML_MAILBOX_ROOT"/widget-frob/cur/*.msg 2>/dev/null | head -n1)"
+    if [[ -z "$f" ]]; then printf 'NOT-POSTED'; return; fi
+    grep -m1 '^X-Tags:' "$f" | sed 's/^X-Tags: //' || true
+}
+check "X-Tags: nit posts untagged" "" "$(tags_of_reply MARK-tag-nit)"
+contains "X-Tags: nit warns, naming the file, the persona and the tag" "$out_tags" \
+    "/outbox/1.msg (persona tag-nit): dropped unknown tag 'nit'; posting without it."
+contains "the warning carries the Warning: lkml-round: prefix" "$out_tags" "Warning: lkml-round: /"
+check "X-Tags: nit, Reviewed-by posts with Reviewed-by only" "Reviewed-by" "$(tags_of_reply MARK-tag-mixed)"
+check "valid tags pass through unchanged" "Acked-by,Tested-by" "$(tags_of_reply MARK-tag-valid)"
+case "$out_tags" in
+    *"(persona tag-valid): dropped"*) no "valid tags draw no warning" ;;
+    *) ok "valid tags draw no warning" ;;
+esac
+check "the mailbox's case rule is exact: reviewed-by is dropped, not folded" "" "$(tags_of_reply MARK-tag-case)"
+contains "the lowercase tag is warned about" "$out_tags" "(persona tag-case): dropped unknown tag 'reviewed-by'; posting without it."
+
+# One list, two scripts: the tag case in harvest_one must be the one in
+# lkml_validate_tags, or a tag one accepts the other refuses.
+tag_line() { grep -m1 -E '^[[:space:]]*Reviewed-by\|' "$1" | sed -E 's/^[[:space:]]+//; s/\).*$//'; }
+check "lkml-round.sh and lkml-mailbox.sh accept the same tags" \
+    "$(tag_line "$mailbox")" "$(tag_line "$round")"
+case "$(tag_line "$round")" in
+    Reviewed-by\|*) ok "the tag list was actually found in both scripts" ;;
+    *) no "the tag list was actually found in both scripts" ;;
+esac
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 (( fail == 0 )) || exit 1

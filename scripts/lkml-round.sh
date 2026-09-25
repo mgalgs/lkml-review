@@ -1092,7 +1092,7 @@ harvest_one() {
             case "$line" in
                 In-Reply-To:*) reply_to="${line#In-Reply-To: }" ;;
                 Subject:*) subject="${line#Subject: }" ;;
-                X-Tags:*) tags="${line#X-Tags: }" ;;
+                X-Tags:*) tags="${line#X-Tags:}" ;;
             esac
         else
             printf '%s\n' "$line" >> "$body_file"
@@ -1105,6 +1105,28 @@ harvest_one() {
         echo "header; skipping it." >&2
         rm -f "$body_file"
         return 1
+    fi
+
+    # The mailbox refuses the WHOLE post over one unknown tag, which loses
+    # the review; keep the tags it accepts and post with those.
+    local -a tag_parts=() kept_tags=()
+    local t
+    IFS=',' read -ra tag_parts <<< "$tags"
+    for t in "${tag_parts[@]}"; do
+        t="${t#"${t%%[![:space:]]*}"}"
+        t="${t%"${t##*[![:space:]]}"}"
+        [[ -n "$t" ]] || continue
+        case "$t" in
+            # Must match the tag case in lkml_validate_tags (lkml-mailbox.sh); tests/lkml-round-test.sh fails if they differ.
+            Reviewed-by|Acked-by|Tested-by|NAK|Changes-requested|Question) kept_tags+=("$t") ;;
+            *)
+                echo "Warning: lkml-round: $msgfile (persona $persona): dropped unknown tag '$t'; posting without it." >&2
+                ;;
+        esac
+    done
+    tags=""
+    if (( ${#kept_tags[@]} )); then
+        tags="$(IFS=,; printf '%s' "${kept_tags[*]}")"
     fi
 
     local -a extra=()
