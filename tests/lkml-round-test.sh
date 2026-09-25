@@ -185,6 +185,25 @@ case "$persona" in
         printf '# self-refresh handoff\n\nThis file must never be harvested.\n' \
             > "$run_dir/outbox/handoff.md"
         ;;
+    stray-mixed)
+        printf 'In-Reply-To: %s\n\nMARK-stray-mixed\n' "$STUB_REPLY_TO" > "$run_dir/outbox/1.msg"
+        printf '# report\n' > "$run_dir/outbox/report.md"
+        printf 'model-x\n' > "$run_dir/outbox/.fork-sandbox-model"
+        mkdir -p "$run_dir/outbox/sub"
+        printf 'deep\n' > "$run_dir/outbox/sub/deep.md"
+        ;;
+    stray-report)
+        printf '# report\n' > "$run_dir/outbox/report.md"
+        ;;
+    stray-tool)
+        printf 'model-x\n' > "$run_dir/outbox/.fork-sandbox-model"
+        ;;
+    stray-fb)
+        mkdir -p "$clone_dir/.git/lkml-out"
+        printf 'In-Reply-To: %s\n\nMARK-stray-fb\n' "$STUB_REPLY_TO" > "$clone_dir/.git/lkml-out/1.msg"
+        printf '# notes\n' > "$clone_dir/.git/lkml-out/notes.md"
+        printf '# report\n' > "$run_dir/outbox/report2.md"
+        ;;
     tag-nit)
         printf 'In-Reply-To: %s\nX-Tags: nit\n\nMARK-tag-nit\n' "$STUB_REPLY_TO" > "$run_dir/outbox/1.msg"
         ;;
@@ -881,6 +900,17 @@ case "$verb" in
                 printf 'In-Reply-To: %s\nSubject: k8s security reply\nX-Tags: Acked-by\n\nCluster reply from security.\n' "$STUB_REPLY_TO" \
                     > "$outbox_dir/1.msg"
                 ;;
+            stray-mixed)
+                printf 'In-Reply-To: %s\n\nMARK-k8s-stray-mixed\n' "$STUB_REPLY_TO" > "$outbox_dir/1.msg"
+                printf '# report\n' > "$outbox_dir/report.md"
+                printf 'model-x\n' > "$outbox_dir/.fork-sandbox-model"
+                ;;
+            stray-report)
+                printf '# report\n' > "$outbox_dir/report.md"
+                ;;
+            stray-tool)
+                printf 'model-x\n' > "$outbox_dir/.fork-sandbox-model"
+                ;;
             pi-local)
                 printf 'In-Reply-To: %s\nSubject: k8s pi-local reply\n\nCluster reply from the translated pi seat.\n' "$STUB_REPLY_TO" \
                     > "$outbox_dir/1.msg"
@@ -1497,6 +1527,64 @@ case "$(tag_line "$round")" in
     Reviewed-by\|*) ok "the tag list was actually found in both scripts" ;;
     *) no "the tag list was actually found in both scripts" ;;
 esac
+
+printf '\n== every non-.msg file left in an outbox is named ==\n'
+stray_msg() { printf 'Warning: lkml-round: %s left %s in its outbox; it is not a .msg reply and was NOT posted.' "$1" "$2"; }
+lacks() {
+    case "$2" in
+        *"$3"*) no "$1" "'$3' found in: $2" ;;
+        *) ok "$1" ;;
+    esac
+}
+for p in stray-mixed stray-report stray-tool stray-fb; do
+    printf -- '---\npersona: %s\nharness: pi-local\n---\nStray-file test reviewer.\n' "$p" > "$work/$p.md"
+done
+n_posted() { grep -l -- "$1" "$LKML_MAILBOX_ROOT"/widget-frob/cur/*.msg 2>/dev/null | wc -l | tr -d '[:space:]'; }
+
+contains "codex's handoff.md, which the brief forbids, is named in the main round" "$out" \
+    "$(stray_msg codex handoff.md)"
+
+cap_stray="$(mktemp -d)"; tmpdirs+=("$cap_stray")
+out_stray="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_stray" STUB_RUN_PREFIX="$run_prefix_dir" \
+    STUB_REPLY_TO="$patch2_id" STUB_REPLY_TO_BRACKETED="$patch_id_bracketed" \
+    "$round" widget-frob --project "$project_dir" --checkout otherbranch \
+    --personas stray-mixed,stray-report,stray-tool,stray-fb --personas-dir "$work" \
+    --reply-to "$patch2_id" --no-summarize 2>&1)"
+rc_stray=$?
+if (( rc_stray == 0 )); then ok "stray-file round exits 0"; else no "stray-file round exits 0" "exit $rc_stray: $out_stray"; fi
+check "local: 1.msg beside report.md is still harvested" "1" "$(n_posted MARK-stray-mixed)"
+contains "local: report.md beside 1.msg is named" "$out_stray" "$(stray_msg stray-mixed report.md)"
+lacks "local: the tooling's .fork-sandbox-model is not named" "$out_stray" "left .fork-sandbox-model"
+lacks "local: a file inside a subdirectory is not named (depth 1 only)" "$out_stray" "deep.md"
+lacks "local: a directory is not named" "$out_stray" "left sub in"
+contains "local: an outbox with only report.md says it wrote no replies" "$out_stray" "stray-report wrote no replies"
+contains "local: an outbox with only report.md names report.md" "$out_stray" "$(stray_msg stray-report report.md)"
+contains "local: an outbox with only tooling files says it wrote no replies" "$out_stray" "stray-tool wrote no replies"
+lacks "local: an outbox with only tooling files draws no warning" "$out_stray" "stray-tool left"
+check "local: the fallback's reply is harvested" "1" "$(n_posted MARK-stray-fb)"
+contains "local: a stray file in the harvested fallback directory is named" "$out_stray" "$(stray_msg stray-fb notes.md)"
+contains "local: a stray file in the outbox is named even when replies came from the fallback" "$out_stray" \
+    "$(stray_msg stray-fb report2.md)"
+
+cap_stray_k8s="$(mktemp -d)"; tmpdirs+=("$cap_stray_k8s")
+k8s_state_stray="$(mktemp -d)"; tmpdirs+=("$k8s_state_stray")
+out_stray_k8s="$(PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$cap_stray_k8s" STUB_RUN_PREFIX="$run_prefix_dir" \
+    STUB_K8S_CAPTURE_DIR="$cap_stray_k8s" STUB_K8S_STATE_DIR="$k8s_state_stray" \
+    STUB_REPLY_TO="$patch2_id" STUB_REPLY_TO_BRACKETED="$patch_id_bracketed" \
+    "$round" widget-frob --project "$project_dir" --checkout otherbranch \
+    --personas stray-mixed,stray-report,stray-tool --personas-dir "$work" \
+    --reply-to "$patch2_id" --no-summarize --timeout 10 \
+    --k8s --endpoint test-endpoint 2>&1)"
+rc_stray_k8s=$?
+if (( rc_stray_k8s == 0 )); then ok "k8s stray-file round exits 0"; else no "k8s stray-file round exits 0" "exit $rc_stray_k8s: $out_stray_k8s"; fi
+check "k8s: 1.msg beside report.md is still harvested" "1" "$(n_posted MARK-k8s-stray-mixed)"
+contains "k8s: report.md beside 1.msg is named" "$out_stray_k8s" "$(stray_msg stray-mixed report.md)"
+lacks "k8s: the tooling's .fork-sandbox-model is not named" "$out_stray_k8s" "left .fork-sandbox-model"
+contains "k8s: an outbox with only report.md says it wrote no replies" "$out_stray_k8s" "stray-report wrote no replies"
+contains "k8s: an outbox with only report.md names report.md" "$out_stray_k8s" "$(stray_msg stray-report report.md)"
+contains "k8s: an outbox with only tooling files says it wrote no replies" "$out_stray_k8s" "stray-tool wrote no replies"
+lacks "k8s: an outbox with only tooling files draws no warning" "$out_stray_k8s" "stray-tool left"
+lacks "k8s: the discovered-model file of a normal round is not named" "$out_k8s" "left .fork-sandbox-model"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 (( fail == 0 )) || exit 1

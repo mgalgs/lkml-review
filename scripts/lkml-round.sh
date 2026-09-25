@@ -1149,6 +1149,28 @@ harvest_one() {
     return 0
 }
 
+# Files the tooling itself leaves in a seat outbox; anything else that is not
+# a .msg reply is the seat's own work and gets named, not silently skipped.
+# .fork-sandbox-model is written by fork-sandbox into every seat outbox
+# (the k8s harvest below reads it to learn the discovered model).
+tooling_outbox_files=(.fork-sandbox-model)
+
+# A seat that writes its review to report.md instead of 1.msg would
+# otherwise look like "wrote no replies" and the review would be lost.
+lkml_round_warn_stray_files() {
+    local persona="$1" dir="$2" f name known skip
+    [[ -d "$dir" ]] || return 0
+    while IFS= read -r -d '' f; do
+        name="$(basename -- "$f")"
+        skip=0
+        for known in "${tooling_outbox_files[@]}"; do
+            [[ "$name" == "$known" ]] && skip=1
+        done
+        (( skip )) && continue
+        echo "Warning: lkml-round: $persona left $name in its outbox; it is not a .msg reply and was NOT posted." >&2
+    done < <(find "$dir" -maxdepth 1 -type f ! -name '*.msg' -print0 | sort -z)
+}
+
 harvested=0
 if (( k8s )); then
     # The local harvest reads <run_dir>/outbox and falls back to the
@@ -1161,6 +1183,7 @@ if (( k8s )); then
         out_dir="${outbox_of[$persona]}"
         if [[ ! -d "$out_dir" ]] || [[ -z "$(find "$out_dir" -maxdepth 1 -name '*.msg' -print -quit)" ]]; then
             echo "fork-sandbox lkml-round: $persona wrote no replies (checked $out_dir)." >&2
+            lkml_round_warn_stray_files "$persona" "$out_dir"
             continue
         fi
         # No summary.json to ask what the endpoint actually served: when the
@@ -1180,6 +1203,7 @@ if (( k8s )); then
                 "$model" "$msgfile" "${network_of[$persona]}" \
                 "$checkout_ref $checkout_sha" "$base_sha" "$upstream_head" && harvested=$(( harvested + 1 ))
         done < <(find "$out_dir" -maxdepth 1 -name '*.msg' | sort -V)
+        lkml_round_warn_stray_files "$persona" "$out_dir"
     done
 else
     for persona in "${!run_dir_of[@]}"; do
@@ -1224,6 +1248,8 @@ else
         fi
         if [[ ! -d "$out_dir" ]] || [[ -z "$(find "$out_dir" -maxdepth 1 -name '*.msg' -print -quit)" ]]; then
             echo "fork-sandbox lkml-round: $persona wrote no replies (checked $outbox_dir, and $fallback_dir as a fallback)." >&2
+            lkml_round_warn_stray_files "$persona" "$outbox_dir"
+            lkml_round_warn_stray_files "$persona" "$fallback_dir"
             continue
         fi
         while IFS= read -r msgfile; do
@@ -1232,6 +1258,10 @@ else
                 "$model" "$msgfile" "${network_of[$persona]}" \
                 "$checkout_ref $checkout_sha" "$base_sha" "$upstream_head" && harvested=$(( harvested + 1 ))
         done < <(find "$out_dir" -maxdepth 1 -name '*.msg' | sort -V)
+        lkml_round_warn_stray_files "$persona" "$out_dir"
+        # The outbox is the primary channel: a report left there is lost
+        # even when the replies came from the fallback.
+        [[ "$out_dir" == "$outbox_dir" ]] || lkml_round_warn_stray_files "$persona" "$outbox_dir"
     done
 fi
 
