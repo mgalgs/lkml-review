@@ -37,6 +37,22 @@ check() {
     if [[ "$expected" == "$actual" ]]; then ok "$label"; else no "$label" "expected '$expected', got '$actual'"; fi
 }
 
+# The lkml-thread/1 <script> block carries every message's SUBJECT and
+# BODY verbatim, as parsed -- unpadded, un-normalized, un-rendered by
+# design (that is the whole point of a raw data block). Checks aimed at
+# the visible, normalized page must not see into it, or a legitimate
+# verbatim echo in the block reads as a normalization regression in the
+# trace.
+strip_thread_block() {
+    python3 -c '
+import re
+import sys
+t = open(sys.argv[1], encoding="utf-8").read()
+t = re.sub(r"<script type=\"application/json\" id=\"lkml-thread\">.*?</script>", "", t, flags=re.S)
+sys.stdout.write(t)
+' "$1"
+}
+
 # The HTML footer stamps the wall clock at minute resolution; pinning
 # it keeps the byte-identical checks from losing to a ticked minute.
 export SOURCE_DATE_EPOCH=0
@@ -741,10 +757,14 @@ lt="$(<"$legacy_text")"
 # a padded '09/14' cannot match the single-digit-before-slash regex, but
 # an unpadded '9/14' -- or '0/14' in the cover -- always does. Zero
 # hits in BOTH output modes. (The rewritten roots keep their 'v1', so
-# the version-bearing regex below sees every rewritten subject.)
-if grep -Eq '\[PATCH v[0-9]+ [0-9]/[0-9]+\]' "$legacy_html" "$legacy_text"; then
+# the version-bearing regex below sees every rewritten subject.) The
+# lkml-thread/1 block is excluded: it carries every subject verbatim by
+# design, unpadded ones included.
+legacy_html_visible="$work/legacy-pad-visible.html"
+strip_thread_block "$legacy_html" > "$legacy_html_visible"
+if grep -Eq '\[PATCH v[0-9]+ [0-9]/[0-9]+\]' "$legacy_html_visible" "$legacy_text"; then
     no "legacy render: zero unpadded [PATCH vN i/M] subjects in both modes" \
-        "$(grep -hEo '\[PATCH v[0-9]+ [0-9]/[0-9]+\]' "$legacy_html" "$legacy_text" | sort -u | tr '\n' ' ')"
+        "$(grep -hEo '\[PATCH v[0-9]+ [0-9]/[0-9]+\]' "$legacy_html_visible" "$legacy_text" | sort -u | tr '\n' ' ')"
 else
     ok "legacy render: zero unpadded [PATCH vN i/M] subjects in both modes"
 fi
@@ -1403,21 +1423,27 @@ printf '%s\n' '# Summary' 'v2 results summary.' '' '# Details' 'v2 results detai
 two_html2="$work/res-two2.html"
 python3 "$renderer" "$LKML_MAILBOX_ROOT/res-two" -o "$two_html2"
 if python3 - "$two_html2" <<'PY'
+import re
 import sys
 
 html = open(sys.argv[1], encoding="utf-8").read()
+# The lkml-thread/1 block's "text" field is the whole-series --text
+# render, which (by design, unlike the HTML card) carries every
+# version's own results block -- v1's included. That is not a leak of
+# v1's file into the CARD; exclude the block before checking the card.
+visible = re.sub(r'<script type="application/json" id="lkml-thread">.*?</script>', '', html, flags=re.S)
 errors = []
-if html.count('<section class="panel summary"') != 1:
-    errors.append("expected exactly one card, got %d" % html.count('<section class="panel summary"'))
+if visible.count('<section class="panel summary"') != 1:
+    errors.append("expected exactly one card, got %d" % visible.count('<section class="panel summary"'))
 else:
-    i_res = html.index('<section class="panel summary"')
-    i_v1 = html.index('<section class="section" id="res-two-v1">')
+    i_res = visible.index('<section class="panel summary"')
+    i_v1 = visible.index('<section class="section" id="res-two-v1">')
     if not i_res < i_v1:
         errors.append("card is not in the main column above the thread")
-    region = html[i_res:i_v1]
+    region = visible[i_res:i_v1]
     if 'v2 results summary.' not in region or 'v2 results details.' not in region:
         errors.append("card does not carry the current version's results file")
-    if 'v1 results summary.' in html:
+    if 'v1 results summary.' in visible:
         errors.append("the older version's results file leaked into the page")
 for e in errors:
     print(e)
@@ -3132,6 +3158,170 @@ else
 fi
 contains "the armed-guard failure names the orphan, not the root" \
     "$(cat "$work/armed.err")" "${ar_orphan:0:7}"
+
+printf '\n== lkml-thread/1: the embedded JSON block ==\n'
+# A fresh small series, isolated from every fixture above, so message
+# counts and ids for the injection/schema checks below are pinned and
+# do not have to be reconciled with earlier sections' edits to
+# render-fixture.
+tj_series="thread-json-fixture"
+"$mailbox" init "$tj_series" --cover "$work/cover.txt" --patches "$work/patches" \
+    --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
+tj_tree="$($mailbox tree "$tj_series")"
+tj_patch_id="$(printf '%s\n' "$tj_tree" | awk '/\[PATCH v1 1\/2\]/{print $1}')"
+# The body is agent-written and deliberately hostile: a literal
+# '</script>' plus markup and an HTML comment opener, to prove the
+# block's escaping (not the JSON body content itself) is what keeps it
+# from breaking out of the <script> element.
+printf '%s\n' 'Injection payload below.' '' '</script><b>x</b> & <!--' > "$work/tj-injection.txt"
+"$mailbox" post "$tj_series" --from core --reply-to "$tj_patch_id" --file "$work/tj-injection.txt" \
+    --tags Reviewed-by --harness test --model fixture >"$work/tj-review-id" 2>/dev/null
+tj_review_id="$(<"$work/tj-review-id")"
+tj_review_msg="$(grep -rl "$tj_review_id" "$LKML_MAILBOX_ROOT/$tj_series/cur" | head -1)"
+
+tj_html="$work/thread-json.html"
+python3 "$renderer" "$LKML_MAILBOX_ROOT/$tj_series" -o "$tj_html"
+
+if [[ "$(grep -o '</script>' "$tj_html" | wc -l)" -eq 1 ]]; then
+    ok "exactly one </script> in the page despite a body containing one"
+else
+    no "exactly one </script> in the page despite a body containing one" \
+        "$(grep -c '</script>' "$tj_html") found"
+fi
+if [[ "$(grep -o 'id="lkml-thread"' "$tj_html" | wc -l)" -eq 1 ]]; then
+    ok "exactly one id=\"lkml-thread\" block"
+else
+    no "exactly one id=\"lkml-thread\" block"
+fi
+
+if python3 - "$tj_html" "$tj_review_msg" "$tj_review_id" <<'PY'
+import json
+import re
+import sys
+
+html_path, msg_path, review_id = sys.argv[1], sys.argv[2], sys.argv[3]
+html = open(html_path, encoding="utf-8").read()
+raw = open(msg_path, encoding="utf-8").read()
+_head, _, body = raw.partition("\n\n")
+
+m = re.search(r'<script type="application/json" id="lkml-thread">(.*)</script>', html, re.S)
+if not m:
+    print("no lkml-thread block found")
+    sys.exit(1)
+data = json.loads(m.group(1))
+if data.get("schema") != "lkml-thread/1":
+    print("schema mismatch:", data.get("schema"))
+    sys.exit(1)
+msg = next((x for x in data["series"][0]["messages"] if x["id"] == review_id), None)
+if msg is None:
+    print("injected message not found by id")
+    sys.exit(1)
+if msg["body"] != body:
+    print("body did not round-trip byte for byte:", repr(msg["body"]), "!=", repr(body))
+    sys.exit(1)
+sys.exit(0)
+PY
+then
+    ok "hostile body round-trips byte for byte through the JSON block"
+else
+    no "hostile body round-trips byte for byte through the JSON block"
+fi
+
+tj_text_direct="$work/thread-json-fixture.txt"
+python3 "$renderer" --text "$LKML_MAILBOX_ROOT/$tj_series" > "$tj_text_direct"
+if python3 - "$tj_html" "$tj_text_direct" <<'PY'
+import json
+import re
+import sys
+
+html = open(sys.argv[1], encoding="utf-8").read()
+text_file = open(sys.argv[2], encoding="utf-8").read()
+m = re.search(r'<script type="application/json" id="lkml-thread">(.*)</script>', html, re.S)
+data = json.loads(m.group(1))
+sys.exit(0 if data["series"][0]["text"] == text_file else 1)
+PY
+then
+    ok "block's text field equals --text output for the same dir"
+else
+    no "block's text field equals --text output for the same dir"
+fi
+
+tj_html2="$work/thread-json-2.html"
+python3 "$renderer" "$LKML_MAILBOX_ROOT/$tj_series" -o "$tj_html2"
+if cmp -s "$tj_html" "$tj_html2"; then
+    ok "two renders of the same dir are byte-identical (SOURCE_DATE_EPOCH pinned)"
+else
+    no "two renders of the same dir are byte-identical (SOURCE_DATE_EPOCH pinned)"
+fi
+contains "rendered_at is the pinned SOURCE_DATE_EPOCH stamp" "$(<"$tj_html")" \
+    '"rendered_at": "1970-01-01T00:00:00Z"'
+
+printf '\n== lkml-thread/1: schema shape across both layouts ==\n'
+# tj_series (old layout, untouched since its setup above: cover + 2
+# patches + 1 reply, 4 messages) paired with the fleet-store fixture
+# (4 messages) from the fleet-store section earlier in this file --
+# NOT render-fixture, whose message count and cover keep growing as
+# later sections in this suite post more replies to it.
+tj_cover_short="$(printf '%s\n' "$tj_tree" | awk '/\[PATCH v1 0\/2\]/{print $1}')"
+combo2_html="$work/thread-json-combo.html"
+python3 "$renderer" "$LKML_MAILBOX_ROOT/$tj_series" "$fleet" -o "$combo2_html"
+
+if python3 - "$combo2_html" "$tj_cover_short" "$root_uuid" "$tj_patch_id" "$tj_review_id" <<'PY'
+import json
+import re
+import sys
+
+html_path, tj_cover_short, fleet_cover_id, tj_patch_short, tj_review_id = sys.argv[1:]
+html = open(html_path, encoding="utf-8").read()
+m = re.search(r'<script type="application/json" id="lkml-thread">(.*)</script>', html, re.S)
+data = json.loads(m.group(1))
+errors = []
+if data.get("schema") != "lkml-thread/1":
+    errors.append("schema is %r" % data.get("schema"))
+series = data.get("series", [])
+if [s["name"] for s in series] != ["thread-json-fixture", "demo-thread"]:
+    errors.append("series order/names wrong: %r" % [s["name"] for s in series])
+tj = series[0] if series else {}
+fl = series[1] if len(series) > 1 else {}
+tj_cover_msg = next(m for m in tj["messages"] if m["short_id"] == tj_cover_short)
+tj_patch_msg = next(m for m in tj["messages"] if m["short_id"] == tj_patch_short)
+tj_cover_id, tj_patch_id = tj_cover_msg["id"], tj_patch_msg["id"]
+if tj.get("versions") != [{"n": 1, "cover_id": tj_cover_id}]:
+    errors.append("thread-json-fixture versions wrong: %r" % tj.get("versions"))
+if fl.get("versions") != [{"n": 1, "cover_id": fleet_cover_id}]:
+    errors.append("fleet versions wrong: %r" % fl.get("versions"))
+if len(tj.get("messages", [])) != 4:
+    errors.append("thread-json-fixture message count wrong: %d" % len(tj.get("messages", [])))
+if len(fl.get("messages", [])) != 4:
+    errors.append("fleet message count wrong: %d" % len(fl.get("messages", [])))
+required_keys = {"id", "short_id", "parent_id", "version", "from", "role", "model",
+                  "date", "subject", "tags", "is_patch", "patch_index", "body"}
+root_ids = {tj_cover_id, fleet_cover_id}
+for s in series:
+    for msg in s["messages"]:
+        if set(msg.keys()) != required_keys:
+            errors.append("message keys mismatch: %r" % sorted(msg.keys()))
+        if msg["short_id"] != msg["id"][:7]:
+            errors.append("short_id mismatch for %s" % msg["id"])
+        if (msg["parent_id"] is None) != (msg["id"] in root_ids):
+            errors.append("parent_id is null on a non-root, or set on a root: %s" % msg["id"])
+tj_ids = [m["id"] for m in tj["messages"]]
+if not (tj_ids.index(tj_cover_id) < tj_ids.index(tj_patch_id) < tj_ids.index(tj_review_id)):
+    errors.append("thread-json-fixture messages not in seq order: %r" % tj_ids)
+if not tj_patch_msg["is_patch"] or tj_patch_msg["patch_index"] != 1:
+    errors.append("patch message is_patch/patch_index wrong: %r" % tj_patch_msg)
+review_msg = next(m for m in tj["messages"] if m["id"] == tj_review_id)
+if review_msg["is_patch"] or review_msg["patch_index"] is not None:
+    errors.append("reply message wrongly marked as a patch: %r" % review_msg)
+for e in errors:
+    print(e)
+sys.exit(1 if errors else 0)
+PY
+then
+    ok "schema shape: names, versions/cover ids, message counts, keys, short_id, parent_id, is_patch/patch_index, order"
+else
+    no "schema shape: names, versions/cover ids, message counts, keys, short_id, parent_id, is_patch/patch_index, order"
+fi
 
 printf '%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))
