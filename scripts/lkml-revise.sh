@@ -749,6 +749,14 @@ elif [[ "$commits" != "0" ]]; then
 elif (( resume_pending )); then
     post_ref="$checkout_ref"
     post_sha="$checkout_sha"
+    resumed_current_sha="$(git -C "$real_repo" rev-parse --verify --quiet "${checkout_ref}^{commit}" 2>/dev/null)" || {
+        echo "Error: resumed checkout '$checkout_ref' moved during the run: it was $checkout_sha and no longer resolves." >&2
+        exit 1
+    }
+    if [[ "$resumed_current_sha" != "$checkout_sha" ]]; then
+        echo "Error: resumed checkout '$checkout_ref' moved during the run: it was $checkout_sha but is now $resumed_current_sha." >&2
+        exit 1
+    fi
     echo "fork-sandbox lkml-revise: the run made no commits of its own, but --checkout $checkout_ref (${checkout_sha:0:7}) carries unposted work above v$version's posted tip ${previous_tip_sha:0:7}; posting it as v$next_version." >&2
 else
     echo "fork-sandbox lkml-revise: the author made no commits this round --" >&2
@@ -761,6 +769,15 @@ else
         echo "not run." >&2
     fi
     exit 1
+fi
+
+if [[ -z "$post_sha" ]]; then
+    # Resolved fresh after the run: post_ref is the fetched branch, rather
+    # than --checkout, in the ordinary case.
+    post_sha="$(cd "$real_repo" && git rev-parse --verify --quiet "${post_ref}^{commit}")" || {
+        echo "Error: branch '$post_ref' does not resolve in $real_repo." >&2
+        exit 1
+    }
 fi
 
 cover_file="$out_dir/cover-letter.md"
@@ -777,7 +794,7 @@ fi
 allow_fixups_args=()
 [[ -n "$frozen_fixups_spec" ]] && allow_fixups_args=(--allow-fixups-for "$slice_lo_sha..$slice_hi_sha")
 series_check_out="$("$script_dir/lkml-series-check.sh" --repo "$real_repo" \
-    --boundary "$frozen_boundary_sha" "${allow_fixups_args[@]}" "$post_ref" 2>&1)"
+    --boundary "$frozen_boundary_sha" "${allow_fixups_args[@]}" "$post_sha" 2>&1)"
 series_check_rc=$?
 if (( series_check_rc != 0 )); then
     printf '%s\n' "$series_check_out" >&2
@@ -796,20 +813,11 @@ patch_dir="$(mktemp -d /var/tmp/claude-scratch/lkml-revise-patches-XXXXXX)" || {
     echo "Error: mktemp -d failed for the format-patch output directory." >&2
     exit 1
 }
-if ! (cd "$real_repo" && git format-patch --quiet --diff-algorithm=myers -o "$patch_dir" "$format_base_sha..$post_ref") >/dev/null; then
-    echo "Error: git format-patch failed for $format_base_sha..$post_ref in $real_repo." >&2
+if ! (cd "$real_repo" && git format-patch --quiet --diff-algorithm=myers -o "$patch_dir" "$format_base_sha..$post_sha") >/dev/null; then
+    echo "Error: git format-patch failed for $format_base_sha..$post_sha in $real_repo." >&2
     exit 1
 fi
 
-if [[ -z "$post_sha" ]]; then
-    # Resolved fresh, right here, rather than reusing checkout_sha above:
-    # post_ref is the branch the author's run fetched back, a different ref
-    # from --checkout, and this is the one setter signal for the new version.
-    post_sha="$(cd "$real_repo" && git rev-parse --verify --quiet "${post_ref}^{commit}")" || {
-        echo "Error: branch '$post_ref' does not resolve in $real_repo." >&2
-        exit 1
-    }
-fi
 upstream_head_args=()
 [[ -n "$upstream_head_sha" ]] && upstream_head_args=(--upstream-head "$upstream_head_sha")
 previous_tip_args=()
@@ -817,7 +825,7 @@ previous_tip_args=()
 new_cover_id="$(cd "$real_repo" && "$mailbox" init "$series" --cover "$cover_file" --patches "$patch_dir" \
     --from "$author_persona" --display "$display" --version "$next_version" \
     --harness "$harness" --model "$model" --network "$network" \
-    --diffstat "$format_base_sha..$post_ref" --checkout "$post_ref" \
+    --diffstat "$format_base_sha..$post_sha" --checkout "$post_ref" \
     --review-target-set "$post_ref $post_sha" --base-sha "$format_base_sha" \
     "${upstream_head_args[@]}" "${previous_tip_args[@]}")" || {
     echo "Error: lkml-mailbox.sh init failed -- v$next_version was not posted." >&2

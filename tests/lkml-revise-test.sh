@@ -148,7 +148,7 @@ run_prefix_dir="$(mktemp -d)"; tmpdirs+=("$run_prefix_dir")
 # writes its own stub so commits/fetched/cover-letter can vary.
 write_stub() {
     local commits="$1" fetched="$2" write_cover="$3" write_reply="$4"
-    local branch="${5:-v2-branch}" testing="${6:-1}"
+    local branch="${5:-v2-branch}" testing="${6:-1}" move_branch="${7:-}"
     cat > "$stub_bin/fork-sandbox.sh" <<STUB
 #!/usr/bin/env bash
 set -euo pipefail
@@ -170,6 +170,11 @@ STUB
     if [[ "$write_reply" == 1 ]]; then
         cat >> "$stub_bin/fork-sandbox.sh" <<STUB
 printf 'In-Reply-To: $r1\nX-Tags: Reviewed-by\n\nFixed, see v2.\n' > "\$clone_dir/.git/lkml-out/1.msg"
+STUB
+    fi
+    if [[ -n "$move_branch" ]]; then
+        cat >> "$stub_bin/fork-sandbox.sh" <<STUB
+git -C "$real_repo" branch -f "$move_branch" "$series_base_sha"
 STUB
     fi
     cat >> "$stub_bin/fork-sandbox.sh" <<STUB
@@ -830,6 +835,22 @@ case "$unfetched_tree" in
 esac
 msgs_after_unfetched="$(find "$LKML_MAILBOX_ROOT/widget-resume-unfetched/cur" -name '*.msg' | wc -l)"
 check "resume unfetched: the reply is still harvested" "$(( msgs_before_unfetched + 1 ))" "$msgs_after_unfetched"
+
+printf '\n-- resume: a checkout branch moved during the run is refused --\n'
+resume_setup_series widget-resume-moved --checkout resume-a
+write_stub 0 false 1 0 v2-branch 1 resume-b
+out_resume_moved="$(PATH="$stub_bin:$PATH" "$revise" widget-resume-moved --project "$real_repo" \
+    --checkout resume-b --version 1 --base "$series_base_sha" 2>&1)"
+rc_resume_moved=$?
+if (( rc_resume_moved != 0 )); then ok "resume moved: exits non-zero"; else no "resume moved: exits non-zero" "exit 0: $out_resume_moved"; fi
+contains "resume moved: names the old checkout sha" "$out_resume_moved" "$resume_b_sha"
+contains "resume moved: names the new checkout sha" "$out_resume_moved" "$series_base_sha"
+moved_tree="$("$mailbox" tree widget-resume-moved)"
+case "$moved_tree" in
+    *"=== v2 ==="*) no "resume moved: no v2 in the tree" "$moved_tree" ;;
+    *) ok "resume moved: no v2 in the tree" ;;
+esac
+git -C "$real_repo" branch -f resume-b "$resume_b_sha"
 
 printf '\n-- resume: a tag checkout is refused before launch --\n'
 resume_setup_series widget-resume-tag --checkout resume-a
