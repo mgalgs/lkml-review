@@ -509,7 +509,7 @@ that name is reserved for the run's own self-refresh protocol, and the
 
     In-Reply-To: <id>
     Subject: <optional -- default is "Re: <the parent's subject>">
-    X-Tags: <optional, comma-separated: Reviewed-by, Acked-by, NAK, Changes-requested, Question>
+    X-Tags: <optional, comma-separated: Reviewed-by, Acked-by, Tested-by, NAK, Changes-requested, Question>
 
     <your message body>
 
@@ -527,13 +527,16 @@ Rules, all load-bearing:
   earlier in this same batch either -- ids are only assigned once your
   reply is posted to the mailbox, which happens after this run ends, so
   nothing you write in this round has an id of its own yet.
+- **`X-Tags` accepts ONLY** `Reviewed-by`, `Acked-by`, `Tested-by`, `NAK`,
+  `Changes-requested` and `Question`. Nothing else is a tag: `nit:` goes at
+  the start of a comment in the BODY, never in `X-Tags`.
 - **Tag only when you mean it.** `Reviewed-by` means you would put your
   name on the patch as committed. `Acked-by` means the approach is right
   but you have not verified every line. `NAK` means this must not be
   merged as it stands. `Changes-requested` and `Question` are for exactly
   what they say.
 - **Mark a nit as a nit.** Start a comment about naming, style or
-  preference with `nit:`, and never tag `Changes-requested` or `NAK` for
+  preference with `nit:` in the body (never in `X-Tags`), and never tag `Changes-requested` or `NAK` for
   nits alone: a patch whose only open comments are nits gets `Reviewed-by`
   or `Acked-by`, with the nits in the body. The author may decline a nit
   with a reason. Push back on the next version only if you think it was

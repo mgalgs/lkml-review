@@ -1435,5 +1435,13 @@ round_src="$(cat "$round")"
 contains "reviewer brief marks nits as nits" "$round_src" "**Mark a nit as a nit.**"
 contains "reviewer brief: nits alone never block" "$round_src" 'never tag `Changes-requested` or `NAK` for'
 
+# The brief a seat actually receives (captured from the stub launch above).
+# shellcheck disable=SC2016  # backticks are literal brief text
+contains "brief lists exactly the accepted X-Tags, Tested-by included" "$handoff_text" \
+    '`X-Tags` accepts ONLY** `Reviewed-by`, `Acked-by`, `Tested-by`, `NAK`,'
+# shellcheck disable=SC2016
+contains "brief says nit: goes in the body, never in X-Tags" "$handoff_text" \
+    '`nit:` goes at'$'\n''  the start of a comment in the BODY, never in `X-Tags`.'
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 (( fail == 0 )) || exit 1
