@@ -19,7 +19,8 @@
 #     round's fixup commits.
 #   - commits == 0: the "a version changes nothing" stop condition exits
 #     non-zero but still harvests any reply.
-#   - fetched != true: same stop condition, the other way it can trip.
+#   - commits > 0 with fetched != true: refuses after harvest rather than
+#     posting a resumed checkout and dropping the run's commits.
 #   - commits > 0 but no cover-letter.md: refuses to post, names the
 #     branch to read by hand, exits non-zero.
 #   - lkml-mailbox.sh init itself fails (e.g. the version it would post
@@ -41,6 +42,13 @@
 #     the version is formatted from the frozen boundary (patches, diffstat,
 #     X-Base), the handoff carries the slice instructions, and a fixup aimed
 #     outside the slice is still refused. Without it nothing changes.
+#   - a RESUMED author round -- relaunched with --checkout pointed at a dead
+#     attempt's fetched branch and --version unchanged, so the run commits
+#     nothing of its own -- posts vN+1 from --checkout when it already
+#     differs from vN's POSTED tip (the ledger sha, not --checkout itself);
+#     an unchanged checkout, or no ledger sha to compare against, still
+#     stops; a resumed round with no cover letter is refused exactly like
+#     an ordinary one.
 
 set -uo pipefail
 
@@ -140,12 +148,13 @@ run_prefix_dir="$(mktemp -d)"; tmpdirs+=("$run_prefix_dir")
 # writes its own stub so commits/fetched/cover-letter can vary.
 write_stub() {
     local commits="$1" fetched="$2" write_cover="$3" write_reply="$4"
-    local branch="${5:-v2-branch}" testing="${6:-1}"
+    local branch="${5:-v2-branch}" testing="${6:-1}" move_branch="${7:-}"
     cat > "$stub_bin/fork-sandbox.sh" <<STUB
 #!/usr/bin/env bash
 set -euo pipefail
 run_dir="\$(mktemp -d "$run_prefix_dir/run.XXXXXX")"
 printf '%s\n' "\$@" > "$run_prefix_dir/last-args"
+cp -- "\${!#}" "$run_prefix_dir/last-handoff.md"
 clone_dir="\$run_dir/clone/proj"
 mkdir -p "\$clone_dir/.git/lkml-out"
 STUB
@@ -162,6 +171,11 @@ STUB
     if [[ "$write_reply" == 1 ]]; then
         cat >> "$stub_bin/fork-sandbox.sh" <<STUB
 printf 'In-Reply-To: $r1\nX-Tags: Reviewed-by\n\nFixed, see v2.\n' > "\$clone_dir/.git/lkml-out/1.msg"
+STUB
+    fi
+    if [[ -n "$move_branch" ]]; then
+        cat >> "$stub_bin/fork-sandbox.sh" <<STUB
+git -C "$real_repo" branch -f "$move_branch" "$series_base_sha"
 STUB
     fi
     cat >> "$stub_bin/fork-sandbox.sh" <<STUB
@@ -240,6 +254,7 @@ printf '\n== the thread is mounted at /thread, not inlined in the handoff ==\n'
 thread_dir_of() { awk '$0=="--thread-dir"{getline; print; exit}' "$1"; }
 handoff_path="$(tail -n1 "$run_prefix_dir/last-args")"
 handoff_text="$(cat -- "$handoff_path" 2>/dev/null)"
+captured_handoff_text="$(cat -- "$run_prefix_dir/last-handoff.md" 2>/dev/null)"
 thread_dir_arg="$(thread_dir_of "$run_prefix_dir/last-args")"
 if [[ "$thread_dir_arg" == /var/tmp/claude-scratch/lkml-revise-thread-* && -d "$thread_dir_arg" ]]; then
     ok "fork-sandbox.sh is launched with --thread-dir under the scratch root"
@@ -253,6 +268,8 @@ case "$handoff_text" in
     *) ok "the handoff no longer inlines reply bodies" ;;
 esac
 contains "handoff points at /thread/thread.txt" "$handoff_text" "/thread/thread.txt"
+contains "ordinary handoff keeps the no-commit, no-cover instruction" "$captured_handoff_text" \
+    "do not fabricate a cover letter for a"
 tree_pos=$(printf '%s' "$handoff_text" | grep -bo '## The full thread tree' | head -n1 | cut -d: -f1)
 pointer_pos=$(printf '%s' "$handoff_text" | grep -bo '## The rest of the thread' | head -n1 | cut -d: -f1)
 open_pos=$(printf '%s' "$handoff_text" | grep -bo '## Open items' | head -n1 | cut -d: -f1)
@@ -309,7 +326,8 @@ out="$(PATH="$stub_bin:$PATH" "$revise" widget-frob --project "$real_repo" \
     --checkout somebranch --version 1 --base "$series_base_sha" 2>&1)"
 rc=$?
 if (( rc != 0 )); then ok "exits non-zero when fetched != true"; else no "exits non-zero when fetched != true" "exit 0"; fi
-contains "names the 'changes nothing' stop condition (fetched case)" "$out" "changes nothing"
+contains "names the missing fetch (fetched case)" "$out" \
+    "the run committed 1 commit(s) but its branch was not fetched back"
 
 printf '\n== refusal: commits but no cover letter ==\n'
 write_stub 1 true 0 0
@@ -688,6 +706,197 @@ badledger_v2_cover_msg="$("$mailbox" show widget-bad-ledger-sha "$badledger_v2_c
 case "$badledger_v2_cover_msg" in
     *"## Since"*) no "an unresolvable ledger sha: the new cover carries no ## Since section" "$badledger_v2_cover_msg" ;;
     *) ok "an unresolvable ledger sha: the new cover carries no ## Since section" ;;
+esac
+
+printf '\n== resumed author round: --checkout already carries unposted work above vN posted tip ==\n'
+# The operator relaunches a dead attempt with --checkout pointed at that
+# attempt's fetched branch and --version unchanged; the run itself commits
+# nothing (the commits already sit on --checkout). Each scenario gets its
+# own series so a ledger row from one cannot leak into another.
+resume_setup_series() {
+    local series="$1"; shift
+    (cd "$real_repo" && "$mailbox" init "$series" --cover "$work/cover.txt" --patches "$work/patches" \
+        --from author --harness claude --model opus "$@" >/dev/null 2>&1)
+}
+resume_reply_target() {
+    local series="$1" pid qfile id
+    pid="$("$mailbox" tree "$series" | awk 'NR==3{print $1}')"
+    qfile="$(mktemp)"
+    echo "please address this in the resumed round" > "$qfile"
+    id="$("$mailbox" post "$series" --from core --reply-to "$pid" --file "$qfile" \
+        --tags Changes-requested --harness claude --model opus 2>/dev/null)"
+    rm -f "$qfile"
+    printf '%s' "$id"
+}
+
+# Branch A stands in for what v1 was actually posted from; branch B is one
+# extra commit on top of A, standing in for the dead attempt's fetched
+# branch that --checkout is pointed at on the resumed relaunch.
+git -C "$real_repo" checkout -q --detach "$series_base_sha"
+printf 'resume A commit\n' > "$real_repo/resume-a.txt"
+git -C "$real_repo" add resume-a.txt
+git -C "$real_repo" commit -q -m "resume: branch A commit"
+git -C "$real_repo" branch -f resume-a HEAD
+resume_a_sha="$(git -C "$real_repo" rev-parse --verify --quiet resume-a)"
+printf 'resume B extra commit\n' > "$real_repo/resume-b.txt"
+git -C "$real_repo" add resume-b.txt
+git -C "$real_repo" commit -q -m "resume: branch B extra commit"
+git -C "$real_repo" branch -f resume-b HEAD
+resume_b_sha="$(git -C "$real_repo" rev-parse --verify --quiet resume-b)"
+git -C "$real_repo" checkout - -q
+
+printf '\n-- resume: posts from the checkout --\n'
+resume_setup_series widget-resume-ok --checkout resume-a
+r_resume_ok="$(resume_reply_target widget-resume-ok)"
+r1_saved="$r1"; r1="$r_resume_ok"
+write_stub 0 false 1 1
+r1="$r1_saved"
+out_resume="$(PATH="$stub_bin:$PATH" "$revise" widget-resume-ok --project "$real_repo" \
+    --checkout resume-b --version 1 --base "$series_base_sha" 2>&1)"
+rc_resume=$?
+check "resume: exits 0 and posts v2" "0" "$rc_resume"
+contains "resume: reports harvesting the reply" "$out_resume" "harvested 1 repl"
+contains "resume: posts v2" "$out_resume" "posted v2"
+contains "resume: explains the resumed round is posting the checkout" "$out_resume" \
+    "the run made no commits of its own, but --checkout resume-b (${resume_b_sha:0:7}) carries unposted work above v1's posted tip ${resume_a_sha:0:7}; posting it as v2."
+resume_tree="$("$mailbox" tree widget-resume-ok)"
+contains "resume: v2 shows up in the tree" "$resume_tree" "=== v2 ==="
+resume_ledger="$LKML_MAILBOX_ROOT/widget-resume-ok/versions.jsonl"
+resume_v2_row="$(grep '"version":2' "$resume_ledger")"
+contains "resume: v2 recorded in the ledger with B's sha, not A's" "$resume_v2_row" "\"sha\":\"$resume_b_sha\""
+case "$resume_v2_row" in
+    *"$resume_a_sha"*) no "resume: v2's ledger sha is not A's sha" "$resume_v2_row" ;;
+    *) ok "resume: v2's ledger sha is not A's sha" ;;
+esac
+resume_handoff_text="$(cat -- "$run_prefix_dir/last-handoff.md")"
+resume_commit_count="$(git -C "$real_repo" rev-list --count "$resume_a_sha..$resume_b_sha")"
+contains "resume handoff names all unposted commits" "$resume_handoff_text" \
+    "carries $resume_commit_count unposted commit(s) above"
+contains "resume handoff names both short endpoints" "$resume_handoff_text" \
+    "${resume_a_sha:0:7}, through ${resume_b_sha:0:7}"
+contains "resume handoff requires a cover for the whole unposted work" "$resume_handoff_text" \
+    "must write its cover letter covering the whole unposted work"
+case "$resume_handoff_text" in
+    *"do not fabricate a cover letter for a"*) no "resume handoff replaces the no-commit, no-cover instruction" ;;
+    *) ok "resume handoff replaces the no-commit, no-cover instruction" ;;
+esac
+
+printf '\n-- resume: an unchanged checkout still stops --\n'
+resume_setup_series widget-resume-unchanged --checkout resume-a
+r_resume_unchanged="$(resume_reply_target widget-resume-unchanged)"
+r1_saved="$r1"; r1="$r_resume_unchanged"
+write_stub 0 false 1 1
+r1="$r1_saved"
+out_unchanged="$(PATH="$stub_bin:$PATH" "$revise" widget-resume-unchanged --project "$real_repo" \
+    --checkout resume-a --version 1 --base "$series_base_sha" 2>&1)"
+rc_unchanged=$?
+if (( rc_unchanged != 0 )); then ok "resume unchanged: exits non-zero"; else no "resume unchanged: exits non-zero" "exit 0: $out_unchanged"; fi
+contains "resume unchanged: the existing 'made no commits' text stands" "$out_unchanged" \
+    "the author made no commits this round --"
+contains "resume unchanged: names the 'changes nothing' stop condition" "$out_unchanged" "changes nothing"
+unchanged_tree="$("$mailbox" tree widget-resume-unchanged)"
+case "$unchanged_tree" in
+    *"=== v2 ==="*) no "resume unchanged: no v2 in the tree" "$unchanged_tree" ;;
+    *) ok "resume unchanged: no v2 in the tree" ;;
+esac
+
+printf '\n-- resume: no ledger sha still stops --\n'
+resume_setup_series widget-resume-noledger --no-checkout
+r_resume_noledger="$(resume_reply_target widget-resume-noledger)"
+r1_saved="$r1"; r1="$r_resume_noledger"
+write_stub 0 false 1 1
+r1="$r1_saved"
+out_noledger="$(PATH="$stub_bin:$PATH" "$revise" widget-resume-noledger --project "$real_repo" \
+    --checkout resume-b --version 1 --base "$series_base_sha" 2>&1)"
+rc_noledger=$?
+if (( rc_noledger != 0 )); then ok "resume no ledger: exits non-zero"; else no "resume no ledger: exits non-zero" "exit 0: $out_noledger"; fi
+contains "resume no ledger: names the 'changes nothing' stop condition" "$out_noledger" "changes nothing"
+contains "resume no ledger: explains the resume check could not run" "$out_noledger" \
+    "no ledger sha for v1, so the resume"
+
+printf '\n-- resume: no cover letter is refused, naming the checkout branch --\n'
+resume_setup_series widget-resume-nocover --checkout resume-a
+r_resume_nocover="$(resume_reply_target widget-resume-nocover)"
+r1_saved="$r1"; r1="$r_resume_nocover"
+write_stub 0 false 0 1
+r1="$r1_saved"
+msgs_before_nocover="$(find "$LKML_MAILBOX_ROOT/widget-resume-nocover/cur" -name '*.msg' | wc -l)"
+out_nocover="$(PATH="$stub_bin:$PATH" "$revise" widget-resume-nocover --project "$real_repo" \
+    --checkout resume-b --version 1 --base "$series_base_sha" 2>&1)"
+rc_nocover=$?
+if (( rc_nocover != 0 )); then ok "resume no cover: exits non-zero"; else no "resume no cover: exits non-zero" "exit 0: $out_nocover"; fi
+contains "resume no cover: names branch B (the checkout)" "$out_nocover" "resume-b"
+contains "resume no cover: the reply is still harvested" "$out_nocover" "harvested 1 repl"
+msgs_after_nocover="$(find "$LKML_MAILBOX_ROOT/widget-resume-nocover/cur" -name '*.msg' | wc -l)"
+check "resume no cover: only the harvested reply was posted (no v2)" "$(( msgs_before_nocover + 1 ))" "$msgs_after_nocover"
+
+printf '\n-- resume: committed work not fetched back is refused after harvesting --\n'
+resume_setup_series widget-resume-unfetched --checkout resume-a
+r_resume_unfetched="$(resume_reply_target widget-resume-unfetched)"
+r1_saved="$r1"; r1="$r_resume_unfetched"
+write_stub 1 false 1 1
+r1="$r1_saved"
+msgs_before_unfetched="$(find "$LKML_MAILBOX_ROOT/widget-resume-unfetched/cur" -name '*.msg' | wc -l)"
+out_unfetched="$(PATH="$stub_bin:$PATH" "$revise" widget-resume-unfetched --project "$real_repo" \
+    --checkout resume-b --version 1 --base "$series_base_sha" 2>&1)"
+rc_unfetched=$?
+if (( rc_unfetched != 0 )); then ok "resume unfetched: exits non-zero"; else no "resume unfetched: exits non-zero" "exit 0: $out_unfetched"; fi
+contains "resume unfetched: names the missing fetch" "$out_unfetched" \
+    "the run committed 1 commit(s) but its branch was not fetched back"
+contains "resume unfetched: names the run directory" "$out_unfetched" "Run directory:"
+unfetched_tree="$("$mailbox" tree widget-resume-unfetched)"
+case "$unfetched_tree" in
+    *"=== v2 ==="*) no "resume unfetched: no v2 in the tree" "$unfetched_tree" ;;
+    *) ok "resume unfetched: no v2 in the tree" ;;
+esac
+msgs_after_unfetched="$(find "$LKML_MAILBOX_ROOT/widget-resume-unfetched/cur" -name '*.msg' | wc -l)"
+check "resume unfetched: the reply is still harvested" "$(( msgs_before_unfetched + 1 ))" "$msgs_after_unfetched"
+
+printf '\n-- resume: a checkout branch moved during the run is refused --\n'
+resume_setup_series widget-resume-moved --checkout resume-a
+write_stub 0 false 1 0 v2-branch 1 resume-b
+out_resume_moved="$(PATH="$stub_bin:$PATH" "$revise" widget-resume-moved --project "$real_repo" \
+    --checkout resume-b --version 1 --base "$series_base_sha" 2>&1)"
+rc_resume_moved=$?
+if (( rc_resume_moved != 0 )); then ok "resume moved: exits non-zero"; else no "resume moved: exits non-zero" "exit 0: $out_resume_moved"; fi
+contains "resume moved: names the old checkout sha" "$out_resume_moved" "$resume_b_sha"
+contains "resume moved: names the new checkout sha" "$out_resume_moved" "$series_base_sha"
+moved_tree="$("$mailbox" tree widget-resume-moved)"
+case "$moved_tree" in
+    *"=== v2 ==="*) no "resume moved: no v2 in the tree" "$moved_tree" ;;
+    *) ok "resume moved: no v2 in the tree" ;;
+esac
+git -C "$real_repo" branch -f resume-b "$resume_b_sha"
+
+printf '\n-- resume: a tag checkout is refused before launch --\n'
+resume_setup_series widget-resume-tag --checkout resume-a
+git -C "$real_repo" tag -f resume-b-tag resume-b
+write_stub 0 false 1 1
+rm -f -- "$run_prefix_dir/last-args"
+out_resume_tag="$(PATH="$stub_bin:$PATH" "$revise" widget-resume-tag --project "$real_repo" \
+    --checkout resume-b-tag --version 1 --base "$series_base_sha" 2>&1)"
+rc_resume_tag=$?
+if (( rc_resume_tag != 0 )); then ok "resume tag: exits non-zero"; else no "resume tag: exits non-zero" "exit 0: $out_resume_tag"; fi
+contains "resume tag: names the ref and local-branch requirement" "$out_resume_tag" \
+    "resumed checkout 'resume-b-tag' must be launched from a local branch"
+if [[ ! -e "$run_prefix_dir/last-args" ]]; then ok "resume tag: stub was not invoked"; else no "resume tag: stub was not invoked" "$(cat "$run_prefix_dir/last-args")"; fi
+
+printf '\n-- resume: a checkout behind the posted tip is not posted as resumed work --\n'
+resume_setup_series widget-resume-behind --checkout resume-b
+write_stub 0 false 1 1
+out_resume_behind="$(PATH="$stub_bin:$PATH" "$revise" widget-resume-behind --project "$real_repo" \
+    --checkout resume-a --version 1 --base "$series_base_sha" 2>&1)"
+rc_resume_behind=$?
+if (( rc_resume_behind != 0 )); then ok "resume behind: exits non-zero"; else no "resume behind: exits non-zero" "exit 0: $out_resume_behind"; fi
+contains "resume behind: names the posted tip" "$out_resume_behind" "$resume_b_sha"
+contains "resume behind: names the checkout tip" "$out_resume_behind" "$resume_a_sha"
+contains "resume behind: explains that posted work must be retained" "$out_resume_behind" \
+    "a resumed checkout must retain all posted work"
+contains "resume behind: reply is still harvested" "$out_resume_behind" "harvested 1 repl"
+behind_tree="$("$mailbox" tree widget-resume-behind)"
+case "$behind_tree" in
+    *"=== v2 ==="*) no "resume behind: no v2 is posted" "$behind_tree" ;;
+    *) ok "resume behind: no v2 is posted" ;;
 esac
 
 printf '\n== --frozen-fixups: fixtures, a stack with a slice under review ==\n'

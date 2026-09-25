@@ -114,22 +114,27 @@
 #     exactly as lkml-round.sh does, whether or not any commits landed --
 #     a reply explaining a disagreement is still worth posting even on a
 #     round that changes no code.
-#   - If, and only if, the run committed at least one commit AND left a
-#     `.git/lkml-out/cover-letter.md`, gates the fetched branch, then runs
-#     `git format-patch` in the REAL repo (never the clone) over it and
-#     posts the result as the new version with `lkml-mailbox.sh init`. The
-#     gate is lkml-series-check.sh over <boundary>..<branch> (found next
-#     to this script, not on PATH), plus a `## Testing` heading in the
-#     cover letter. Either failing refuses the post -- after the replies
-#     are harvested, so they still land -- and keeps the branch for
-#     inspection.
+#   - Picks what to post as vN+1, if anything: the run's own commits when
+#     it made any AND fetched its branch back, else --checkout itself when
+#     it already carries unposted work above vN's POSTED tip (a resumed
+#     run: the operator relaunched a dead attempt with --checkout pointed
+#     at that attempt's fetched branch and --version unchanged, so the
+#     commits already exist on the checkout and this run adds none of its
+#     own). If, and only if, that target left a `.git/lkml-out/cover-
+#     letter.md`, gates it, then runs `git format-patch` in the REAL repo
+#     (never the clone) over it and posts the result as the new version
+#     with `lkml-mailbox.sh init`. The gate is lkml-series-check.sh over
+#     <boundary>..<target> (found next to this script, not on PATH), plus
+#     a `## Testing` heading in the cover letter. Either failing refuses
+#     the post -- after the replies are harvested, so they still land --
+#     and keeps the branch for inspection.
 #
-# Exits non-zero, after still harvesting replies, when the run made no
-# commits: that is this project's "a version changes nothing" stop
-# condition (see skills/lkml-mode/SKILL.md), and it is the orchestrator's
-# call whether to end the series there -- this script only reports it
-# plainly rather than silently posting an unchanged version, and rather
-# than deciding on its own that the series is done.
+# Exits non-zero, after still harvesting replies, when there is nothing to
+# post above vN's posted tip: that is this project's "a version changes
+# nothing" stop condition (see skills/lkml-mode/SKILL.md), and it is the
+# orchestrator's call whether to end the series there -- this script only
+# reports it plainly rather than silently posting an unchanged version,
+# and rather than deciding on its own that the series is done.
 
 set -uo pipefail
 
@@ -338,6 +343,26 @@ elif ! git -C "$real_repo" rev-parse --verify --quiet "${previous_tip_sha}^{comm
     previous_tip_sha=""
 fi
 
+# A resumed author run starts from a failed attempt's fetched branch, whose
+# unposted commits already differ from vN's ledger tip. lkml-mailbox.sh
+# records the checkout as a branch, so reject a tag or remote ref before
+# spending a run that could never be posted.
+resume_pending=0
+resume_not_descendant=0
+if [[ -n "$previous_tip_sha" && "$checkout_sha" != "$previous_tip_sha" ]]; then
+    if ! git -C "$real_repo" merge-base --is-ancestor "$previous_tip_sha" "$checkout_sha"; then
+        # A normal re-roll can legitimately start from a new base. Only a
+        # no-commit run would mistake this for resumed work to post.
+        resume_not_descendant=1
+    else
+        resume_pending=1
+        if ! git -C "$real_repo" show-ref --verify --quiet "refs/heads/$checkout_ref"; then
+            echo "Error: resumed checkout '$checkout_ref' must be launched from a local branch." >&2
+            exit 1
+        fi
+    fi
+fi
+
 # The frozen boundary: the commits up to and including it are published and
 # belong to a human, so the author never rewrites them; everything above it
 # is the author's series and is re-rolled. Resolved once, here, before the
@@ -434,6 +459,9 @@ handoff_file="$(mktemp /var/tmp/claude-scratch/lkml-revise-XXXXXX.md)" || {
 # --frozen-fixups wording unless the flag is set.
 no_fixup_clause='and no fixup!, squash! or amend! commit.'
 autosquash_note=''
+cover_letter_note='If you end this run having made no commits at all, still say so
+plainly in your final report and do not fabricate a cover letter for a
+version that changes nothing.'
 if [[ -n "$frozen_fixups_spec" ]]; then
     no_fixup_clause="and no fixup!, squash! or amend! commit -- except that the ONLY
   such commits allowed are the ones aimed at $slice_lo_sha..$slice_hi_sha,
@@ -443,6 +471,14 @@ if [[ -n "$frozen_fixups_spec" ]]; then
   Run from the frozen boundary, that leaves the fixups aimed at the slice
   in place, as intended; it folds only your own new commits among
   themselves."
+fi
+if (( resume_pending )); then
+    resume_commit_count="$(git -C "$real_repo" rev-list --count "$previous_tip_sha..$checkout_sha")"
+    cover_letter_note="The checkout already carries $resume_commit_count unposted commit(s) above
+v$version's posted tip ${previous_tip_sha:0:7}, through ${checkout_sha:0:7}.
+This unposted work IS v$next_version whether or not this run adds commits,
+so you must write its cover letter covering the whole unposted work, not
+only what this run adds."
 fi
 {
     cat -- "$persona_file"
@@ -520,9 +556,7 @@ Do not write a \`## Diffstat\` or a \`## Since vN\` section: posting
 appends both, computed from the branches.
 
 That file's presence is how the next step knows a new version is ready to
-post. If you end this run having made no commits at all, still say so
-plainly in your final report and do not fabricate a cover letter for a
-version that changes nothing.
+post. $cover_letter_note
 
 ## How to reply
 
@@ -711,19 +745,64 @@ if [[ -d "$out_dir" ]]; then
 fi
 echo "fork-sandbox lkml-revise: harvested $harvested reply/replies onto the current version." >&2
 
-if [[ "$commits" == "0" || "$fetched" != "true" ]]; then
+# What to post as v$next_version, if anything. The ordinary case is the
+# run's own commits (case 1); a resumed round -- relaunched with
+# --checkout pointed at a dead attempt's fetched branch and --version
+# unchanged -- commits nothing of its own because the commits already sit
+# on --checkout, so case 2 posts the checkout itself when it already
+# differs from vN's POSTED tip (previous_tip_sha, from the ledger, not
+# $checkout_sha). With no ledger sha there is no way to tell that resumed
+# case from an ordinary unchanged checkout, so case 3 stays conservative
+# and stops either way.
+post_ref=""
+post_sha=""
+if [[ "$commits" != "0" && "$fetched" == "true" ]]; then
+    post_ref="$real_branch"
+elif [[ "$commits" != "0" ]]; then
+    echo "Error: the run committed $commits commit(s) but its branch was not fetched back." >&2
+    echo "Run directory: $run_dir" >&2
+    exit 1
+elif (( resume_pending )); then
+    post_ref="$checkout_ref"
+    post_sha="$checkout_sha"
+    resumed_current_sha="$(git -C "$real_repo" rev-parse --verify --quiet "${checkout_ref}^{commit}" 2>/dev/null)" || {
+        echo "Error: resumed checkout '$checkout_ref' moved during the run: it was $checkout_sha and no longer resolves." >&2
+        exit 1
+    }
+    if [[ "$resumed_current_sha" != "$checkout_sha" ]]; then
+        echo "Error: resumed checkout '$checkout_ref' moved during the run: it was $checkout_sha but is now $resumed_current_sha." >&2
+        exit 1
+    fi
+    echo "fork-sandbox lkml-revise: the run made no commits of its own, but --checkout $checkout_ref (${checkout_sha:0:7}) carries unposted work above v$version's posted tip ${previous_tip_sha:0:7}; posting it as v$next_version." >&2
+elif (( resume_not_descendant )); then
+    echo "Error: v$version's posted tip $previous_tip_sha is not an ancestor of --checkout '$checkout_ref' ($checkout_sha); refusing to treat it as unposted work because a resumed checkout must retain all posted work." >&2
+    exit 1
+else
     echo "fork-sandbox lkml-revise: the author made no commits this round --" >&2
     echo "no v$next_version to post. This is the 'a version changes nothing'" >&2
     echo "stop condition; deciding whether to end the series here is the" >&2
     echo "orchestrator's call." >&2
+    if [[ -z "$previous_tip_sha" ]]; then
+        echo "fork-sandbox lkml-revise: no ledger sha for v$version, so the resume" >&2
+        echo "check -- whether --checkout already carries unposted work -- could" >&2
+        echo "not run." >&2
+    fi
     exit 1
+fi
+
+if [[ -z "$post_sha" ]]; then
+    # Resolved fresh after the run: post_ref is the fetched branch, rather
+    # than --checkout, in the ordinary case.
+    post_sha="$(cd "$real_repo" && git rev-parse --verify --quiet "${post_ref}^{commit}")" || {
+        echo "Error: branch '$post_ref' does not resolve in $real_repo." >&2
+        exit 1
+    }
 fi
 
 cover_file="$out_dir/cover-letter.md"
 if [[ ! -f "$cover_file" ]]; then
-    echo "Error: the run committed $commits commit(s) but left no" >&2
-    echo "$cover_file -- refusing to post v$next_version with no cover" >&2
-    echo "letter. Read the branch $real_branch by hand." >&2
+    echo "Error: refusing to post v$next_version: no $cover_file for" >&2
+    echo "the branch to post, $post_ref -- read it by hand." >&2
     exit 1
 fi
 
@@ -734,18 +813,18 @@ fi
 allow_fixups_args=()
 [[ -n "$frozen_fixups_spec" ]] && allow_fixups_args=(--allow-fixups-for "$slice_lo_sha..$slice_hi_sha")
 series_check_out="$("$script_dir/lkml-series-check.sh" --repo "$real_repo" \
-    --boundary "$frozen_boundary_sha" "${allow_fixups_args[@]}" "$real_branch" 2>&1)"
+    --boundary "$frozen_boundary_sha" "${allow_fixups_args[@]}" "$post_sha" 2>&1)"
 series_check_rc=$?
 if (( series_check_rc != 0 )); then
     printf '%s\n' "$series_check_out" >&2
     (( series_check_rc == 1 )) || echo "Error: lkml-series-check.sh itself failed (exit $series_check_rc)." >&2
-    echo "Error: refusing to post v$next_version: the series is not a clean re-roll; branch $real_branch kept for inspection." >&2
+    echo "Error: refusing to post v$next_version: the series is not a clean re-roll; branch $post_ref kept for inspection." >&2
     echo "Commits up to and including $frozen_boundary_sha are frozen; everything above it must be re-rolled." >&2
     exit 1
 fi
 if ! grep -Eq '^##[[:space:]]+Testing[[:space:]]*$' "$cover_file"; then
     echo "Error: refusing to post v$next_version: the cover letter has no '## Testing' section" >&2
-    echo "(the exact test command(s) and their pass/fail counts); branch $real_branch kept for inspection." >&2
+    echo "(the exact test command(s) and their pass/fail counts); branch $post_ref kept for inspection." >&2
     exit 1
 fi
 
@@ -753,18 +832,11 @@ patch_dir="$(mktemp -d /var/tmp/claude-scratch/lkml-revise-patches-XXXXXX)" || {
     echo "Error: mktemp -d failed for the format-patch output directory." >&2
     exit 1
 }
-if ! (cd "$real_repo" && git format-patch --quiet --diff-algorithm=myers -o "$patch_dir" "$format_base_sha..$real_branch") >/dev/null; then
-    echo "Error: git format-patch failed for $format_base_sha..$real_branch in $real_repo." >&2
+if ! (cd "$real_repo" && git format-patch --quiet --diff-algorithm=myers -o "$patch_dir" "$format_base_sha..$post_sha") >/dev/null; then
+    echo "Error: git format-patch failed for $format_base_sha..$post_sha in $real_repo." >&2
     exit 1
 fi
 
-# Resolved fresh, right here, rather than reusing checkout_sha above:
-# real_branch is the branch the author's run fetched back, a different ref
-# from --checkout, and this is the one setter signal for the new version.
-real_branch_sha="$(cd "$real_repo" && git rev-parse --verify --quiet "${real_branch}^{commit}")" || {
-    echo "Error: branch '$real_branch' does not resolve in $real_repo." >&2
-    exit 1
-}
 upstream_head_args=()
 [[ -n "$upstream_head_sha" ]] && upstream_head_args=(--upstream-head "$upstream_head_sha")
 previous_tip_args=()
@@ -772,11 +844,11 @@ previous_tip_args=()
 new_cover_id="$(cd "$real_repo" && "$mailbox" init "$series" --cover "$cover_file" --patches "$patch_dir" \
     --from "$author_persona" --display "$display" --version "$next_version" \
     --harness "$harness" --model "$model" --network "$network" \
-    --diffstat "$format_base_sha..$real_branch" --checkout "$real_branch" \
-    --review-target-set "$real_branch $real_branch_sha" --base-sha "$format_base_sha" \
+    --diffstat "$format_base_sha..$post_sha" --checkout "$post_ref" \
+    --review-target-set "$post_ref $post_sha" --base-sha "$format_base_sha" \
     "${upstream_head_args[@]}" "${previous_tip_args[@]}")" || {
     echo "Error: lkml-mailbox.sh init failed -- v$next_version was not posted." >&2
-    echo "Patches are sitting at $patch_dir; branch $real_branch was not" >&2
+    echo "Patches are sitting at $patch_dir; branch $post_ref was not" >&2
     echo "recorded in $ledger_root/$series/versions.jsonl." >&2
     exit 1
 }
