@@ -144,7 +144,7 @@ scheduling and reading are different jobs held by different sessions.
 | `lkml-series.sh` | series-level operations across versions |
 | `lkml-status.sh` | the one-screen summary |
 | `lkml-summarize.sh` | per-version results summary |
-| `lkml-render.py` | single-file HTML archive; `--text` for the agent/grep view |
+| `lkml-render.py` | single-file HTML archive (embeds a `lkml-thread/1` JSON block for agents); `--text` for the agent/grep view |
 | `lkml-forklift.sh` | moves a series between repos |
 | `lkml-seats-parse.py`, `lkml-seats-resolve` | plumbing: read and resolve `seats.yaml` |
 | `lkml-fleet.sh` | fleet transport wrapper: selects lkml's personas and isolated optional fleet file, then passes its arguments to `fork-sandbox` |

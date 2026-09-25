@@ -40,6 +40,17 @@ message and diffstat stay and the diff goes (it lives in the series
 branch). The HTML path may be redesigned freely; --text must not
 change out from under the panel scripts.
 
+Every HTML render also embeds one <script type="application/json"
+id="lkml-thread"> block, just before </body>: schema "lkml-thread/1",
+a reproducible rendered_at stamp, and one entry per SERIES_DIR with its
+version/cover list, every parsed message (id, persona, role, model,
+date, tags, patch position, verbatim body), and that dir's exact
+--text render under "text". It lets an agent read the whole thread
+without parsing the HTML and without lkml-review installed. Like
+--text, this block is a stable interface: the HTML's visible layout
+and CSS may still be redesigned freely, but the block cannot change
+shape without bumping the schema id.
+
 --text --version N restricts the render to one version's own section
 (exactly what the whole-series --text render prints for that version,
 byte for byte) plus, only when any exist, a late-replies block:
