@@ -19,7 +19,8 @@
 #     round's fixup commits.
 #   - commits == 0: the "a version changes nothing" stop condition exits
 #     non-zero but still harvests any reply.
-#   - fetched != true: same stop condition, the other way it can trip.
+#   - commits > 0 with fetched != true: refuses after harvest rather than
+#     posting a resumed checkout and dropping the run's commits.
 #   - commits > 0 but no cover-letter.md: refuses to post, names the
 #     branch to read by hand, exits non-zero.
 #   - lkml-mailbox.sh init itself fails (e.g. the version it would post
@@ -316,7 +317,8 @@ out="$(PATH="$stub_bin:$PATH" "$revise" widget-frob --project "$real_repo" \
     --checkout somebranch --version 1 --base "$series_base_sha" 2>&1)"
 rc=$?
 if (( rc != 0 )); then ok "exits non-zero when fetched != true"; else no "exits non-zero when fetched != true" "exit 0"; fi
-contains "names the 'changes nothing' stop condition (fetched case)" "$out" "changes nothing"
+contains "names the missing fetch (fetched case)" "$out" \
+    "the run committed 1 commit(s) but its branch was not fetched back"
 
 printf '\n== refusal: commits but no cover letter ==\n'
 write_stub 1 true 0 0
@@ -806,6 +808,41 @@ contains "resume no cover: names branch B (the checkout)" "$out_nocover" "resume
 contains "resume no cover: the reply is still harvested" "$out_nocover" "harvested 1 repl"
 msgs_after_nocover="$(find "$LKML_MAILBOX_ROOT/widget-resume-nocover/cur" -name '*.msg' | wc -l)"
 check "resume no cover: only the harvested reply was posted (no v2)" "$(( msgs_before_nocover + 1 ))" "$msgs_after_nocover"
+
+printf '\n-- resume: committed work not fetched back is refused after harvesting --\n'
+resume_setup_series widget-resume-unfetched --checkout resume-a
+r_resume_unfetched="$(resume_reply_target widget-resume-unfetched)"
+r1_saved="$r1"; r1="$r_resume_unfetched"
+write_stub 1 false 1 1
+r1="$r1_saved"
+msgs_before_unfetched="$(find "$LKML_MAILBOX_ROOT/widget-resume-unfetched/cur" -name '*.msg' | wc -l)"
+out_unfetched="$(PATH="$stub_bin:$PATH" "$revise" widget-resume-unfetched --project "$real_repo" \
+    --checkout resume-b --version 1 --base "$series_base_sha" 2>&1)"
+rc_unfetched=$?
+if (( rc_unfetched != 0 )); then ok "resume unfetched: exits non-zero"; else no "resume unfetched: exits non-zero" "exit 0: $out_unfetched"; fi
+contains "resume unfetched: names the missing fetch" "$out_unfetched" \
+    "the run committed 1 commit(s) but its branch was not fetched back"
+contains "resume unfetched: names the run directory" "$out_unfetched" "Run directory:"
+unfetched_tree="$("$mailbox" tree widget-resume-unfetched)"
+case "$unfetched_tree" in
+    *"=== v2 ==="*) no "resume unfetched: no v2 in the tree" "$unfetched_tree" ;;
+    *) ok "resume unfetched: no v2 in the tree" ;;
+esac
+msgs_after_unfetched="$(find "$LKML_MAILBOX_ROOT/widget-resume-unfetched/cur" -name '*.msg' | wc -l)"
+check "resume unfetched: the reply is still harvested" "$(( msgs_before_unfetched + 1 ))" "$msgs_after_unfetched"
+
+printf '\n-- resume: a tag checkout is refused before launch --\n'
+resume_setup_series widget-resume-tag --checkout resume-a
+git -C "$real_repo" tag -f resume-b-tag resume-b
+write_stub 0 false 1 1
+rm -f -- "$run_prefix_dir/last-args"
+out_resume_tag="$(PATH="$stub_bin:$PATH" "$revise" widget-resume-tag --project "$real_repo" \
+    --checkout resume-b-tag --version 1 --base "$series_base_sha" 2>&1)"
+rc_resume_tag=$?
+if (( rc_resume_tag != 0 )); then ok "resume tag: exits non-zero"; else no "resume tag: exits non-zero" "exit 0: $out_resume_tag"; fi
+contains "resume tag: names the ref and local-branch requirement" "$out_resume_tag" \
+    "resumed checkout 'resume-b-tag' must be launched from a local branch"
+if [[ ! -e "$run_prefix_dir/last-args" ]]; then ok "resume tag: stub was not invoked"; else no "resume tag: stub was not invoked" "$(cat "$run_prefix_dir/last-args")"; fi
 
 printf '\n== --frozen-fixups: fixtures, a stack with a slice under review ==\n'
 # A four-commit stack on the series base; the frozen head is its tip and the

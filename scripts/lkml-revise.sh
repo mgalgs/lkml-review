@@ -343,6 +343,19 @@ elif ! git -C "$real_repo" rev-parse --verify --quiet "${previous_tip_sha}^{comm
     previous_tip_sha=""
 fi
 
+# A resumed author run starts from a failed attempt's fetched branch, whose
+# unposted commits already differ from vN's ledger tip. lkml-mailbox.sh
+# records the checkout as a branch, so reject a tag or remote ref before
+# spending a run that could never be posted.
+resume_pending=0
+if [[ -n "$previous_tip_sha" && "$checkout_sha" != "$previous_tip_sha" ]]; then
+    resume_pending=1
+    if ! git -C "$real_repo" show-ref --verify --quiet "refs/heads/$checkout_ref"; then
+        echo "Error: resumed checkout '$checkout_ref' must be launched from a local branch." >&2
+        exit 1
+    fi
+fi
+
 # The frozen boundary: the commits up to and including it are published and
 # belong to a human, so the author never rewrites them; everything above it
 # is the author's series and is re-rolled. Resolved once, here, before the
@@ -729,7 +742,11 @@ post_ref=""
 post_sha=""
 if [[ "$commits" != "0" && "$fetched" == "true" ]]; then
     post_ref="$real_branch"
-elif [[ -n "$previous_tip_sha" && "$checkout_sha" != "$previous_tip_sha" ]]; then
+elif [[ "$commits" != "0" ]]; then
+    echo "Error: the run committed $commits commit(s) but its branch was not fetched back." >&2
+    echo "Run directory: $run_dir" >&2
+    exit 1
+elif (( resume_pending )); then
     post_ref="$checkout_ref"
     post_sha="$checkout_sha"
     echo "fork-sandbox lkml-revise: the run made no commits of its own, but --checkout $checkout_ref (${checkout_sha:0:7}) carries unposted work above v$version's posted tip ${previous_tip_sha:0:7}; posting it as v$next_version." >&2
