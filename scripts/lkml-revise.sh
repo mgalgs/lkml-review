@@ -5,6 +5,7 @@
 # Usage: lkml-revise.sh <series> --project <path> --checkout <ref> --version <n> --base <ref>
 #            [--personas-dir <dir>] [--author <persona>] [--model-override <harness/model>]
 #            [--timeout <seconds>] [--services-trust-ref <ref>]
+#            [--upstream-head <ref>] [--frozen-fixups <lo>..<hi>]
 #
 # <project>   the repo fork-sandbox.sh clones.
 # --checkout  the ref to revise from -- normally the branch vN was posted
@@ -37,6 +38,20 @@
 #             whatever an earlier version recorded -- see
 #             skills/lkml-mode/SKILL.md for what this and the other
 #             review-target headers mean.
+# --frozen-fixups <lo>..<hi> the frozen commits <lo>..<hi> (a slice of the
+#             stack below --upstream-head) are the slice under review. A fix
+#             to one of them is made as a fixup!/squash!/amend! commit aimed
+#             at it, on top of the frozen head, and is deliberately LEFT
+#             unfolded for a human; the gate passes such commits (see
+#             lkml-series-check.sh --allow-fixups-for) and only those. The
+#             posted version is then just the author's commits above the
+#             frozen boundary: format-patch, the diffstat and the version's
+#             base-sha all run from the boundary, not the series base, since
+#             a posted version's base is where its patches apply. Refused at
+#             launch unless the frozen boundary is an upstream one (an
+#             --upstream-head, or one inherited from the ledger), <lo> and
+#             <hi> resolve, <lo> is an ancestor of <hi>, and <hi> is at or
+#             below the boundary. Without the flag nothing changes.
 # --author    which persona file speaks for the series. Defaults to
 #             "author" -- see skills/lkml-mode/personas/author.md.
 #             `--author pr-author` requires a frozen boundary (an
@@ -148,6 +163,7 @@ author_persona="author"
 model_override=""
 timeout=3600
 services_trust_ref=""
+frozen_fixups_spec=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -161,6 +177,7 @@ while [[ $# -gt 0 ]]; do
         --model-override) model_override="${2:?--model-override requires harness or harness/model}"; shift 2 ;;
         --timeout) timeout="${2:?--timeout requires seconds}"; shift 2 ;;
         --services-trust-ref) services_trust_ref="${2:?--services-trust-ref requires a ref}"; shift 2 ;;
+        --frozen-fixups) frozen_fixups_spec="${2:?--frozen-fixups requires <lo>..<hi>}"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Error: unknown option '$1'." >&2; exit 1 ;;
     esac
@@ -360,6 +377,41 @@ if ! git -C "$real_repo" merge-base --is-ancestor "$frozen_boundary_sha" "$check
     exit 1
 fi
 
+# --frozen-fixups: the slice must be frozen commits, and only an upstream
+# boundary has frozen commits that are not the author's own series.
+slice_lo_sha=""
+slice_hi_sha=""
+format_base_sha="$series_base_sha"
+if [[ -n "$frozen_fixups_spec" ]]; then
+    slice_lo="${frozen_fixups_spec%%..*}"
+    slice_hi="${frozen_fixups_spec#*..}"
+    if [[ "$frozen_fixups_spec" != *..* || -z "$slice_lo" || -z "$slice_hi" || "$slice_hi" == .* ]]; then
+        echo "Error: --frozen-fixups '$frozen_fixups_spec' is not of the form <lo>..<hi>." >&2
+        exit 1
+    fi
+    if [[ "$frozen_boundary_kind" != "upstream" ]]; then
+        echo "Error: --frozen-fixups needs a frozen boundary above the series base, and none is known for $series v$version: no --upstream-head was passed and none is recorded in the ledger." >&2
+        exit 1
+    fi
+    slice_lo_sha="$(git -C "$real_repo" rev-parse --verify --quiet "${slice_lo}^{commit}" 2>/dev/null)" || {
+        echo "Error: --frozen-fixups: '$slice_lo' does not name a commit in $real_repo." >&2
+        exit 1
+    }
+    slice_hi_sha="$(git -C "$real_repo" rev-parse --verify --quiet "${slice_hi}^{commit}" 2>/dev/null)" || {
+        echo "Error: --frozen-fixups: '$slice_hi' does not name a commit in $real_repo." >&2
+        exit 1
+    }
+    if ! git -C "$real_repo" merge-base --is-ancestor "$slice_lo_sha" "$slice_hi_sha"; then
+        echo "Error: --frozen-fixups: '$slice_lo' (${slice_lo_sha}) is not an ancestor of '$slice_hi' (${slice_hi_sha})." >&2
+        exit 1
+    fi
+    if ! git -C "$real_repo" merge-base --is-ancestor "$slice_hi_sha" "$frozen_boundary_sha"; then
+        echo "Error: --frozen-fixups: '$slice_hi' (${slice_hi_sha}) is not at or below the frozen boundary ${frozen_boundary_sha}." >&2
+        exit 1
+    fi
+    format_base_sha="$frozen_boundary_sha"
+fi
+
 mkdir -p -- /var/tmp/claude-scratch
 thread_dir="$(mktemp -d /var/tmp/claude-scratch/lkml-revise-thread-XXXXXX)" || {
     echo "Error: mktemp failed for the thread directory of series '$series'." >&2
@@ -378,6 +430,20 @@ handoff_file="$(mktemp /var/tmp/claude-scratch/lkml-revise-XXXXXX.md)" || {
     echo "Error: mktemp failed for the handoff file." >&2
     exit 1
 }
+# The two places the handoff's "no fixup!" rule shows up, empty of any
+# --frozen-fixups wording unless the flag is set.
+no_fixup_clause='and no fixup!, squash! or amend! commit.'
+autosquash_note=''
+if [[ -n "$frozen_fixups_spec" ]]; then
+    no_fixup_clause="and no fixup!, squash! or amend! commit -- except that the ONLY
+  such commits allowed are the ones aimed at $slice_lo_sha..$slice_hi_sha,
+  the slice under review (see \"Which commits are yours\"). A comment-only
+  fixup aimed at that slice is fine too."
+    autosquash_note="
+  Run from the frozen boundary, that leaves the fixups aimed at the slice
+  in place, as intended; it folds only your own new commits among
+  themselves."
+fi
 {
     cat -- "$persona_file"
     printf '\n---\n\n# You are revising %s, currently at v%s\n\n%s\n' "$series" "$version" "$cover_text"
@@ -398,6 +464,15 @@ handoff_file="$(mktemp /var/tmp/claude-scratch/lkml-revise-XXXXXX.md)" || {
     if [[ "$frozen_boundary_kind" == "upstream" ]]; then
         printf 'Commits up to and including %s are frozen: never rewrite them. Everything above it is your series; re-roll it.\n' "$frozen_boundary_sha"
         printf '(The frozen commits are published and belong to a human.)\n'
+        if [[ -n "$frozen_fixups_spec" ]]; then
+            printf '\nThe commits %s..%s (exclusive of the first, inclusive of the second) are the slice under review.\n' "$slice_lo_sha" "$slice_hi_sha"
+            cat <<SLICE
+A fix to one of them is made as \`git commit --fixup=<sha>\` (or \`--squash=<sha>\`, or
+\`git commit --fixup=amend:<sha>\` when the commit message must change) on top of the frozen
+head, and is deliberately LEFT unfolded: a human folds it later. A fix to any OTHER
+frozen commit is NOT made -- answer that review point on-thread instead.
+SLICE
+        fi
     else
         printf 'Nothing is frozen below your series. Everything above the series base %s is yours; re-roll it.\n' "$frozen_boundary_sha"
     fi
@@ -419,9 +494,9 @@ v$version plus a log of review:
   finish, fold every fix into the commit it belongs to. For example
   \`git commit --fixup=<target>\`, then
   \`GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash $frozen_boundary_sha\`
-  -- nobody is at a terminal, so the sequence editor must be a no-op.
+  -- nobody is at a terminal, so the sequence editor must be a no-op.$autosquash_note
 - Leave one logical change per commit, with commit messages that describe
-  the change and not the review, and no fixup!, squash! or amend! commit.
+  the change and not the review, $no_fixup_clause
   A commit that changes only comments is refused too, unless its message
   carries a \`Comment-only: <reason>\` trailer -- legitimate only for a
   comment in a frozen commit, which cannot be folded anywhere.
@@ -656,8 +731,10 @@ fi
 # version, not the answers. The checker is found next to this script, never
 # on PATH: it judges agent-written commits and must be the one that ships
 # with this checkout.
+allow_fixups_args=()
+[[ -n "$frozen_fixups_spec" ]] && allow_fixups_args=(--allow-fixups-for "$slice_lo_sha..$slice_hi_sha")
 series_check_out="$("$script_dir/lkml-series-check.sh" --repo "$real_repo" \
-    --boundary "$frozen_boundary_sha" "$real_branch" 2>&1)"
+    --boundary "$frozen_boundary_sha" "${allow_fixups_args[@]}" "$real_branch" 2>&1)"
 series_check_rc=$?
 if (( series_check_rc != 0 )); then
     printf '%s\n' "$series_check_out" >&2
@@ -676,8 +753,8 @@ patch_dir="$(mktemp -d /var/tmp/claude-scratch/lkml-revise-patches-XXXXXX)" || {
     echo "Error: mktemp -d failed for the format-patch output directory." >&2
     exit 1
 }
-if ! (cd "$real_repo" && git format-patch --quiet --diff-algorithm=myers -o "$patch_dir" "$series_base_sha..$real_branch") >/dev/null; then
-    echo "Error: git format-patch failed for $series_base_sha..$real_branch in $real_repo." >&2
+if ! (cd "$real_repo" && git format-patch --quiet --diff-algorithm=myers -o "$patch_dir" "$format_base_sha..$real_branch") >/dev/null; then
+    echo "Error: git format-patch failed for $format_base_sha..$real_branch in $real_repo." >&2
     exit 1
 fi
 
@@ -695,8 +772,8 @@ previous_tip_args=()
 new_cover_id="$(cd "$real_repo" && "$mailbox" init "$series" --cover "$cover_file" --patches "$patch_dir" \
     --from "$author_persona" --display "$display" --version "$next_version" \
     --harness "$harness" --model "$model" --network "$network" \
-    --diffstat "$series_base_sha..$real_branch" --checkout "$real_branch" \
-    --review-target-set "$real_branch $real_branch_sha" --base-sha "$series_base_sha" \
+    --diffstat "$format_base_sha..$real_branch" --checkout "$real_branch" \
+    --review-target-set "$real_branch $real_branch_sha" --base-sha "$format_base_sha" \
     "${upstream_head_args[@]}" "${previous_tip_args[@]}")" || {
     echo "Error: lkml-mailbox.sh init failed -- v$next_version was not posted." >&2
     echo "Patches are sitting at $patch_dir; branch $real_branch was not" >&2

@@ -36,6 +36,11 @@
 #     is refused too. Every refusal still harvests replies, posts no
 #     version and keeps the branch. A clean re-rolled branch whose commits
 #     are not descendants of the checkout tip, only of the boundary, posts.
+#   - --frozen-fixups <lo>..<hi>: refused at launch without an upstream
+#     boundary or with a bad range; with it the gate gets --allow-fixups-for,
+#     the version is formatted from the frozen boundary (patches, diffstat,
+#     X-Base), the handoff carries the slice instructions, and a fixup aimed
+#     outside the slice is still refused. Without it nothing changes.
 
 set -uo pipefail
 
@@ -684,6 +689,154 @@ case "$badledger_v2_cover_msg" in
     *"## Since"*) no "an unresolvable ledger sha: the new cover carries no ## Since section" "$badledger_v2_cover_msg" ;;
     *) ok "an unresolvable ledger sha: the new cover carries no ## Since section" ;;
 esac
+
+printf '\n== --frozen-fixups: fixtures, a stack with a slice under review ==\n'
+# A four-commit stack on the series base; the frozen head is its tip and the
+# slice under review is the two commits above ff-lo (ff-s2, ff-s3). The
+# author's branches sit on the frozen head.
+rgit checkout -q --detach "$series_base_sha"
+for n in 1 2 3 4; do
+    printf 'stack %s\n' "$n" > "$real_repo/stack$n.txt"
+    rgit add "stack$n.txt"; rgit commit -q -m "stack: commit $n"
+    rgit tag -f "ff-s$n" HEAD >/dev/null
+done
+rgit branch -f ff-head HEAD
+ff_lo_sha="$(rgit rev-parse ff-s1)"; ff_hi_sha="$(rgit rev-parse ff-s3)"; ff_head_sha="$(rgit rev-parse ff-head)"
+printf 'own\n' > "$real_repo/own.txt"; rgit add own.txt; rgit commit -q -m "own: add a thing"
+printf 'fix 3\n' > "$real_repo/stack3.txt"; rgit commit -q -am "fixup! stack: commit 3"
+printf '/* note */\n' >> "$real_repo/stack2.txt"; rgit commit -q -am "fixup! stack: commit 2"
+rgit branch -f ff-good HEAD
+rgit checkout -q --detach ff-head
+printf 'own\n' > "$real_repo/own.txt"; rgit add own.txt; rgit commit -q -m "own: add a thing"
+printf 'fix 1\n' > "$real_repo/stack1.txt"; rgit commit -q -am "fixup! stack: commit 1"
+rgit branch -f ff-bad HEAD
+rgit checkout -q "$orig_branch"
+ff_range="ff-s1..ff-s3"
+
+printf 'Add the stack\n\nBody.\n' > ff-cover.txt
+mkdir -p ff-patches
+printf 'Subject: [PATCH 1/1] stack: commit 4\n\ndiff\n' > ff-patches/0001.patch
+"$mailbox" init widget-ff --cover ff-cover.txt --patches ff-patches --from author \
+    --harness claude --model opus --no-checkout >/dev/null 2>&1
+
+ff_launches() { find "$run_prefix_dir" -maxdepth 1 -name 'run.*' | wc -l; }
+ff_msgs() { find "$LKML_MAILBOX_ROOT/widget-ff/cur" -name '*.msg' | wc -l; }
+ff_refused() {
+    local label="$1" want="$2"; shift 2
+    local launches_before msgs_before
+    write_stub 1 true 1 0 ff-good
+    launches_before="$(ff_launches)"; msgs_before="$(ff_msgs)"
+    out="$(PATH="$stub_bin:$PATH" "$revise" widget-ff --project "$real_repo" \
+        --checkout ff-head --version 1 --base "$series_base_sha" "$@" 2>&1)"
+    rc=$?
+    if (( rc != 0 )); then ok "$label: exits non-zero"; else no "$label: exits non-zero" "exit 0: $out"; fi
+    contains "$label: says why" "$out" "$want"
+    check "$label: no run was launched" "$launches_before" "$(ff_launches)"
+    check "$label: nothing was posted" "$msgs_before" "$(ff_msgs)"
+}
+
+printf '\n== --frozen-fixups is refused at launch when it cannot apply ==\n'
+ff_refused "no upstream boundary" "--frozen-fixups needs a frozen boundary" --frozen-fixups "$ff_range"
+ff_refused "lo is not an ancestor of hi" "is not an ancestor of" \
+    --upstream-head ff-head --frozen-fixups ff-s3..ff-s1
+ff_refused "hi is above the boundary" "is not at or below the frozen boundary" \
+    --upstream-head ff-s3 --frozen-fixups ff-s1..ff-head
+ff_refused "an unresolvable lo" "'nosuchlo' does not name a commit" \
+    --upstream-head ff-head --frozen-fixups nosuchlo..ff-s3
+ff_refused "an unresolvable hi" "'nosuchhi' does not name a commit" \
+    --upstream-head ff-head --frozen-fixups ff-s1..nosuchhi
+ff_refused "a malformed range" "is not of the form <lo>..<hi>" \
+    --upstream-head ff-head --frozen-fixups ff-s3
+
+printf '\n== --frozen-fixups: the gate gets --allow-fixups-for, and the handoff explains the slice ==\n'
+# The gate is found next to the script, so run a copy of the scripts whose
+# lkml-series-check.sh logs its arguments and hands over to the real one.
+ff_copy="$(mktemp -d)"; tmpdirs+=("$ff_copy")
+cp -r "$repo_dir/scripts" "$repo_dir/skills" "$ff_copy/"
+mv "$ff_copy/scripts/lkml-series-check.sh" "$ff_copy/scripts/lkml-series-check-real.sh"
+cp "$repo_dir/scripts/lkml-series-check-py.py" "$ff_copy/scripts/"
+cat > "$ff_copy/scripts/lkml-series-check.sh" <<GATE
+#!/usr/bin/env bash
+printf '%s\n' "\$@" > "$ff_copy/gate-args"
+exec "$ff_copy/scripts/lkml-series-check-real.sh" "\$@"
+GATE
+chmod +x "$ff_copy/scripts/lkml-series-check.sh"
+
+write_stub 1 true 1 0 ff-good
+out="$(PATH="$stub_bin:$PATH" "$ff_copy/scripts/lkml-revise.sh" widget-ff --project "$real_repo" \
+    --checkout ff-head --version 1 --base "$series_base_sha" \
+    --upstream-head ff-head --frozen-fixups "$ff_range" 2>&1)"
+rc=$?
+check "slice fixups plus an own commit: exits 0 and posts v2" "0" "$rc"
+contains "slice fixups plus an own commit: posted v2" "$out" "posted v2"
+check "the gate got --allow-fixups-for with full shas" \
+    "--allow-fixups-for $ff_lo_sha..$ff_hi_sha" \
+    "$(grep -A1 -x -- '--allow-fixups-for' "$ff_copy/gate-args" | paste -sd' ')"
+check "the gate's boundary is the frozen head" "$ff_head_sha" \
+    "$(awk '$0=="--boundary"{getline; print; exit}' "$ff_copy/gate-args")"
+h_ff="$(cat -- "$(handoff_of)")"
+contains "the handoff names the slice by both full shas" "$h_ff" "The commits $ff_lo_sha..$ff_hi_sha"
+contains "the handoff says to make a slice fix as a fixup and leave it unfolded" "$h_ff" \
+    "\`git commit --fixup=<sha>\`"
+contains "the handoff names the amend form" "$h_ff" "\`git commit --fixup=amend:<sha>\`"
+contains "the handoff says the fixup is deliberately left unfolded" "$h_ff" "deliberately LEFT unfolded"
+contains "the handoff says a fix to any other frozen commit is answered on-thread" "$h_ff" \
+    "A fix to any OTHER"
+contains "the handoff allows only fixups aimed at the slice" "$h_ff" \
+    "the ONLY
+  such commits allowed are the ones aimed at $ff_lo_sha..$ff_hi_sha"
+case "$h_ff" in
+    *"and no fixup!, squash! or amend! commit."*) no "the flat no-fixup rule is replaced when the flag is set" ;;
+    *) ok "the flat no-fixup rule is replaced when the flag is set" ;;
+esac
+contains "the handoff still gives the autosquash recipe from the boundary" "$h_ff" \
+    "GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash $ff_head_sha"
+contains "the handoff says that recipe leaves the slice fixups in place" "$h_ff" \
+    "leaves the fixups aimed at the slice"
+
+ff_tree="$("$mailbox" tree widget-ff)"
+contains "v2 is only the commits above the boundary (three patches)" "$ff_tree" "PATCH v2 3/3"
+case "$ff_tree" in
+    *"PATCH v2 4/4"*|*"stack: commit 1"*) no "v2 carries none of the frozen stack's commits" "$ff_tree" ;;
+    *) ok "v2 carries none of the frozen stack's commits" ;;
+esac
+ff_v2_cover_id="$(printf '%s\n' "$ff_tree" | awk '/^=== v2 ===/{found=1; next} found && /^[[:alnum:]]/{print $1; exit}')"
+ff_v2_cover="$("$mailbox" show widget-ff "$ff_v2_cover_id")"
+contains "v2's base is the frozen boundary" "$ff_v2_cover" "X-Base: $ff_head_sha"
+contains "v2's diffstat covers the author's commits" "$ff_v2_cover" "own.txt"
+
+printf '\n== --frozen-fixups: the gate still refuses a fixup aimed outside the slice ==\n'
+write_stub 1 true 1 0 ff-bad
+msgs_before="$(ff_msgs)"
+out="$(PATH="$stub_bin:$PATH" "$revise" widget-ff --project "$real_repo" \
+    --checkout ff-head --version 2 --base "$series_base_sha" \
+    --upstream-head ff-head --frozen-fixups "$ff_range" 2>&1)"
+rc=$?
+if (( rc != 0 )); then ok "fixup at a frozen commit below the slice: exits non-zero"; else no "fixup at a frozen commit below the slice: exits non-zero" "exit 0: $out"; fi
+contains "fixup at a frozen commit below the slice: the target is named as outside the range" "$out" \
+    "fixup! stack: commit 1: fixup target is not a commit in $ff_lo_sha..$ff_hi_sha"
+check "fixup at a frozen commit below the slice: nothing posted" "$msgs_before" "$(ff_msgs)"
+
+printf '\n== without --frozen-fixups the handoff and the gate are unchanged ==\n'
+write_stub 1 true 1 0 ff-good
+msgs_before="$(ff_msgs)"
+out="$(PATH="$stub_bin:$PATH" "$ff_copy/scripts/lkml-revise.sh" widget-ff --project "$real_repo" \
+    --checkout ff-head --version 2 --base "$series_base_sha" \
+    --upstream-head ff-head 2>&1)"
+rc=$?
+if (( rc != 0 )); then ok "no flag: a slice fixup is refused by the gate"; else no "no flag: a slice fixup is refused by the gate" "exit 0: $out"; fi
+check "no flag: the gate got no --allow-fixups-for" "0" "$(grep -c -x -- '--allow-fixups-for' "$ff_copy/gate-args")"
+check "no flag: nothing posted" "$msgs_before" "$(ff_msgs)"
+h_noff="$(cat -- "$(handoff_of)")"
+contains "no flag: the flat no-fixup rule stands" "$h_noff" \
+    "the change and not the review, and no fixup!, squash! or amend! commit.
+  A commit that changes only comments"
+case "$h_noff" in
+    *"slice under review"*|*"LEFT unfolded"*|*"aimed at the slice"*) no "no flag: the handoff carries no slice wording" ;;
+    *) ok "no flag: the handoff carries no slice wording" ;;
+esac
+contains "no flag: the frozen commits are still just frozen" "$h_noff" \
+    "Commits up to and including $ff_head_sha are frozen: never rewrite them. Everything above it is your series; re-roll it."
 
 printf '\n== --help ==\n'
 h_out="$("$revise" --help 2>&1)"; h_rc=$?
