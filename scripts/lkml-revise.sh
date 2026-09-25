@@ -452,6 +452,9 @@ handoff_file="$(mktemp /var/tmp/claude-scratch/lkml-revise-XXXXXX.md)" || {
 # --frozen-fixups wording unless the flag is set.
 no_fixup_clause='and no fixup!, squash! or amend! commit.'
 autosquash_note=''
+cover_letter_note='If you end this run having made no commits at all, still say so
+plainly in your final report and do not fabricate a cover letter for a
+version that changes nothing.'
 if [[ -n "$frozen_fixups_spec" ]]; then
     no_fixup_clause="and no fixup!, squash! or amend! commit -- except that the ONLY
   such commits allowed are the ones aimed at $slice_lo_sha..$slice_hi_sha,
@@ -461,6 +464,14 @@ if [[ -n "$frozen_fixups_spec" ]]; then
   Run from the frozen boundary, that leaves the fixups aimed at the slice
   in place, as intended; it folds only your own new commits among
   themselves."
+fi
+if (( resume_pending )); then
+    resume_commit_count="$(git -C "$real_repo" rev-list --count "$previous_tip_sha..$checkout_sha")"
+    cover_letter_note="The checkout already carries $resume_commit_count unposted commit(s) above
+v$version's posted tip ${previous_tip_sha:0:7}, through ${checkout_sha:0:7}.
+This unposted work IS v$next_version whether or not this run adds commits,
+so you must write its cover letter covering the whole unposted work, not
+only what this run adds."
 fi
 {
     cat -- "$persona_file"
@@ -538,9 +549,7 @@ Do not write a \`## Diffstat\` or a \`## Since vN\` section: posting
 appends both, computed from the branches.
 
 That file's presence is how the next step knows a new version is ready to
-post. If you end this run having made no commits at all, still say so
-plainly in your final report and do not fabricate a cover letter for a
-version that changes nothing.
+post. $cover_letter_note
 
 ## How to reply
 

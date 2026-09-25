@@ -154,6 +154,7 @@ write_stub() {
 set -euo pipefail
 run_dir="\$(mktemp -d "$run_prefix_dir/run.XXXXXX")"
 printf '%s\n' "\$@" > "$run_prefix_dir/last-args"
+cp -- "\${!#}" "$run_prefix_dir/last-handoff.md"
 clone_dir="\$run_dir/clone/proj"
 mkdir -p "\$clone_dir/.git/lkml-out"
 STUB
@@ -253,6 +254,7 @@ printf '\n== the thread is mounted at /thread, not inlined in the handoff ==\n'
 thread_dir_of() { awk '$0=="--thread-dir"{getline; print; exit}' "$1"; }
 handoff_path="$(tail -n1 "$run_prefix_dir/last-args")"
 handoff_text="$(cat -- "$handoff_path" 2>/dev/null)"
+captured_handoff_text="$(cat -- "$run_prefix_dir/last-handoff.md" 2>/dev/null)"
 thread_dir_arg="$(thread_dir_of "$run_prefix_dir/last-args")"
 if [[ "$thread_dir_arg" == /var/tmp/claude-scratch/lkml-revise-thread-* && -d "$thread_dir_arg" ]]; then
     ok "fork-sandbox.sh is launched with --thread-dir under the scratch root"
@@ -266,6 +268,8 @@ case "$handoff_text" in
     *) ok "the handoff no longer inlines reply bodies" ;;
 esac
 contains "handoff points at /thread/thread.txt" "$handoff_text" "/thread/thread.txt"
+contains "ordinary handoff keeps the no-commit, no-cover instruction" "$captured_handoff_text" \
+    "do not fabricate a cover letter for a"
 tree_pos=$(printf '%s' "$handoff_text" | grep -bo '## The full thread tree' | head -n1 | cut -d: -f1)
 pointer_pos=$(printf '%s' "$handoff_text" | grep -bo '## The rest of the thread' | head -n1 | cut -d: -f1)
 open_pos=$(printf '%s' "$handoff_text" | grep -bo '## Open items' | head -n1 | cut -d: -f1)
@@ -763,6 +767,18 @@ contains "resume: v2 recorded in the ledger with B's sha, not A's" "$resume_v2_r
 case "$resume_v2_row" in
     *"$resume_a_sha"*) no "resume: v2's ledger sha is not A's sha" "$resume_v2_row" ;;
     *) ok "resume: v2's ledger sha is not A's sha" ;;
+esac
+resume_handoff_text="$(cat -- "$run_prefix_dir/last-handoff.md")"
+resume_commit_count="$(git -C "$real_repo" rev-list --count "$resume_a_sha..$resume_b_sha")"
+contains "resume handoff names all unposted commits" "$resume_handoff_text" \
+    "carries $resume_commit_count unposted commit(s) above"
+contains "resume handoff names both short endpoints" "$resume_handoff_text" \
+    "${resume_a_sha:0:7}, through ${resume_b_sha:0:7}"
+contains "resume handoff requires a cover for the whole unposted work" "$resume_handoff_text" \
+    "must write its cover letter covering the whole unposted work"
+case "$resume_handoff_text" in
+    *"do not fabricate a cover letter for a"*) no "resume handoff replaces the no-commit, no-cover instruction" ;;
+    *) ok "resume handoff replaces the no-commit, no-cover instruction" ;;
 esac
 
 printf '\n-- resume: an unchanged checkout still stops --\n'
