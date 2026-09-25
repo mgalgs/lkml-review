@@ -2155,11 +2155,13 @@ def render_text_version_lines(series_dir, name, v, d, fleet_cover_ids):
     return lines
 
 
-def render_text_series(series_dir, assume_root_version=None):
-    """One series dir as plain text: a header with the same counts the
-    HTML header shows, then every message in thread order."""
-    name, msgs, versions, version_data, fleet_cover_ids, rendered_ids = \
-        compute_version_sections(series_dir, assume_root_version)
+def render_text_series_from_sections(series_dir, name, msgs, versions, version_data,
+                                      fleet_cover_ids, rendered_ids):
+    """The body of render_text_series, taking compute_version_sections'
+    output directly rather than calling it -- so a caller that already
+    has that tuple (series_json, building the same dir's JSON messages
+    from it) gets this dir's --text render without a second build()
+    pass over the mailbox."""
     sections = []
     # The whole-series results file, if any: a 'series-summary' block
     # at the very top, before the first version section, with the same
@@ -2182,6 +2184,15 @@ def render_text_series(series_dir, assume_root_version=None):
         sections.append("\n".join(render_text_version_lines(series_dir, name, v, version_data[v], fleet_cover_ids)))
     require_full_coverage(series_dir, msgs, rendered_ids)
     return "\n\n".join(sections) + ("\n" if sections else "")
+
+
+def render_text_series(series_dir, assume_root_version=None):
+    """One series dir as plain text: a header with the same counts the
+    HTML header shows, then every message in thread order."""
+    name, msgs, versions, version_data, fleet_cover_ids, rendered_ids = \
+        compute_version_sections(series_dir, assume_root_version)
+    return render_text_series_from_sections(
+        series_dir, name, msgs, versions, version_data, fleet_cover_ids, rendered_ids)
 
 
 def render_text_late_replies(msgs, versions, version_data, home_version, v):
@@ -2270,13 +2281,16 @@ def series_json(series_dir, assume_root_version=None):
     """The lkml-thread/1 entry for one series dir: every parsed message
     (all versions, late replies included, ordered by (seq, date, id) as
     parsed), the version/cover list, and the exact --text render for
-    this dir. render_text_series is the coverage authority
+    this dir. render_text_series_from_sections is the coverage authority
     (require_full_coverage / require_fleet_covers); a series --text
     cannot render raises here too, rather than embedding a block for a
-    page whose own HTML render already failed the same check."""
-    name, msgs, versions, version_data, _fleet_cover_ids, _rendered_ids = \
+    page whose own HTML render already failed the same check. Reuses
+    this one compute_version_sections call for both messages/versions
+    and text, rather than letting render_text_series repeat it."""
+    name, msgs, versions, version_data, fleet_cover_ids, rendered_ids = \
         compute_version_sections(series_dir, assume_root_version)
-    text = render_text_series(series_dir, assume_root_version)
+    text = render_text_series_from_sections(
+        series_dir, name, msgs, versions, version_data, fleet_cover_ids, rendered_ids)
     messages = sorted(msgs.values(), key=lambda m: (m["seq"], m["date"] or datetime.min, m["id"]))
     return {
         "name": name,
