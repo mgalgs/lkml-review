@@ -31,10 +31,15 @@
 #      ancestor of (or equal to) <boundary>; otherwise exit 2. The target
 #      is resolved the way `git rebase --autosquash` does: strip the
 #      prefix (repeatedly, for `fixup! fixup! X`); if the rest is a sha
-#      (prefix) naming a commit in the range, that is the target; else the
-#      rest is matched against the subjects of the range commits, an exact
-#      match first, else a subject that STARTS WITH the rest; when several
-#      match, the most recent wins. No match in the range is a violation:
+#      (prefix) naming an earlier commit, that is the target; else the
+#      rest is matched against the subjects of ALL earlier commits, not
+#      just the range, an exact match first, else a subject that STARTS
+#      WITH the rest; when several match, the EARLIEST wins (as git does,
+#      checked against `git rebase -i --autosquash`). Only then
+#      is the target tested for membership in <lo>..<hi>, so a fixup aimed
+#      at a frozen commit outside the slice is not captured by a slice
+#      commit whose subject merely starts with the same text. A target
+#      outside the range, or none, is a violation:
 #      `<short> <subject>: fixup target is not a commit in <lo>..<hi>`.
 #      A fixup that passes this way is exempt from check 5, because it
 #      folds into its target.
@@ -232,22 +237,24 @@ has_comment_only_trailer() {
         grep -Eiq '^Comment-only:[[:space:]]*[^[:space:]]'
 }
 
-# Slice commits for --allow-fixups-for, oldest first, with their subjects.
-slice_shas=()
-slice_subjects=()
+# Slice membership for --allow-fixups-for.
 declare -A in_slice=()
 if [[ -n "$allow_spec" ]]; then
-    while IFS= read -r -d '' rec; do
-        slice_shas+=("${rec%% *}")
-        slice_subjects+=("${rec#* }")
-        in_slice["${rec%% *}"]=1
-    done < <(git -C "$repo" log --reverse -z --format='%H %s' "$allow_lo_sha..$allow_hi_sha")
+    while IFS= read -r line; do
+        in_slice["$line"]=1
+    done < <(git -C "$repo" rev-list "$allow_lo_sha..$allow_hi_sha")
 fi
 
-# True when the fixup!/squash!/amend! subject in $1 targets a slice
-# commit, resolved the way `git rebase --autosquash` does.
+# True when the fixup!/squash!/amend! commit $1 targets a slice commit.
+# The target is resolved the way `git rebase --autosquash` does, against
+# every commit before the fixup, oldest first (git takes the earliest
+# match, exact before prefix), not just the slice: a fixup aimed at a
+# frozen commit outside the slice must not be captured by a slice commit
+# whose subject merely starts with the same text. Membership in the
+# slice is tested only after the target is resolved.
 fixup_targets_slice() {
-    local rest="$1" i full
+    local sha="$1" rest full target
+    rest="$(git -C "$repo" log -1 --format=%s "$sha")"
     while :; do
         case "$rest" in
             "fixup! "*) rest="${rest#fixup! }" ;;
@@ -259,16 +266,20 @@ fixup_targets_slice() {
     [[ -n "$rest" ]] || return 1
     if [[ "$rest" =~ ^[0-9a-fA-F]{4,40}$ ]] &&
         full="$(git -C "$repo" rev-parse --verify --quiet "${rest}^{commit}" 2>/dev/null)" &&
-        [[ -n "${in_slice[$full]:-}" ]]; then
-        return 0
+        git -C "$repo" merge-base --is-ancestor "$full" "$sha^"; then
+        [[ -n "${in_slice[$full]:-}" ]]
+        return
     fi
-    for (( i = ${#slice_shas[@]} - 1; i >= 0; i-- )); do
-        [[ "${slice_subjects[i]}" == "$rest" ]] && return 0
-    done
-    for (( i = ${#slice_shas[@]} - 1; i >= 0; i-- )); do
-        [[ "${slice_subjects[i]}" == "$rest"* ]] && return 0
-    done
-    return 1
+    target="$(git -C "$repo" log --reverse --format='%H %s' "$sha^" |
+        REST="$rest" awk '
+            BEGIN { rest = ENVIRON["REST"]; n = length(rest) }
+            {
+                i = index($0, " "); subj = substr($0, i + 1)
+                if (subj == rest) { print substr($0, 1, i - 1); found = 1; exit }
+                if (!pre && substr(subj, 1, n) == rest) pre = substr($0, 1, i - 1)
+            }
+            END { if (!found && pre) print pre }')"
+    [[ -n "$target" && -n "${in_slice[$target]:-}" ]]
 }
 
 for sha in "${range[@]}"; do
@@ -281,7 +292,7 @@ for sha in "${range[@]}"; do
     case "$subject" in
         "fixup! "*|"squash! "*|"amend! "*)
             if [[ -n "$allow_spec" ]]; then
-                if fixup_targets_slice "$subject"; then
+                if fixup_targets_slice "$sha"; then
                     continue
                 fi
                 flag "$sha" "fixup target is not a commit in $allow_spec"

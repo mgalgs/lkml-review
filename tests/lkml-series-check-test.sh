@@ -409,6 +409,35 @@ git -C "$r" tag -f frozen HEAD >/dev/null
 author_commit "fixup! stack: three"
 expect_allowed "a duplicate subject above hi does not confuse the slice match"
 
+# A subject outside the slice is an exact match and a slice commit merely
+# starts with it: git folds into the exact match, so the fixup is refused.
+fresh_repo allow-shadow
+printf 'const a = 1;\n' >> "$r/src/app.js"; stage
+commit "foo: add x"
+git -C "$r" tag lo
+printf 'const b = 2;\n' >> "$r/src/app.js"; stage
+commit "foo: add x helper"
+git -C "$r" tag hi
+git -C "$r" tag -f frozen hi >/dev/null
+author_commit "fixup! foo: add x"
+slice="lo..hi"
+expect_refused_target "exact match below the slice beats a longer slice prefix" "fixup! foo: add x"
+slice="s2..s4"
+
+fresh_repo allow-shadow-own
+printf 'const a = 1;\n' >> "$r/src/app.js"; stage
+commit "base: unrelated"
+git -C "$r" tag lo
+printf 'const b = 2;\n' >> "$r/src/app.js"; stage
+commit "series: y extended"
+git -C "$r" tag hi
+git -C "$r" tag -f frozen hi >/dev/null
+author_commit "series: y"
+author_commit "fixup! series: y"
+slice="lo..hi"
+expect_refused_target "the author's own exact match beats a slice prefix" "fixup! series: y"
+slice="s2..s4"
+
 stack_repo allow-partial
 author_commit "fixup! stack: thr"
 author_commit "fixup! stack: two"
