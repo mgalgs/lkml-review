@@ -40,6 +40,17 @@ message and diffstat stay and the diff goes (it lives in the series
 branch). The HTML path may be redesigned freely; --text must not
 change out from under the panel scripts.
 
+Every HTML render also embeds one <script type="application/json"
+id="lkml-thread"> block, just before </body>: schema "lkml-thread/1",
+a reproducible rendered_at stamp, and one entry per SERIES_DIR with its
+version/cover list, every parsed message (id, persona, role, model,
+date, tags, patch position, verbatim body), and that dir's exact
+--text render under "text". It lets an agent read the whole thread
+without parsing the HTML and without lkml-review installed. Like
+--text, this block is a stable interface: the HTML's visible layout
+and CSS may still be redesigned freely, but the block cannot change
+shape without bumping the schema id.
+
 --text --version N restricts the render to one version's own section
 (exactly what the whole-series --text render prints for that version,
 byte for byte) plus, only when any exist, a late-replies block:
@@ -93,6 +104,7 @@ without it.
 """
 import html
 import base64
+import json
 import mimetypes
 import os
 import re
@@ -2143,11 +2155,13 @@ def render_text_version_lines(series_dir, name, v, d, fleet_cover_ids):
     return lines
 
 
-def render_text_series(series_dir, assume_root_version=None):
-    """One series dir as plain text: a header with the same counts the
-    HTML header shows, then every message in thread order."""
-    name, msgs, versions, version_data, fleet_cover_ids, rendered_ids = \
-        compute_version_sections(series_dir, assume_root_version)
+def render_text_series_from_sections(series_dir, name, msgs, versions, version_data,
+                                      fleet_cover_ids, rendered_ids):
+    """The body of render_text_series, taking compute_version_sections'
+    output directly rather than calling it -- so a caller that already
+    has that tuple (series_json, building the same dir's JSON messages
+    from it) gets this dir's --text render without a second build()
+    pass over the mailbox."""
     sections = []
     # The whole-series results file, if any: a 'series-summary' block
     # at the very top, before the first version section, with the same
@@ -2170,6 +2184,15 @@ def render_text_series(series_dir, assume_root_version=None):
         sections.append("\n".join(render_text_version_lines(series_dir, name, v, version_data[v], fleet_cover_ids)))
     require_full_coverage(series_dir, msgs, rendered_ids)
     return "\n\n".join(sections) + ("\n" if sections else "")
+
+
+def render_text_series(series_dir, assume_root_version=None):
+    """One series dir as plain text: a header with the same counts the
+    HTML header shows, then every message in thread order."""
+    name, msgs, versions, version_data, fleet_cover_ids, rendered_ids = \
+        compute_version_sections(series_dir, assume_root_version)
+    return render_text_series_from_sections(
+        series_dir, name, msgs, versions, version_data, fleet_cover_ids, rendered_ids)
 
 
 def render_text_late_replies(msgs, versions, version_data, home_version, v):
@@ -2222,6 +2245,85 @@ def render_text_one_version(series_dir, version, assume_root_version=None):
     return "\n".join(lines) + "\n"
 
 
+def message_json(m, series_dir):
+    """One message of the lkml-thread/1 block. `from` and `role` use the
+    persona, not the display name that who_of escapes for HTML: the
+    consumer gets the raw persona slug (or the From: name part when no
+    persona is stamped) and the role_of-lookup keyed on that persona.
+    Body and subject are verbatim -- raw, not escaped, not rendered."""
+    date = m["date"]
+    if date is not None:
+        if date.tzinfo is None:
+            date = date.replace(tzinfo=timezone.utc)
+        date_s = date.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    else:
+        date_s = None
+    name_part = m["from"].split(" (AI persona)")[0].split(" <")[0]
+    from_field = m["persona"] if m["persona"] else name_part
+    return {
+        "id": m["id"],
+        "short_id": m["id"][:7],
+        "parent_id": m["parent"] or None,
+        "version": m["version"],
+        "from": from_field,
+        "role": persona_role(series_dir, m["persona"]),
+        "model": m["model"] or None,
+        "date": date_s,
+        "subject": m["subject"],
+        "tags": m["tags"],
+        "is_patch": is_patch(m),
+        "patch_index": patch_index(m) if is_patch(m) else None,
+        "body": m["body"],
+    }
+
+
+def series_json(series_dir, assume_root_version=None):
+    """The lkml-thread/1 entry for one series dir: every parsed message
+    (all versions, late replies included, ordered by (seq, date, id) as
+    parsed), the version/cover list, and the exact --text render for
+    this dir. render_text_series_from_sections is the coverage authority
+    (require_full_coverage / require_fleet_covers); a series --text
+    cannot render raises here too, rather than embedding a block for a
+    page whose own HTML render already failed the same check. Reuses
+    this one compute_version_sections call for both messages/versions
+    and text, rather than letting render_text_series repeat it."""
+    name, msgs, versions, version_data, fleet_cover_ids, rendered_ids = \
+        compute_version_sections(series_dir, assume_root_version)
+    text = render_text_series_from_sections(
+        series_dir, name, msgs, versions, version_data, fleet_cover_ids, rendered_ids)
+    messages = sorted(msgs.values(), key=lambda m: (m["seq"], m["date"] or datetime.min, m["id"]))
+    return {
+        "name": name,
+        "versions": [{"n": v, "cover_id": version_data[v]["cover"]["id"]} for v in versions],
+        "messages": [message_json(m, series_dir) for m in messages],
+        "text": text,
+    }
+
+
+def render_thread_json_block(series_list, rendered_at):
+    """The <script type="application/json" id="lkml-thread"> block: the
+    lkml-thread/1 schema, so an agent can read the thread without
+    parsing the HTML and without lkml-review installed. Serialized with
+    ensure_ascii=False (bodies are agent-written and may hold non-ASCII
+    prose) and then &, < and > are escaped to \\u0026/\\u003c/\\u003e in
+    the SERIALIZED string -- valid JSON string escapes that json.loads
+    decodes straight back to the original byte, and the only thing
+    standing between a body containing '</script>' and injected markup.
+    U+2028/U+2029 ride the same \\uXXXX mechanism, out of caution for
+    any consumer that treats this as JS source rather than JSON."""
+    obj = {"schema": "lkml-thread/1", "rendered_at": rendered_at, "series": series_list}
+    raw = json.dumps(obj, ensure_ascii=False)
+    # \u003c/\u003e/\u0026 are valid JSON string escapes (unlike the HTML
+    # entities &lt;/&gt;/&amp;, which are literal text inside a <script>
+    # element -- the browser never decodes them there, so an HTML-entity
+    # substitution would corrupt every body that uses one of these three
+    # bytes and break the round trip through json.loads). Escaping here
+    # is what keeps a body containing '</script>' from ever placing a
+    # literal '<' in the page; \u2028/\u2029 ride the same mechanism.
+    raw = (raw.replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
+              .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
+    return f'<script type="application/json" id="lkml-thread">{raw}</script>'
+
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
@@ -2270,16 +2372,21 @@ def main(argv=None):
         return
     series = []
     footers = []
+    json_series = []
     for d in args.series_dirs:
         name, sec, _id_map, footer = render_series(d, args.assume_root_version)
         series.append((name, sec))
         footers.append(footer)
+        json_series.append(series_json(d, args.assume_root_version))
     # SOURCE_DATE_EPOCH pins the stamp (UTC) so renders are reproducible.
     sde = os.environ.get("SOURCE_DATE_EPOCH")
     if sde:
         now = datetime.fromtimestamp(int(sde), timezone.utc).strftime("%Y-%m-%d %H:%M")
+        rendered_at = datetime.fromtimestamp(int(sde), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     else:
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        rendered_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    json_block = render_thread_json_block(json_series, rendered_at)
     if len(series) == 1:
         # The single series' own masthead IS the page masthead; a second
         # generic header would only duplicate it.
@@ -2306,6 +2413,7 @@ def main(argv=None):
 <body>
 {head}{''.join(s for _n, s in series)}
 <footer class="foot">{esc("  \u00b7  ".join(footers))} \u00b7 rendered {now}</footer>
+{json_block}
 </body>
 </html>
 """
