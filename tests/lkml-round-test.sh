@@ -1477,6 +1477,9 @@ round_src="$(cat "$round")"
 contains "reviewer brief marks nits as nits" "$round_src" "**Mark a nit as a nit.**"
 # shellcheck disable=SC2016
 contains "reviewer brief: nits alone never block" "$round_src" 'never tag `Changes-requested` or `NAK` for'
+# A seat that stays silent must not read as a seat that agreed.
+contains "reviewer brief asks for a closing verdict on the cover" "$round_src" "**Close with your verdict on the series.**"
+contains "reviewer brief: silence is not agreement" "$round_src" "Silence is not agreement"
 
 # The brief a seat actually receives (captured from the stub launch above).
 # shellcheck disable=SC2016  # backticks are literal brief text

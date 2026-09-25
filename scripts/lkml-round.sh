@@ -546,6 +546,13 @@ Rules, all load-bearing:
   everything else and mark each cut with `[...]`. Put your reply directly
   below each quote (interleaved, bottom-posted, never top-posted). Never
   quote a whole message or a whole patch.
+- **Close with your verdict on the series.** Your highest-numbered
+  `.msg` replies to the cover letter and carries your overall tag:
+  `Reviewed-by` or `Acked-by` when nothing you raised blocks the series,
+  otherwise `Changes-requested` or `NAK`. It is read as your verdict, so
+  it must be the last file you write. Silence is not agreement: a seat
+  with no positive tag cannot be counted as having signed off, and the
+  series cannot converge without it.
 - **Ask a question rather than guess** when you are not sure.
 - **Reviewers do not send patches or commits.** Comment and suggest; paste
   code inline in a reply when it helps, and the author decides whether to
