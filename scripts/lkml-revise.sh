@@ -348,11 +348,18 @@ fi
 # records the checkout as a branch, so reject a tag or remote ref before
 # spending a run that could never be posted.
 resume_pending=0
+resume_not_descendant=0
 if [[ -n "$previous_tip_sha" && "$checkout_sha" != "$previous_tip_sha" ]]; then
-    resume_pending=1
-    if ! git -C "$real_repo" show-ref --verify --quiet "refs/heads/$checkout_ref"; then
-        echo "Error: resumed checkout '$checkout_ref' must be launched from a local branch." >&2
-        exit 1
+    if ! git -C "$real_repo" merge-base --is-ancestor "$previous_tip_sha" "$checkout_sha"; then
+        # A normal re-roll can legitimately start from a new base. Only a
+        # no-commit run would mistake this for resumed work to post.
+        resume_not_descendant=1
+    else
+        resume_pending=1
+        if ! git -C "$real_repo" show-ref --verify --quiet "refs/heads/$checkout_ref"; then
+            echo "Error: resumed checkout '$checkout_ref' must be launched from a local branch." >&2
+            exit 1
+        fi
     fi
 fi
 
@@ -767,6 +774,9 @@ elif (( resume_pending )); then
         exit 1
     fi
     echo "fork-sandbox lkml-revise: the run made no commits of its own, but --checkout $checkout_ref (${checkout_sha:0:7}) carries unposted work above v$version's posted tip ${previous_tip_sha:0:7}; posting it as v$next_version." >&2
+elif (( resume_not_descendant )); then
+    echo "Error: v$version's posted tip $previous_tip_sha is not an ancestor of --checkout '$checkout_ref' ($checkout_sha); refusing to treat it as unposted work because a resumed checkout must retain all posted work." >&2
+    exit 1
 else
     echo "fork-sandbox lkml-revise: the author made no commits this round --" >&2
     echo "no v$next_version to post. This is the 'a version changes nothing'" >&2

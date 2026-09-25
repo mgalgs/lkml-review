@@ -881,6 +881,24 @@ contains "resume tag: names the ref and local-branch requirement" "$out_resume_t
     "resumed checkout 'resume-b-tag' must be launched from a local branch"
 if [[ ! -e "$run_prefix_dir/last-args" ]]; then ok "resume tag: stub was not invoked"; else no "resume tag: stub was not invoked" "$(cat "$run_prefix_dir/last-args")"; fi
 
+printf '\n-- resume: a checkout behind the posted tip is not posted as resumed work --\n'
+resume_setup_series widget-resume-behind --checkout resume-b
+write_stub 0 false 1 1
+out_resume_behind="$(PATH="$stub_bin:$PATH" "$revise" widget-resume-behind --project "$real_repo" \
+    --checkout resume-a --version 1 --base "$series_base_sha" 2>&1)"
+rc_resume_behind=$?
+if (( rc_resume_behind != 0 )); then ok "resume behind: exits non-zero"; else no "resume behind: exits non-zero" "exit 0: $out_resume_behind"; fi
+contains "resume behind: names the posted tip" "$out_resume_behind" "$resume_b_sha"
+contains "resume behind: names the checkout tip" "$out_resume_behind" "$resume_a_sha"
+contains "resume behind: explains that posted work must be retained" "$out_resume_behind" \
+    "a resumed checkout must retain all posted work"
+contains "resume behind: reply is still harvested" "$out_resume_behind" "harvested 1 repl"
+behind_tree="$("$mailbox" tree widget-resume-behind)"
+case "$behind_tree" in
+    *"=== v2 ==="*) no "resume behind: no v2 is posted" "$behind_tree" ;;
+    *) ok "resume behind: no v2 is posted" ;;
+esac
+
 printf '\n== --frozen-fixups: fixtures, a stack with a slice under review ==\n'
 # A four-commit stack on the series base; the frozen head is its tip and the
 # slice under review is the two commits above ff-lo (ff-s2, ff-s3). The
