@@ -15,9 +15,13 @@
 # message's own Date and From header values verbatim, then the body with every
 # line prefixed "> " (an empty line becomes a bare ">", an already-quoted line
 # becomes "> > ...", trailing blank lines are dropped). Trim the draft, answer
-# inline, and post it with `post --reply-to <id> --file <draft>` (or `-` for
-# stdin). The id resolves exactly as it does for `show`. A message with no
-# Date or no From header is refused, since this script always writes both.
+# inline, and post it with `post <series> --from <persona> --reply-to <id>
+# --file <draft>` (or `-` for stdin). The id resolves exactly as it does for
+# `show`. A message with no Date or no From header is refused, since this
+# script always writes both. The attribution line is the draft's first
+# unquoted line, so `post` never reads a verdict word (Question,
+# Changes-requested, NAK) that opens your answer as the opening verdict: end
+# the reply with the verdict line, or pass --tags.
 #
 # --diffstat <range> and --smoke <file>, on `init` only, each append a
 # section to the cover letter body AFTER whatever --cover already contains:

@@ -1038,5 +1038,16 @@ q_reply_raw="$("$mailbox" show quote-series "${q_reply:0:7}")"
 contains "quote round trip: the reply's In-Reply-To is the quoted message" "$q_reply_raw" "In-Reply-To: <$q_id@lkml.local>"
 contains "quote round trip: the reply body carries the quoted text" "$q_reply_raw" "> > already quoted"
 
+# The attribution line is the draft's first unquoted line, so a verdict
+# opening the answer is not read as a tag; one closing it is, and --tags
+# always works. Documented in the quote header paragraph.
+q_tags() { sed -n 's/^X-Tags: *//p' "$LKML_MAILBOX_ROOT/quote-series/cur/$1.msg"; }
+q_close="$("$mailbox" quote quote-series "${q_id:0:7}" | { cat; printf '\nSome context.\n\nQuestion: which part is wrong?\n'; } \
+    | "$mailbox" post quote-series --from author --reply-to "${q_id:0:7}" --file - 2>/dev/null)"
+check "quote draft: a verdict closing the answer is inferred into X-Tags" "Question" "$(q_tags "$q_close")"
+q_flag="$("$mailbox" quote quote-series "${q_id:0:7}" | { cat; printf '\nQuestion: which part is wrong?\n\nMore detail.\n'; } \
+    | "$mailbox" post quote-series --from author --reply-to "${q_id:0:7}" --tags Question --file - 2>/dev/null)"
+check "quote draft: --tags carries a verdict that opens the answer" "Question" "$(q_tags "$q_flag")"
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 (( fail == 0 )) || exit 1
