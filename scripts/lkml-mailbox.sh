@@ -6,8 +6,18 @@
 #        lkml-mailbox.sh tree <series> [--version <n>]
 #        lkml-mailbox.sh cover <series> [--version <n>]
 #        lkml-mailbox.sh show <series> <id>
+#        lkml-mailbox.sh quote <series> <id>
 #        lkml-mailbox.sh open <series> [--version <n>]
 #        lkml-mailbox.sh tally <series> --version <n>
+#
+# `quote` prints a reply draft for one message on stdout and writes nothing to
+# the mailbox: an attribution line, "On <Date>, <From> wrote:", built from the
+# message's own Date and From header values verbatim, then the body with every
+# line prefixed "> " (an empty line becomes a bare ">", an already-quoted line
+# becomes "> > ...", trailing blank lines are dropped). Trim the draft, answer
+# inline, and post it with `post --reply-to <id> --file <draft>` (or `-` for
+# stdin). The id resolves exactly as it does for `show`. A message with no
+# Date or no From header is refused, since this script always writes both.
 #
 # --diffstat <range> and --smoke <file>, on `init` only, each append a
 # section to the cover letter body AFTER whatever --cover already contains:
@@ -1145,6 +1155,37 @@ cmd_show() {
     cat -- "${LKML_FILE[$i]}"
 }
 
+cmd_quote() {
+    if (( $# != 2 )); then
+        echo "Usage: lkml-mailbox.sh quote <series> <id>" >&2
+        return 1
+    fi
+    local series="$1" id="$2"
+    lkml_load_series "$series"
+    LKML_ALLOW_FALLBACK=0
+    lkml_resolve_id "$id" || return 1
+    local i; i="$(lkml_index_of "$LKML_RESOLVED")"
+    local file="${LKML_FILE[$i]}" date_hdr from_hdr
+    date_hdr="$(lkml_header "$file" Date)"
+    from_hdr="$(lkml_header "$file" From)"
+    if [[ -z "$date_hdr" ]]; then
+        echo "Error: quote: message $LKML_RESOLVED has no Date header." >&2
+        return 1
+    fi
+    if [[ -z "$from_hdr" ]]; then
+        echo "Error: quote: message $LKML_RESOLVED has no From header." >&2
+        return 1
+    fi
+    printf 'On %s, %s wrote:\n' "$date_hdr" "$from_hdr"
+    lkml_body "$file" | awk '
+        { line[NR] = $0 }
+        END {
+            n = NR
+            while (n > 0 && line[n] ~ /^[[:space:]]*$/) n--
+            for (k = 1; k <= n; k++) print (line[k] == "" ? ">" : "> " line[k])
+        }'
+}
+
 cmd_open() {
     local series="${1:?Usage: lkml-mailbox.sh open <series>}"
     shift
@@ -1289,6 +1330,7 @@ case "${1-}" in
     tree) shift; cmd_tree "$@" ;;
     cover) shift; cmd_cover "$@" ;;
     show) shift; cmd_show "$@" ;;
+    quote) shift; cmd_quote "$@" ;;
     open) shift; cmd_open "$@" ;;
     tally) shift; cmd_tally "$@" ;;
     "")

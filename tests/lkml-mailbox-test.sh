@@ -968,5 +968,75 @@ headered_tree="$("$mailbox" tree headered-series | normalize_tree)"
 check "tree render is identical (modulo ids) whether or not the new headers are present" \
     "$plain_tree" "$headered_tree"
 
+printf '\n== quote ==\n'
+
+export LKML_MAILBOX_ROOT; LKML_MAILBOX_ROOT="$(new_root)"
+fixture_cover "$work/quote-cover.txt"
+fixture_patches "$work/quote-patches"
+q_cover="$("$mailbox" init quote-series --cover "$work/quote-cover.txt" --patches "$work/quote-patches" \
+    --from author --no-checkout 2>/dev/null)"
+printf 'first line\nsecond line\n\n> already quoted\nlast line\n\n\n' > quote-body.txt
+q_id="$("$mailbox" post quote-series --from core --reply-to "${q_cover:0:7}" --file quote-body.txt 2>/dev/null)"
+q_file="$LKML_MAILBOX_ROOT/quote-series/cur/$q_id.msg"
+q_count_before="$(find "$LKML_MAILBOX_ROOT/quote-series" -type f | wc -l | tr -d ' ')"
+
+q_out="$("$mailbox" quote quote-series "$q_id" 2>q-err.txt)"
+check "quote exits 0" "0" "$?"
+q_date="$(sed -n 's/^Date: //p' "$q_file")"
+q_from="$(sed -n 's/^From: //p' "$q_file")"
+check "quote: attribution line is On <Date>, <From> wrote:" \
+    "On $q_date, $q_from wrote:" "$(printf '%s\n' "$q_out" | sed -n 1p)"
+check "quote: body is prefixed, blank -> '>', quoted -> '> >', trailing blanks dropped" \
+    "$(printf '> first line\n> second line\n>\n> > already quoted\n> last line')" \
+    "$(printf '%s\n' "$q_out" | sed 1d)"
+check "quote: a blank body line is a bare '>' with no trailing space" "1" \
+    "$(printf '%s\n' "$q_out" | grep -c '^>$')"
+check "quote: no line has trailing whitespace" "0" \
+    "$(printf '%s\n' "$q_out" | grep -c '[[:space:]]$')"
+check "quote: output does not end in a bare '>' line" "> last line" "$(printf '%s\n' "$q_out" | tail -n1)"
+check "quote: no header line appears" "0" \
+    "$(printf '%s\n' "$q_out" | grep -Ec '^(Message-ID|In-Reply-To|References|Subject|X-[A-Za-z-]+):')"
+
+check "quote: a short id prefix resolves" "$q_out" "$("$mailbox" quote quote-series "${q_id:0:7}" 2>/dev/null)"
+
+q_bad_out="$("$mailbox" quote quote-series deadbeefdead 2>q-bad-err.txt)"
+q_bad_rc=$?
+if (( q_bad_rc != 0 )); then ok "quote: an unknown id exits nonzero"; else no "quote: an unknown id exits nonzero" "rc 0"; fi
+check "quote: an unknown id prints nothing on stdout" "" "$q_bad_out"
+check "quote: an unknown id fails with the same status as show" \
+    "$("$mailbox" show quote-series deadbeefdead >/dev/null 2>&1; echo $?)" "$q_bad_rc"
+
+if ! "$mailbox" quote quote-series >/dev/null 2>q-usage-err.txt; then ok "quote: a missing id exits nonzero"; else no "quote: a missing id exits nonzero" "rc 0"; fi
+contains "quote: a missing id prints the usage error" "$(<q-usage-err.txt)" "Usage: lkml-mailbox.sh quote <series> <id>"
+q_extra_out="$("$mailbox" quote quote-series "$q_id" extra 2>q-usage-err.txt)"
+q_extra_rc=$?
+if (( q_extra_rc != 0 )); then ok "quote: an extra argument exits nonzero"; else no "quote: an extra argument exits nonzero" "rc 0"; fi
+check "quote: an extra argument prints nothing on stdout" "" "$q_extra_out"
+contains "quote: an extra argument prints the usage error" "$(<q-usage-err.txt)" "Usage: lkml-mailbox.sh quote <series> <id>"
+
+# A stored message missing a header is a damaged store: refuse, and print
+# nothing rather than a guessed attribution line.
+for hdr in From Date; do
+    cp -- "$q_file" "$work/quote-orig.msg"
+    grep -v "^$hdr: " "$work/quote-orig.msg" > "$q_file"
+    q_dmg_out="$("$mailbox" quote quote-series "$q_id" 2>q-dmg-err.txt)"
+    q_dmg_rc=$?
+    if (( q_dmg_rc != 0 )); then ok "quote: a message missing $hdr is refused"; else no "quote: a message missing $hdr is refused" "rc 0"; fi
+    check "quote: missing $hdr prints nothing on stdout" "" "$q_dmg_out"
+    contains "quote: missing $hdr error names the header" "$(<q-dmg-err.txt)" "no $hdr header"
+    contains "quote: missing $hdr error names the id" "$(<q-dmg-err.txt)" "$q_id"
+    cp -- "$work/quote-orig.msg" "$q_file"
+done
+
+check "quote writes nothing to the mailbox" "$q_count_before" \
+    "$(find "$LKML_MAILBOX_ROOT/quote-series" -type f | wc -l | tr -d ' ')"
+
+# quote -> edit -> post --file - : the draft posts as a reply to the quoted message.
+q_reply="$("$mailbox" quote quote-series "${q_id:0:7}" | { cat; printf '\nAnswer inline.\n'; } \
+    | "$mailbox" post quote-series --from author --reply-to "${q_id:0:7}" --file - 2>/dev/null)"
+q_reply_raw="$("$mailbox" show quote-series "${q_reply:0:7}")"
+contains "quote round trip: the reply's In-Reply-To is the quoted message" "$q_reply_raw" "In-Reply-To: <$q_id@lkml.local>"
+contains "quote round trip: the reply body carries the quoted text" "$q_reply_raw" "> > already quoted"
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 (( fail == 0 )) || exit 1
