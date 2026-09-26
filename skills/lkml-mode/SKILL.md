@@ -34,7 +34,8 @@ scheduling, not reading, and the reviewers' job is reading.
 
 - **`lkml-mailbox.sh`** — the message store. `init` posts a cover letter
   and a `git format-patch` set as v1 (or the next version); `post` replies
-  in a thread; `tree`/`cover`/`show`/`open`/`tally` read it back. `init`
+  in a thread (`quote` prints the quoted draft to answer inline);
+  `tree`/`cover`/`show`/`open`/`tally` read it back. `init`
   and `post` also take `--attach <file>` (repeatable) to carry a file
   (e.g. a screenshot a reviewer persona should look at) alongside a
   message — it lands under `<series>/attachments/`, gets an
