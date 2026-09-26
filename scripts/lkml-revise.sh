@@ -6,6 +6,7 @@
 #            [--personas-dir <dir>] [--author <persona>] [--model-override <harness/model>]
 #            [--timeout <seconds>] [--services-trust-ref <ref>]
 #            [--upstream-head <ref>] [--frozen-fixups <lo>..<hi>]
+#            [--adopt-run <run-dir>]
 #
 # <project>   the repo fork-sandbox.sh clones.
 # --checkout  the ref to revise from -- normally the branch vN was posted
@@ -81,8 +82,24 @@
 #             the deadline bounds is only THIS SCRIPT'S WAIT: the run is a
 #             detached session that keeps going, commits, and fetches its
 #             branch back regardless, so a timeout costs the harvest and
-#             the changelog post, not the work. Re-harvest by hand from the
-#             run dir named in the error.
+#             the changelog post, not the work. Re-harvest with --adopt-run
+#             on the run dir named in the error.
+# --adopt-run <run-dir> the author run already exists (an earlier invocation
+#             launched it and its wait timed out): do not launch one, wait
+#             for this one and harvest it exactly as if this invocation had
+#             launched it. Every other argument stays required and means
+#             what it meant on the original command line -- pass the same
+#             one, plus this. Everything that runs before the launch still
+#             runs (the series, ledger, persona and frozen-boundary checks),
+#             so a command line that launching would refuse is refused here
+#             too; only the launch-only work is skipped: the thread dir, the
+#             handoff, the fork-sandbox.sh call and the cost-ledger row (the
+#             original launch already recorded this run, and a second row
+#             would count its cost twice). The wait is still bounded by
+#             --timeout, so adopting a run that is still going just waits
+#             for it. <run-dir> must be an existing directory holding the
+#             run.env every fork-sandbox run dir has; anything else exits 2
+#             and posts nothing.
 #
 # Unlike lkml-round.sh, this run is allowed to commit -- that is the whole
 # point, and only the author writes patches: reviewers comment. The handoff
@@ -169,6 +186,7 @@ model_override=""
 timeout=3600
 services_trust_ref=""
 frozen_fixups_spec=""
+adopt_run=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -183,6 +201,7 @@ while [[ $# -gt 0 ]]; do
         --timeout) timeout="${2:?--timeout requires seconds}"; shift 2 ;;
         --services-trust-ref) services_trust_ref="${2:?--services-trust-ref requires a ref}"; shift 2 ;;
         --frozen-fixups) frozen_fixups_spec="${2:?--frozen-fixups requires <lo>..<hi>}"; shift 2 ;;
+        --adopt-run) adopt_run="${2:?--adopt-run requires a run directory}"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Error: unknown option '$1'." >&2; exit 1 ;;
     esac
@@ -196,6 +215,13 @@ trust_args=()
 [[ -n "$version" ]] || { echo "Error: --version is required (the version being revised)." >&2; exit 1; }
 [[ "$version" =~ ^[0-9]+$ ]] || { echo "Error: --version must be a plain integer." >&2; exit 1; }
 [[ -n "$base_ref" ]] || { echo "Error: --base is required (the series' original base, the same ref v1 was formatted against)." >&2; exit 1; }
+if [[ -n "$adopt_run" ]]; then
+    if [[ ! -d "$adopt_run" || ! -f "$adopt_run/run.env" ]]; then
+        echo "Error: --adopt-run '$adopt_run' is not a fork-sandbox run directory (no run.env there)." >&2
+        exit 2
+    fi
+    adopt_run="$(cd -- "$adopt_run" && pwd)"
+fi
 command -v fork-sandbox.sh >/dev/null 2>&1 || { echo "Error: fork-sandbox.sh not found on PATH." >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "Error: jq not found on PATH." >&2; exit 1; }
 
@@ -437,82 +463,85 @@ if [[ -n "$frozen_fixups_spec" ]]; then
     format_base_sha="$frozen_boundary_sha"
 fi
 
-mkdir -p -- /var/tmp/claude-scratch
-thread_dir="$(mktemp -d /var/tmp/claude-scratch/lkml-revise-thread-XXXXXX)" || {
-    echo "Error: mktemp failed for the thread directory of series '$series'." >&2
-    exit 1
-}
-render_err="$(python3 "$script_dir/lkml-render.py" --text "$ledger_root/$series" 2>&1 >"$thread_dir/thread.txt")"
-render_rc=$?
-if (( render_rc != 0 )) || [[ ! -s "$thread_dir/thread.txt" ]]; then
-    echo "Error: could not render the thread bodies for series '$series' (${render_err:-empty render}); refusing to launch an author who cannot read the review." >&2
-    rm -rf -- "$thread_dir"
-    exit 1
-fi
+# Launch-only work: an adopted run already has its thread dir, handoff,
+# launch and cost-ledger row from the invocation that started it.
+if [[ -z "$adopt_run" ]]; then
+    mkdir -p -- /var/tmp/claude-scratch
+    thread_dir="$(mktemp -d /var/tmp/claude-scratch/lkml-revise-thread-XXXXXX)" || {
+        echo "Error: mktemp failed for the thread directory of series '$series'." >&2
+        exit 1
+    }
+    render_err="$(python3 "$script_dir/lkml-render.py" --text "$ledger_root/$series" 2>&1 >"$thread_dir/thread.txt")"
+    render_rc=$?
+    if (( render_rc != 0 )) || [[ ! -s "$thread_dir/thread.txt" ]]; then
+        echo "Error: could not render the thread bodies for series '$series' (${render_err:-empty render}); refusing to launch an author who cannot read the review." >&2
+        rm -rf -- "$thread_dir"
+        exit 1
+    fi
 
-mkdir -p -- /var/tmp/claude-scratch
-handoff_file="$(mktemp /var/tmp/claude-scratch/lkml-revise-XXXXXX.md)" || {
-    echo "Error: mktemp failed for the handoff file." >&2
-    exit 1
-}
-# The two places the handoff's "no fixup!" rule shows up, empty of any
-# --frozen-fixups wording unless the flag is set.
-no_fixup_clause='and no fixup!, squash! or amend! commit.'
-autosquash_note=''
-cover_letter_note='If you end this run having made no commits at all, still say so
+    mkdir -p -- /var/tmp/claude-scratch
+    handoff_file="$(mktemp /var/tmp/claude-scratch/lkml-revise-XXXXXX.md)" || {
+        echo "Error: mktemp failed for the handoff file." >&2
+        exit 1
+    }
+    # The two places the handoff's "no fixup!" rule shows up, empty of any
+    # --frozen-fixups wording unless the flag is set.
+    no_fixup_clause='and no fixup!, squash! or amend! commit.'
+    autosquash_note=''
+    cover_letter_note='If you end this run having made no commits at all, still say so
 plainly in your final report and do not fabricate a cover letter for a
 version that changes nothing.'
-if [[ -n "$frozen_fixups_spec" ]]; then
-    no_fixup_clause="and no fixup!, squash! or amend! commit -- except that the ONLY
+    if [[ -n "$frozen_fixups_spec" ]]; then
+        no_fixup_clause="and no fixup!, squash! or amend! commit -- except that the ONLY
   such commits allowed are the ones aimed at $slice_lo_sha..$slice_hi_sha,
   the slice under review (see \"Which commits are yours\"). A comment-only
   fixup aimed at that slice is fine too."
-    autosquash_note="
+        autosquash_note="
   Run from the frozen boundary, that leaves the fixups aimed at the slice
   in place, as intended; it folds only your own new commits among
   themselves."
-fi
-if (( resume_pending )); then
-    resume_commit_count="$(git -C "$real_repo" rev-list --count "$previous_tip_sha..$checkout_sha")"
-    cover_letter_note="The checkout already carries $resume_commit_count unposted commit(s) above
+    fi
+    if (( resume_pending )); then
+        resume_commit_count="$(git -C "$real_repo" rev-list --count "$previous_tip_sha..$checkout_sha")"
+        cover_letter_note="The checkout already carries $resume_commit_count unposted commit(s) above
 v$version's posted tip ${previous_tip_sha:0:7}, through ${checkout_sha:0:7}.
 This unposted work IS v$next_version whether or not this run adds commits,
 so you must write its cover letter covering the whole unposted work, not
 only what this run adds."
-fi
-{
-    cat -- "$persona_file"
-    printf '\n---\n\n# You are revising %s, currently at v%s\n\n%s\n' "$series" "$version" "$cover_text"
-    printf '\n## The full thread tree\n\n%s\n' "$tree_text"
-    printf "\n## The rest of the thread\n\n"
-    printf 'The tree above is one line per message: id, persona, harness/model,\n'
-    printf 'tags and subject. Every message in the thread, bodies included, in\n'
-    printf 'thread order and across every version, is at /thread/thread.txt\n'
-    printf '(read-only). [PATCH] bodies there keep the commit message and the\n'
-    printf 'diffstat, their diff is cut, because the patches are applied in\n'
-    printf 'this clone. Read the section headed \"%s v%s\" IN FULL before\n' "$series" "$version"
-    printf 'acting -- that is the review you must answer -- and earlier\n'
-    printf 'sections too, wherever an open item below refers back to one. When\n'
-    printf 'replying, use the message id from the tree above (or the id on the\n'
-    printf 'message'"'"'s header line in the thread file).\n'
-    printf '\n## Open items -- these are what review has not resolved yet\n\n%s\n' "$open_text"
-    printf '\n## Which commits are yours\n\n'
-    if [[ "$frozen_boundary_kind" == "upstream" ]]; then
-        printf 'Commits up to and including %s are frozen: never rewrite them. Everything above it is your series; re-roll it.\n' "$frozen_boundary_sha"
-        printf '(The frozen commits are published and belong to a human.)\n'
-        if [[ -n "$frozen_fixups_spec" ]]; then
-            printf '\nThe commits %s..%s (exclusive of the first, inclusive of the second) are the slice under review.\n' "$slice_lo_sha" "$slice_hi_sha"
-            cat <<SLICE
+    fi
+    {
+        cat -- "$persona_file"
+        printf '\n---\n\n# You are revising %s, currently at v%s\n\n%s\n' "$series" "$version" "$cover_text"
+        printf '\n## The full thread tree\n\n%s\n' "$tree_text"
+        printf "\n## The rest of the thread\n\n"
+        printf 'The tree above is one line per message: id, persona, harness/model,\n'
+        printf 'tags and subject. Every message in the thread, bodies included, in\n'
+        printf 'thread order and across every version, is at /thread/thread.txt\n'
+        printf '(read-only). [PATCH] bodies there keep the commit message and the\n'
+        printf 'diffstat, their diff is cut, because the patches are applied in\n'
+        printf 'this clone. Read the section headed \"%s v%s\" IN FULL before\n' "$series" "$version"
+        printf 'acting -- that is the review you must answer -- and earlier\n'
+        printf 'sections too, wherever an open item below refers back to one. When\n'
+        printf 'replying, use the message id from the tree above (or the id on the\n'
+        printf 'message'"'"'s header line in the thread file).\n'
+        printf '\n## Open items -- these are what review has not resolved yet\n\n%s\n' "$open_text"
+        printf '\n## Which commits are yours\n\n'
+        if [[ "$frozen_boundary_kind" == "upstream" ]]; then
+            printf 'Commits up to and including %s are frozen: never rewrite them. Everything above it is your series; re-roll it.\n' "$frozen_boundary_sha"
+            printf '(The frozen commits are published and belong to a human.)\n'
+            if [[ -n "$frozen_fixups_spec" ]]; then
+                printf '\nThe commits %s..%s (exclusive of the first, inclusive of the second) are the slice under review.\n' "$slice_lo_sha" "$slice_hi_sha"
+                cat <<SLICE
 A fix to one of them is made as \`git commit --fixup=<sha>\` (or \`--squash=<sha>\`, or
 \`git commit --fixup=amend:<sha>\` when the commit message must change) on top of the frozen
 head, and is deliberately LEFT unfolded: a human folds it later. A fix to any OTHER
 frozen commit is NOT made -- answer that review point on-thread instead.
 SLICE
+            fi
+        else
+            printf 'Nothing is frozen below your series. Everything above the series base %s is yours; re-roll it.\n' "$frozen_boundary_sha"
         fi
-    else
-        printf 'Nothing is frozen below your series. Everything above the series base %s is yours; re-roll it.\n' "$frozen_boundary_sha"
-    fi
-    cat <<RULES
+        cat <<RULES
 
 ## What to do
 
@@ -574,65 +603,69 @@ write it as its own file under \`.git/lkml-out/\`, named \`1.msg\`, \`2.msg\`, .
 tree above (the full id or any unambiguous prefix). Ask a question rather
 than guess when a comment itself is unclear.
 RULES
-} > "$handoff_file"
+    } > "$handoff_file"
 
-# Timestamped like lkml-round.sh's own per-round branches, and for the same
-# reason: fork-sandbox.sh refuses to launch onto a branch that already
-# exists, so a deterministic name would permanently wedge this series the
-# first time a run fetches its branch and then this script refuses
-# downstream (no commits, or commits with no cover letter) -- the next
-# attempt at vN+1 would collide with the failed one's branch until an
-# operator deletes it by hand.
-branch="lkml/${series}-v${next_version}-$(date +%s)"
-task_meta="$(jq -nc --arg series "$series" --arg persona "$author_persona" \
-    '{kind:"implement", tags:["lkml", $series, $persona]}')"
+    # Timestamped like lkml-round.sh's own per-round branches, and for the same
+    # reason: fork-sandbox.sh refuses to launch onto a branch that already
+    # exists, so a deterministic name would permanently wedge this series the
+    # first time a run fetches its branch and then this script refuses
+    # downstream (no commits, or commits with no cover letter) -- the next
+    # attempt at vN+1 would collide with the failed one's branch until an
+    # operator deletes it by hand.
+    branch="lkml/${series}-v${next_version}-$(date +%s)"
+    task_meta="$(jq -nc --arg series "$series" --arg persona "$author_persona" \
+        '{kind:"implement", tags:["lkml", $series, $persona]}')"
 
-harness_spec="$harness"
-[[ -n "$model" ]] && harness_spec="$harness/$model"
-# A sealed seat is spelled out with an explicit --network sealed rather
-# than the pi-local alias -- fork-sandbox.sh still honors the alias, but
-# this is the first-party call site and should read like the modern
-# spelling. By this point harness is never literally "pi-local" (expanded
-# above), so harness_spec already reads "pi" with no rewrite needed.
-network_args=()
-[[ "$network" == "sealed" ]] && network_args=(--network sealed)
-# harness_announce is display-only, never passed to fork-sandbox.sh: the
-# argv split above moves "sealed" into network_args, but the launch line
-# should still tell the operator whether this seat is sealed or networked.
-harness_announce="$harness_spec"
-(( ${#network_args[@]} )) && harness_announce="$harness_spec, sealed"
+    harness_spec="$harness"
+    [[ -n "$model" ]] && harness_spec="$harness/$model"
+    # A sealed seat is spelled out with an explicit --network sealed rather
+    # than the pi-local alias -- fork-sandbox.sh still honors the alias, but
+    # this is the first-party call site and should read like the modern
+    # spelling. By this point harness is never literally "pi-local" (expanded
+    # above), so harness_spec already reads "pi" with no rewrite needed.
+    network_args=()
+    [[ "$network" == "sealed" ]] && network_args=(--network sealed)
+    # harness_announce is display-only, never passed to fork-sandbox.sh: the
+    # argv split above moves "sealed" into network_args, but the launch line
+    # should still tell the operator whether this seat is sealed or networked.
+    harness_announce="$harness_spec"
+    (( ${#network_args[@]} )) && harness_announce="$harness_spec, sealed"
 
-# Same rule as lkml-round.sh: the `thinking:` seat fact only means
-# something on a harness that starts pi; fork-sandbox.sh refuses
-# --pi-args elsewhere, so it is dropped for claude and codex -- and so
-# is its launch-line mention, which would announce a no-op.
-pi_args=()
-thinking_note=""
-if [[ -n "$thinking" && "$harness" == "pi" ]]; then
-    pi_args=(--pi-args "--thinking $thinking")
-    thinking_note=", thinking $thinking"
+    # Same rule as lkml-round.sh: the `thinking:` seat fact only means
+    # something on a harness that starts pi; fork-sandbox.sh refuses
+    # --pi-args elsewhere, so it is dropped for claude and codex -- and so
+    # is its launch-line mention, which would announce a no-op.
+    pi_args=()
+    thinking_note=""
+    if [[ -n "$thinking" && "$harness" == "pi" ]]; then
+        pi_args=(--pi-args "--thinking $thinking")
+        thinking_note=", thinking $thinking"
+    fi
+
+    echo "fork-sandbox lkml-revise: launching $author_persona ($harness_announce$thinking_note) for v$next_version, thread dir $thread_dir..." >&2
+    launch_out="$(fork-sandbox.sh --harness "$harness_spec" \
+        "${network_args[@]}" --checkout "$checkout_ref" \
+        "${pi_args[@]}" "${trust_args[@]}" \
+        --thread-dir "$thread_dir" \
+        --branch "$branch" --task-meta "$task_meta" "$project" "$handoff_file" 2>&1)"
+    rc=$?
+    run_dir="$(printf '%s\n' "$launch_out" | sed -n 's/^  run dir:  *//p' | head -n1)"
+    if (( rc != 0 )) || [[ -z "$run_dir" ]]; then
+        echo "Error: launch failed:" >&2
+        printf '%s\n' "$launch_out" >&2
+        exit 1
+    fi
+    echo "fork-sandbox lkml-revise: $run_dir" >&2
+
+    # Same cost ledger lkml-round.sh appends to -- see its comment. ledger_root
+    # was already resolved above, for the thread-body render.
+    mkdir -p -- "$ledger_root/$series"
+    jq -nc --arg persona "$author_persona" --arg run_dir "$run_dir" --arg kind implement \
+        '{persona:$persona, run_dir:$run_dir, kind:$kind}' >> "$ledger_root/$series/runs.jsonl"
+else
+    run_dir="$adopt_run"
+    echo "fork-sandbox lkml-revise: adopting the existing run $run_dir; not launching." >&2
 fi
-
-echo "fork-sandbox lkml-revise: launching $author_persona ($harness_announce$thinking_note) for v$next_version, thread dir $thread_dir..." >&2
-launch_out="$(fork-sandbox.sh --harness "$harness_spec" \
-    "${network_args[@]}" --checkout "$checkout_ref" \
-    "${pi_args[@]}" "${trust_args[@]}" \
-    --thread-dir "$thread_dir" \
-    --branch "$branch" --task-meta "$task_meta" "$project" "$handoff_file" 2>&1)"
-rc=$?
-run_dir="$(printf '%s\n' "$launch_out" | sed -n 's/^  run dir:  *//p' | head -n1)"
-if (( rc != 0 )) || [[ -z "$run_dir" ]]; then
-    echo "Error: launch failed:" >&2
-    printf '%s\n' "$launch_out" >&2
-    exit 1
-fi
-echo "fork-sandbox lkml-revise: $run_dir" >&2
-
-# Same cost ledger lkml-round.sh appends to -- see its comment. ledger_root
-# was already resolved above, for the thread-body render.
-mkdir -p -- "$ledger_root/$series"
-jq -nc --arg persona "$author_persona" --arg run_dir "$run_dir" --arg kind implement \
-    '{persona:$persona, run_dir:$run_dir, kind:$kind}' >> "$ledger_root/$series/runs.jsonl"
 
 echo "fork-sandbox lkml-revise: waiting up to ${timeout}s..." >&2
 waited=0
@@ -647,7 +680,7 @@ while [[ ! -f "$run_dir/summary.json" ]]; do
         echo "The run is probably still going -- this wait is the only thing" >&2
         echo "that ended. It will still commit and fetch its branch back." >&2
         echo "Watch it:      fork-sandbox-status.sh --follow $run_dir" >&2
-        echo "Then harvest:  re-run this command once summary.json exists," >&2
+        echo "Then harvest:  re-run the same command with --adopt-run $run_dir" >&2
         echo "or post the changelog by hand from the branch it fetched." >&2
         echo "An author round on a real revision wants --timeout 10800." >&2
         exit 1

@@ -49,6 +49,12 @@
 #     an unchanged checkout, or no ledger sha to compare against, still
 #     stops; a resumed round with no cover letter is refused exactly like
 #     an ordinary one.
+#   - --adopt-run <run-dir>: harvests and posts a run that already exists,
+#     like the normal path on the same run, without calling fork-sandbox.sh,
+#     creating a thread dir or handoff, or adding a runs.jsonl row; a
+#     missing run dir or one with no run.env exits 2 posting nothing; the
+#     pre-launch validation still applies; the timeout hint names the flag
+#     and the real run dir, and following it posts the version.
 
 set -uo pipefail
 
@@ -1046,6 +1052,148 @@ case "$h_noff" in
 esac
 contains "no flag: the frozen commits are still just frozen" "$h_noff" \
     "Commits up to and including $ff_head_sha are frozen: never rewrite them. Everything above it is your series; re-roll it."
+
+printf '\n== --adopt-run: harvest a run that outlived the wait ==\n'
+# A fresh series per scenario, each with one Changes-requested reply to
+# answer, so posting v2 is possible every time.
+mk_adopt_series() {
+    local name="$1" pid
+    "$mailbox" init "$name" --cover cover.txt --patches patches --from author \
+        --harness claude --model opus --no-checkout >/dev/null 2>&1
+    pid="$("$mailbox" tree "$name" | awk 'NR==3{print $1}')"
+    "$mailbox" post "$name" --from core --reply-to "$pid" --file q.txt \
+        --tags Changes-requested --harness claude --model opus 2>/dev/null
+}
+# A finished run dir, shaped like the one fork-sandbox.sh leaves behind:
+# run.env, summary.json, and a clone whose .git/lkml-out holds the replies
+# and the new cover letter.
+mk_finished_run() {
+    local rd="$1" reply_to="$2" cl="$1/clone/proj"
+    mkdir -p "$cl/.git/lkml-out"
+    printf 'RUN_ID=fake\n' > "$rd/run.env"
+    printf 'Add the return-value fix\n\nv2: fixed frob per core.\n\n## Testing\n\nsh run-tests.sh: 4 passed, 0 failed\n' \
+        > "$cl/.git/lkml-out/cover-letter.md"
+    printf 'In-Reply-To: %s\nX-Tags: Reviewed-by\n\nFixed, see v2.\n' "$reply_to" > "$cl/.git/lkml-out/1.msg"
+    jq -n --arg clone_dir "$cl" '{clone_dir: $clone_dir, branch: "v2-branch", commits: 1, fetched: true}' \
+        > "$rd/summary.json"
+}
+# fork-sandbox.sh that fails loudly and records that it was called at all.
+adopt_stub_bin="$(mktemp -d)"; tmpdirs+=("$adopt_stub_bin")
+adopt_calls="$adopt_stub_bin/calls"
+cat > "$adopt_stub_bin/fork-sandbox.sh" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$adopt_calls"
+echo "stub fork-sandbox.sh must not be called" >&2
+exit 97
+STUB
+chmod +x "$adopt_stub_bin/fork-sandbox.sh"
+# Same normalisation for both trees: drop the ids, keep shape and subjects.
+tree_shape() { "$mailbox" tree "$1" | sed -E 's/\b[0-9a-f]{7,}\b/ID/g'; }
+
+# Reference: the normal path, on the same fake run.
+r_ref="$(mk_adopt_series widget-ref)"
+r1_saved="$r1"; r1="$r_ref"
+write_stub 1 true 1 1
+r1="$r1_saved"
+PATH="$stub_bin:$PATH" "$revise" widget-ref --project "$real_repo" \
+    --checkout somebranch --version 1 --base "$series_base_sha" >/dev/null 2>&1
+check "adopt reference: the normal path posts v2" "0" "$?"
+
+r_ad="$(mk_adopt_series widget-adopt)"
+adopt_run_dir="$(mktemp -d)"; tmpdirs+=("$adopt_run_dir")
+mk_finished_run "$adopt_run_dir" "$r_ad"
+printf '{"persona":"author","run_dir":"%s","kind":"implement"}\n' "$adopt_run_dir" \
+    > "$LKML_MAILBOX_ROOT/widget-adopt/runs.jsonl"
+scratch_before="$(find /var/tmp/claude-scratch -maxdepth 1 \( -name 'lkml-revise-thread-*' -o -name 'lkml-revise-??????.md' \) 2>/dev/null | sort)"
+# Relative path on purpose: it must be resolved to an absolute one.
+out_ad="$(cd "$(dirname "$adopt_run_dir")" && PATH="$adopt_stub_bin:$PATH" "$revise" widget-adopt \
+    --project "$real_repo" --checkout somebranch --version 1 --base "$series_base_sha" \
+    --adopt-run "./$(basename "$adopt_run_dir")" 2>&1)"
+rc_ad=$?
+check "adopt: exits 0 on a finished run" "0" "$rc_ad"
+contains "adopt: says which run it adopted, by absolute path" "$out_ad" "adopting the existing run $adopt_run_dir"
+contains "adopt: harvests the run's reply" "$out_ad" "harvested 1 repl"
+contains "adopt: posts v2" "$out_ad" "posted v2"
+check "adopt: the thread has the same shape as the normal path's on the same run" \
+    "$(tree_shape widget-ref)" "$(tree_shape widget-adopt)"
+contains "adopt: the run's reply landed as Reviewed-by" "$("$mailbox" tree widget-adopt)" "Reviewed-by"
+contains "adopt: v2 is the whole series, as on the normal path" "$("$mailbox" tree widget-adopt)" "PATCH v2 2/2"
+if [[ ! -e "$adopt_calls" ]]; then ok "adopt: fork-sandbox.sh was never invoked"; else no "adopt: fork-sandbox.sh was never invoked" "$(cat "$adopt_calls")"; fi
+check "adopt: no row added to runs.jsonl" "1" "$(wc -l < "$LKML_MAILBOX_ROOT/widget-adopt/runs.jsonl" | tr -d '[:space:]')"
+scratch_after="$(find /var/tmp/claude-scratch -maxdepth 1 \( -name 'lkml-revise-thread-*' -o -name 'lkml-revise-??????.md' \) 2>/dev/null | sort)"
+check "adopt: no thread dir or handoff file was created" "$scratch_before" "$scratch_after"
+
+printf '\n== --adopt-run: a bad run dir is refused (exit 2), nothing posted ==\n'
+r_bad="$(mk_adopt_series widget-adopt-bad)"
+bad_msgs() { find "$LKML_MAILBOX_ROOT/widget-adopt-bad/cur" -name '*.msg' | wc -l | tr -d '[:space:]'; }
+msgs_before="$(bad_msgs)"
+missing_run="$adopt_run_dir/does-not-exist"
+out_bad="$(PATH="$adopt_stub_bin:$PATH" "$revise" widget-adopt-bad --project "$real_repo" \
+    --checkout somebranch --version 1 --base "$series_base_sha" --adopt-run "$missing_run" 2>&1)"
+check "nonexistent run dir: exits 2" "2" "$?"
+contains "nonexistent run dir: the error names the path" "$out_bad" "$missing_run"
+check "nonexistent run dir: nothing posted" "$msgs_before" "$(bad_msgs)"
+no_env_run="$(mktemp -d)"; tmpdirs+=("$no_env_run")
+mk_finished_run "$no_env_run" "$r_bad"
+rm -f -- "$no_env_run/run.env"
+out_bad="$(PATH="$adopt_stub_bin:$PATH" "$revise" widget-adopt-bad --project "$real_repo" \
+    --checkout somebranch --version 1 --base "$series_base_sha" --adopt-run "$no_env_run" 2>&1)"
+check "run dir without run.env: exits 2" "2" "$?"
+contains "run dir without run.env: the error names the path" "$out_bad" "$no_env_run"
+check "run dir without run.env: nothing posted" "$msgs_before" "$(bad_msgs)"
+out_bad="$(PATH="$adopt_stub_bin:$PATH" "$revise" widget-adopt-bad --project "$real_repo" \
+    --checkout somebranch --version 1 --base "$series_base_sha" --adopt-run "$adopt_run_dir/summary.json" 2>&1)"
+check "a file instead of a directory: exits 2" "2" "$?"
+if [[ ! -e "$adopt_calls" ]]; then ok "refused adoption never invoked fork-sandbox.sh"; else no "refused adoption never invoked fork-sandbox.sh"; fi
+
+printf '\n== --adopt-run keeps the pre-launch validation ==\n'
+out_bad="$(PATH="$adopt_stub_bin:$PATH" "$revise" widget-adopt-bad --project "$real_repo" \
+    --checkout nosuchcheckoutref --version 1 --base "$series_base_sha" --adopt-run "$adopt_run_dir" 2>&1)"
+rc_bad=$?
+if (( rc_bad != 0 )); then ok "adopt: an unresolvable --checkout is still refused"; else no "adopt: an unresolvable --checkout is still refused" "exit 0"; fi
+contains "adopt: the refusal names the bad checkout ref" "$out_bad" "nosuchcheckoutref"
+out_bad="$(PATH="$adopt_stub_bin:$PATH" "$revise" widget-no-such-series --project "$real_repo" \
+    --checkout somebranch --version 1 --base "$series_base_sha" --adopt-run "$adopt_run_dir" 2>&1)"
+rc_bad=$?
+if (( rc_bad != 0 )); then ok "adopt: a nonexistent series is still refused"; else no "adopt: a nonexistent series is still refused" "exit 0"; fi
+check "adopt: the refused command lines posted nothing" "$msgs_before" "$(bad_msgs)"
+
+printf '\n== the timeout hint names --adopt-run, and following it works ==\n'
+r_rt="$(mk_adopt_series widget-adopt-rt)"
+rt_run_root="$(mktemp -d)"; tmpdirs+=("$rt_run_root")
+cat > "$adopt_stub_bin/fork-sandbox.sh" <<STUB
+#!/usr/bin/env bash
+mkdir -p "$rt_run_root/run"
+printf 'RUN_ID=fake\n' > "$rt_run_root/run/run.env"
+echo "  run dir:  $rt_run_root/run"
+STUB
+out_to="$(PATH="$adopt_stub_bin:$PATH" "$revise" widget-adopt-rt --project "$real_repo" \
+    --checkout somebranch --version 1 --base "$series_base_sha" --timeout 0 2>&1)"
+check "a wait that times out exits 1" "1" "$?"
+contains "the timeout hint says to re-run with --adopt-run and the real run dir" "$out_to" \
+    "re-run the same command with --adopt-run $rt_run_root/run"
+contains "the timeout hint still offers the by-hand route" "$out_to" \
+    "or post the changelog by hand from the branch it fetched."
+case "$out_to" in
+    *"once summary.json exists"*) no "the timeout hint no longer says to re-run the same command bare" "$out_to" ;;
+    *) ok "the timeout hint no longer says to re-run the same command bare" ;;
+esac
+runs_after_launch="$(wc -l < "$LKML_MAILBOX_ROOT/widget-adopt-rt/runs.jsonl" | tr -d '[:space:]')"
+out_to="$(PATH="$adopt_stub_bin:$PATH" "$revise" widget-adopt-rt --project "$real_repo" \
+    --checkout somebranch --version 1 --base "$series_base_sha" --timeout 0 \
+    --adopt-run "$rt_run_root/run" 2>&1)"
+check "adopting a run that is still going waits, then times out with exit 1" "1" "$?"
+contains "the adopted timeout hint names the same run dir" "$out_to" "--adopt-run $rt_run_root/run"
+mk_finished_run "$rt_run_root/run" "$r_rt"
+out_rt="$(PATH="$adopt_stub_bin:$PATH" "$revise" widget-adopt-rt --project "$real_repo" \
+    --checkout somebranch --version 1 --base "$series_base_sha" --timeout 0 \
+    --adopt-run "$rt_run_root/run" 2>&1)"
+check "following the hint once the run finished posts v2" "0" "$?"
+contains "the followed hint harvests and posts" "$out_rt" "posted v2"
+check "neither adopt invocation added a runs.jsonl row" "$runs_after_launch" \
+    "$(wc -l < "$LKML_MAILBOX_ROOT/widget-adopt-rt/runs.jsonl" | tr -d '[:space:]')"
+h_adopt="$("$revise" --help 2>&1)"
+contains "--help documents --adopt-run" "$h_adopt" "--adopt-run <run-dir>"
 
 printf '\n== --help ==\n'
 h_out="$("$revise" --help 2>&1)"; h_rc=$?
