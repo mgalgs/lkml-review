@@ -2405,6 +2405,9 @@ def main(argv=None):
                 f'    <div class="facts"><div class="fact">'
                 f'<span class="eyebrow">rendered</span><b>{now}</b></div></div>\n'
                 '  </div>\n</div>\n')
+    # Hoisted: a backslash inside an f-string expression needs Python 3.12,
+    # and the postmaster image runs 3.11.
+    footer = esc("  ·  ".join(footers))
     document = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -2418,7 +2421,7 @@ def main(argv=None):
 </head>
 <body>
 {head}{''.join(s for _n, s in series)}
-<footer class="foot">{esc("  \u00b7  ".join(footers))} \u00b7 rendered {now}</footer>
+<footer class="foot">{footer} \u00b7 rendered {now}</footer>
 {json_block}
 </body>
 </html>
