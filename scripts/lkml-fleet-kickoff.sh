@@ -6,7 +6,8 @@
 #            [--cc <addr>] --subject <subject> [--summary <text>]
 #            [--focus <text>] [--template <file>] [--hops <n>]
 #            [--ci-first <ci-addr>] [--version <n>]
-#            [--allow-ambiguous-version] [--patches] [--seats <addr-list>]
+#            [--allow-ambiguous-version] [--patches] [--attach-file <path>]...
+#            [--seats <addr-list>]
 #            [--allow-namespace <ns[:port]>]... [--reach-probe <host:port>]...
 #            [--context-ro <dir>] [--context-secret <name>]
 #            [--review-target <branch>:<sha>] [--header "Name: value"]...
@@ -191,6 +192,36 @@
 #              command, followed by one `mail reply --reply-to
 #              "$cover_id"` line per patch, so the whole sequence can be
 #              pasted into a shell and run as one paste.
+# --attach-file PATH
+#              attach a file to the COVER, never to a --patches reply.
+#              Repeatable, order preserved. Delivered through
+#              fork-sandbox's own mail transport (this appends
+#              `--attach PATH` to the cover's `fork-sandbox mail send`,
+#              with PATH resolved to an absolute path so a printed, not
+#              sent, command still works pasted from another directory),
+#              which lands the file in the thread's attachments/
+#              directory; every seat sees it under /attachments on every
+#              wake. For context that is not part of the change itself --
+#              a PR description, its discussion, an issue it references --
+#              not for the patches, which --patches already posts.
+#              Validated locally, before anything is composed or sent:
+#              each PATH must exist and be a regular file (not a
+#              directory, not a symlink); at most 4 MiB (4194304 bytes,
+#              the store's per-attachment cap) each; its basename must
+#              contain no newline and must not collide with another
+#              --attach-file's basename (the store's attachments
+#              directory is flat and keyed by basename); at most 15
+#              values total (the mail API caps a request at 16 files,
+#              leaving one for headroom); and at most 16 MiB
+#              (16777216 bytes) summed. The mail API caps a request
+#              body at 24 MiB and base64 inflates files by 4/3, so
+#              16 MiB of files is ~21.3 MiB on the wire, leaving room
+#              for the JSON wrapper and the cover body. When
+#              at least one file is attached, an "## Attached context"
+#              section listing each file's basename -- one bullet per file, in
+#              the order given -- is appended to the end of the filled
+#              cover body, after the template's own placeholders are
+#              filled in; with no --attach-file the body is unchanged.
 # --attach     deprecated alias for --patches; attachments are never
 #              posted by this script -- kept only so an existing caller
 #              spelling --attach still works, with a Warning pointing at
@@ -354,6 +385,7 @@ summary=""
 focus=""
 template="$default_template"
 post_patches=0
+attach_files=()
 send=0
 hops=""
 ci_first=""
@@ -379,7 +411,7 @@ unless_exists=0
 
 while (( $# > 0 )); do
     case "$1" in
-        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats|--header|--author|--panel|--secretary|--version-limit|--allow-namespace|--reach-probe|--context-ro|--context-secret|--review-target)
+        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats|--header|--author|--panel|--secretary|--version-limit|--allow-namespace|--reach-probe|--context-ro|--context-secret|--review-target|--attach-file)
             (( $# >= 2 )) || { echo "Error: $1 requires a value. See --help." >&2; exit 1; }
             ;;
     esac
@@ -415,6 +447,7 @@ while (( $# > 0 )); do
         --remote) remote=1; shift ;;
         --allow-ambiguous-version) allow_ambiguous_version=1; shift ;;
         --patches) post_patches=1; shift ;;
+        --attach-file) attach_files+=("$2"); shift 2 ;;
         --attach) post_patches=1; echo "Warning: --attach is a deprecated alias for --patches; attachments are never posted -- this now posts one mail reply per patch instead. Use --patches." >&2; shift ;;
         --send) send=1; shift ;;
         --unless-exists) unless_exists=1; shift ;;
@@ -675,6 +708,70 @@ for header in "${headers[@]}"; do
     esac
 done
 
+# --attach-file: validated in full here, before format-patch or any
+# template filling runs, so a bad attachment is refused before anything
+# is composed. Order follows the checks a caller hits first: the count
+# cap (cheap, no filesystem access) before per-file checks, and the
+# summed-size cap only after every per-file size is known to be within
+# the individual cap.
+if (( ${#attach_files[@]} > 15 )); then
+    echo "Error: --attach-file was given ${#attach_files[@]} times; at most 15 are allowed (the mail API caps a request at 16 files, leaving one for headroom). See --help." >&2
+    exit 1
+fi
+declare -A attach_basename_seen=()
+attach_names=()
+attach_abs=()
+attach_total_size=0
+for attach_path in "${attach_files[@]}"; do
+    if [[ -L "$attach_path" ]]; then
+        echo "Error: --attach-file '$attach_path' is a symlink, not a regular file." >&2
+        exit 1
+    fi
+    if [[ ! -e "$attach_path" ]]; then
+        echo "Error: --attach-file '$attach_path' does not exist." >&2
+        exit 1
+    fi
+    if [[ -d "$attach_path" ]]; then
+        echo "Error: --attach-file '$attach_path' is a directory, not a regular file." >&2
+        exit 1
+    fi
+    if [[ ! -f "$attach_path" ]]; then
+        echo "Error: --attach-file '$attach_path' is not a regular file." >&2
+        exit 1
+    fi
+    # Parameter expansion, not basename(1) in $(...): command
+    # substitution strips trailing newlines, which would hide a name
+    # ending in one from the check below. Safe here: the path is a
+    # regular file by now, so it has no trailing slash to trip over.
+    attach_basename="${attach_path##*/}"
+    if [[ "$attach_basename" == *$'\n'* ]]; then
+        echo "Error: --attach-file '$attach_path' has a newline in its basename." >&2
+        exit 1
+    fi
+    if [[ -n "${attach_basename_seen[$attach_basename]+x}" ]]; then
+        echo "Error: --attach-file basename '$attach_basename' is attached twice (from '${attach_basename_seen[$attach_basename]}' and '$attach_path'); the store's attachments directory is flat and keyed by basename." >&2
+        exit 1
+    fi
+    attach_basename_seen[$attach_basename]="$attach_path"
+    attach_names+=("$attach_basename")
+    # Absolute, as --context-ro is, so a printed command still works
+    # pasted from another directory. The basename has no newline (checked
+    # above), so the trailing-newline strip of $(...) cannot bite here.
+    attach_abs+=("$(realpath -e -- "$attach_path")")
+    attach_size="$(wc -c < "$attach_path")"
+    if (( attach_size > 4194304 )); then
+        echo "Error: --attach-file '$attach_path' is $attach_size bytes, over the 4 MiB (4194304 byte) per-attachment cap." >&2
+        exit 1
+    fi
+    # Assignment, not (( += )): under set -e a (( )) that evaluates to 0
+    # (an empty first file) exits the script.
+    attach_total_size=$(( attach_total_size + attach_size ))
+done
+if (( attach_total_size > 16777216 )); then
+    echo "Error: --attach-file files total $attach_total_size bytes, over the 16 MiB (16777216 byte) ceiling that keeps the base64-encoded request under the mail API's 24 MiB cap." >&2
+    exit 1
+fi
+
 review_target_branch=""
 review_target_sha=""
 if (( review_target_given )); then
@@ -854,8 +951,11 @@ fi
 # unconditionally on --send -- the print-only path would otherwise
 # print a `mail send ... --allow-namespace ...` command a caller could
 # paste and believe is the right way to grant an existing thread.
-if [[ "$body" == *'${FOCUS}'* ]] && { (( ${#allow_namespace[@]} > 0 )) || (( ${#reach_probe[@]} > 0 )) || (( context_ro_given )) || (( context_secret_given )) || (( review_target_given )) || (( ${#headers[@]} > 0 )); }; then
-    echo "Error: grant, target and header flags apply to the thread a new \`mail send\` creates, but a focused round is a reply inside an existing thread. Set the grant on that thread with \`fork-sandbox mail grant <thread-id> ...\` and compose without these flags." >&2
+# --attach-file is refused for the same reason: the "Attached context"
+# section would be appended to the leftover body file, and the manual
+# `mail reply` bridge does not carry the attachments it lists.
+if [[ "$body" == *'${FOCUS}'* ]] && { (( ${#allow_namespace[@]} > 0 )) || (( ${#reach_probe[@]} > 0 )) || (( context_ro_given )) || (( context_secret_given )) || (( review_target_given )) || (( ${#headers[@]} > 0 )) || (( ${#attach_files[@]} > 0 )); }; then
+    echo "Error: grant, target, header and --attach-file flags apply to the thread a new \`mail send\` creates, but a focused round is a reply inside an existing thread, and the body would list attachments the manual \`mail reply\` bridge does not send. Set the grant on that thread with \`fork-sandbox mail grant <thread-id> ...\` and compose without these flags." >&2
     exit 1
 fi
 
@@ -1234,6 +1334,19 @@ if [[ -z "${body//[$'\t\r\n ']/}" ]]; then
     exit 1
 fi
 
+# Appended to the filled template's body, not folded into it as a
+# placeholder: no shipped template names an ATTACHED_CONTEXT slot, and
+# every --attach-file caller should get this section regardless of
+# which template it composes with.
+if (( ${#attach_files[@]} > 0 )); then
+    attach_bullets=""
+    for attach_name in "${attach_names[@]}"; do
+        attach_bullets+="- $attach_name"$'\n'
+    done
+    attach_bullets="${attach_bullets%$'\n'}"
+    body="$body"$'\n\n## Attached context\n\nFiles attached to this kickoff (read them from your attachments\ndirectory before reviewing; they are context, not part of the change):\n\n'"$attach_bullets"
+fi
+
 body_file="$tmpdir/body.txt"
 printf '%s\n' "$body" > "$body_file"
 
@@ -1288,6 +1401,9 @@ done
 (( context_ro_given )) && cover_cmd+=(--context-ro "$context_ro_abs")
 (( context_secret_given )) && cover_cmd+=(--context-secret "$context_secret")
 (( review_target_given )) && cover_cmd+=(--review-target "$review_target_branch:$review_target_sha")
+for attach_path in "${attach_abs[@]}"; do
+    cover_cmd+=(--attach "$attach_path")
+done
 cover_cmd+=(--subject "$subject" --body "$body_file")
 
 if (( send )); then

@@ -2267,5 +2267,205 @@ else
     no "series-review and focused-review Sign-off convention blocks are byte-identical" "blocks diverge"
 fi
 
+printf '\n== --attach-file: attaches context files to the cover, never a --patches reply ==\n'
+attach_dir="$(mktemp -d)"; tmpdirs+=("$attach_dir")
+attach_file1="$attach_dir/notes.txt"
+printf 'PR discussion notes\n' > "$attach_file1"
+attach_file2="$attach_dir/issue.txt"
+printf 'Referenced issue body\n' > "$attach_file2"
+
+out_attach_one="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --attach-file "$attach_file1" 2>&1)"
+rc_attach_one=$?
+check "one --attach-file exits 0" "0" "$rc_attach_one"
+contains "the cover command carries --attach for the one file" "$out_attach_one" "--attach $attach_file1"
+attach_one_body_file="$(printf '%s' "$out_attach_one" | grep -o -- '--body [^ ]*' | awk '{print $2}')"
+attach_one_body_text="$([[ -f "$attach_one_body_file" ]] && cat "$attach_one_body_file")"
+contains "the body carries the Attached context heading" "$attach_one_body_text" "## Attached context"
+contains "the body lists the attached file's basename" "$attach_one_body_text" "- notes.txt"
+check "the body ends on the last bullet" "- notes.txt" "$(tail -n1 "$attach_one_body_file" 2>/dev/null)"
+
+out_attach_two="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' \
+    --attach-file "$attach_file1" --attach-file "$attach_file2" 2>&1)"
+rc_attach_two=$?
+check "two --attach-file values exits 0" "0" "$rc_attach_two"
+contains "the cover command carries --attach for the first file" "$out_attach_two" "--attach $attach_file1"
+contains "the cover command carries --attach for the second file" "$out_attach_two" "--attach $attach_file2"
+attach_two_body_file="$(printf '%s' "$out_attach_two" | grep -o -- '--body [^ ]*' | awk '{print $2}')"
+notes_line="$(grep -n -- '- notes.txt' "$attach_two_body_file" 2>/dev/null | cut -d: -f1)"
+issue_line="$(grep -n -- '- issue.txt' "$attach_two_body_file" 2>/dev/null | cut -d: -f1)"
+if [[ -n "$notes_line" && -n "$issue_line" && "$notes_line" -lt "$issue_line" ]]; then
+    ok "the two attached files are listed in the order given"
+else
+    no "the two attached files are listed in the order given" "$([[ -f "$attach_two_body_file" ]] && cat "$attach_two_body_file")"
+fi
+
+out_attach_patches="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --patches --attach-file "$attach_file1" 2>&1)"
+rc_attach_patches=$?
+check "--attach-file with --patches exits 0" "0" "$rc_attach_patches"
+cover_line_attach="$(grep -- '^cover_id=\$(' <<<"$out_attach_patches")"
+contains "the cover line carries --attach" "$cover_line_attach" "--attach"
+reply_lines_attach="$(grep -- '^fork-sandbox mail reply' <<<"$out_attach_patches")"
+case "$reply_lines_attach" in
+    *"--attach"*) no "no per-patch reply carries --attach" "$reply_lines_attach" ;;
+    *) ok "no per-patch reply carries --attach" ;;
+esac
+
+rm -f -- "$capture_dir/argv"
+PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --attach-file "$attach_file1" --send >/dev/null 2>&1
+rc_attach_send=$?
+check "--send with --attach-file exits 0" "0" "$rc_attach_send"
+send_attach_argv="$(cat "$capture_dir/argv" 2>/dev/null)"
+contains "the sent cover carries --attach" "$send_attach_argv" "--attach $attach_file1"
+
+out_attach_remote="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --attach-file "$attach_file1" --remote 2>&1)"
+contains "--attach-file works with --remote" "$out_attach_remote" "mail --remote send"
+contains "--attach-file works with --remote (carries --attach)" "$out_attach_remote" "--attach $attach_file1"
+
+printf '\n== no --attach-file: composed body is unchanged ==\n'
+out_no_attach="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject '[PATCH v1 0/2] a series' \
+    --summary 'does a thing' 2>&1)"
+no_attach_body_file="$(printf '%s' "$out_no_attach" | grep -o -- '--body [^ ]*' | awk '{print $2}')"
+no_attach_body_text="$([[ -f "$no_attach_body_file" ]] && cat "$no_attach_body_file")"
+check "with no --attach-file, the body is byte-for-byte unchanged from before this flag existed" \
+    "$body_text" "$no_attach_body_text"
+
+printf '\n== --attach-file refusals: each validated before anything is composed or sent ==\n'
+out_attach_missing="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --attach-file "$attach_dir/does-not-exist.txt" 2>&1)"
+rc_attach_missing=$?
+if (( rc_attach_missing != 0 )); then ok "a missing --attach-file exits non-zero"; else no "a missing --attach-file exits non-zero" "exit 0: $out_attach_missing"; fi
+contains "a missing --attach-file names the problem" "$out_attach_missing" "does not exist"
+
+rm -f -- "$capture_dir/argv"
+out_attach_missing_send="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --attach-file "$attach_dir/does-not-exist.txt" --send 2>&1)"
+rc_attach_missing_send=$?
+if (( rc_attach_missing_send != 0 )); then ok "a missing --attach-file with --send exits non-zero"; else no "a missing --attach-file with --send exits non-zero" "exit 0: $out_attach_missing_send"; fi
+if [[ -f "$capture_dir/argv" ]]; then
+    no "a missing --attach-file with --send sends nothing" "argv capture file exists: $(cat "$capture_dir/argv")"
+else
+    ok "a missing --attach-file with --send sends nothing"
+fi
+
+attach_subdir="$attach_dir/subdir"; mkdir -p -- "$attach_subdir"
+out_attach_dir="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --attach-file "$attach_subdir" 2>&1)"
+rc_attach_dir=$?
+if (( rc_attach_dir != 0 )); then ok "a directory --attach-file exits non-zero"; else no "a directory --attach-file exits non-zero" "exit 0: $out_attach_dir"; fi
+contains "a directory --attach-file names the problem" "$out_attach_dir" "is a directory"
+
+attach_symlink="$attach_dir/link.txt"
+ln -s -- "$attach_file1" "$attach_symlink"
+out_attach_symlink="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --attach-file "$attach_symlink" 2>&1)"
+rc_attach_symlink=$?
+if (( rc_attach_symlink != 0 )); then ok "a symlink --attach-file exits non-zero"; else no "a symlink --attach-file exits non-zero" "exit 0: $out_attach_symlink"; fi
+contains "a symlink --attach-file names the problem" "$out_attach_symlink" "is a symlink"
+
+attach_big="$attach_dir/big.bin"
+truncate -s 4194305 "$attach_big"
+out_attach_big="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --attach-file "$attach_big" 2>&1)"
+rc_attach_big=$?
+if (( rc_attach_big != 0 )); then ok "an over-4MiB --attach-file exits non-zero"; else no "an over-4MiB --attach-file exits non-zero" "exit 0: $out_attach_big"; fi
+contains "an over-4MiB --attach-file names the 4 MiB cap" "$out_attach_big" "4 MiB"
+
+attach_dupe_dir_a="$(mktemp -d)"; tmpdirs+=("$attach_dupe_dir_a")
+attach_dupe_dir_b="$(mktemp -d)"; tmpdirs+=("$attach_dupe_dir_b")
+attach_dupe_a="$attach_dupe_dir_a/same.txt"; printf 'a\n' > "$attach_dupe_a"
+attach_dupe_b="$attach_dupe_dir_b/same.txt"; printf 'b\n' > "$attach_dupe_b"
+out_attach_dupe="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' \
+    --attach-file "$attach_dupe_a" --attach-file "$attach_dupe_b" 2>&1)"
+rc_attach_dupe=$?
+if (( rc_attach_dupe != 0 )); then ok "two --attach-file values sharing a basename exit non-zero"; else no "two --attach-file values sharing a basename exit non-zero" "exit 0: $out_attach_dupe"; fi
+contains "a duplicate basename across two dirs names the problem" "$out_attach_dupe" "attached twice"
+
+attach_many_dir="$(mktemp -d)"; tmpdirs+=("$attach_many_dir")
+attach_many_args=()
+for attach_i in $(seq 1 16); do
+    attach_f="$attach_many_dir/f$attach_i.txt"
+    printf 'x\n' > "$attach_f"
+    attach_many_args+=(--attach-file "$attach_f")
+done
+out_attach_many="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' "${attach_many_args[@]}" 2>&1)"
+rc_attach_many=$?
+if (( rc_attach_many != 0 )); then ok "16 --attach-file values exceed the count cap and exit non-zero"; else no "16 --attach-file values exceed the count cap and exit non-zero" "exit 0: $out_attach_many"; fi
+contains "the count-cap refusal names 15 as the limit" "$out_attach_many" "at most 15"
+
+attach_sum_dir="$(mktemp -d)"; tmpdirs+=("$attach_sum_dir")
+attach_sum_args=()
+for attach_i in $(seq 1 5); do
+    attach_f="$attach_sum_dir/big$attach_i.bin"
+    truncate -s 3500000 "$attach_f"
+    attach_sum_args+=(--attach-file "$attach_f")
+done
+out_attach_sum="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' "${attach_sum_args[@]}" 2>&1)"
+rc_attach_sum=$?
+if (( rc_attach_sum != 0 )); then ok "--attach-file files summing over 16 MiB exit non-zero"; else no "--attach-file files summing over 16 MiB exit non-zero" "exit 0: $out_attach_sum"; fi
+contains "the summed-size refusal names the 16 MiB ceiling" "$out_attach_sum" "16 MiB"
+
+# 4 x 4000000 = 16000000 bytes, just under the 16777216 ceiling.
+attach_under_dir="$(mktemp -d)"; tmpdirs+=("$attach_under_dir")
+attach_under_args=()
+for attach_i in $(seq 1 4); do
+    attach_f="$attach_under_dir/near$attach_i.bin"
+    truncate -s 4000000 "$attach_f"
+    attach_under_args+=(--attach-file "$attach_f")
+done
+out_attach_under="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' "${attach_under_args[@]}" 2>&1)"
+rc_attach_under=$?
+if (( rc_attach_under == 0 )); then ok "--attach-file files summing just under 16 MiB are accepted"; else no "--attach-file files summing just under 16 MiB are accepted" "exit $rc_attach_under: $out_attach_under"; fi
+
+# An empty FIRST file leaves the running total at 0, which a bare
+# (( total += size )) turns into a silent set -e exit.
+attach_empty="$attach_dir/empty.md"; : > "$attach_empty"
+out_attach_empty="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' \
+    --attach-file "$attach_empty" --attach-file "$attach_file1" 2>&1)"
+rc_attach_empty=$?
+if (( rc_attach_empty == 0 )); then ok "an empty first --attach-file is accepted"; else no "an empty first --attach-file is accepted" "exit $rc_attach_empty: $out_attach_empty"; fi
+contains "an empty first --attach-file is still attached" "$out_attach_empty" "empty.md"
+
+# A relative path is forwarded absolute, so a printed command still works
+# when pasted from another directory (as --context-ro does).
+out_attach_rel="$(cd "$attach_dir" && PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --attach-file notes.txt 2>&1)"
+rc_attach_rel=$?
+check "a relative --attach-file exits 0" "0" "$rc_attach_rel"
+contains "a relative --attach-file is forwarded as an absolute path" "$out_attach_rel" "--attach $(realpath -e -- "$attach_file1")"
+if [[ "$out_attach_rel" == *"--attach notes.txt"* ]]; then no "a relative --attach-file is not forwarded verbatim" "$out_attach_rel"; else ok "a relative --attach-file is not forwarded verbatim"; fi
+
+# A basename whose only newline is a trailing one must still be refused.
+attach_nl="$attach_dir/weird"$'\n'
+printf 'x\n' > "$attach_nl"
+out_attach_nl="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --attach-file "$attach_nl" 2>&1)"
+rc_attach_nl=$?
+check "a basename with a trailing newline exits 1" "1" "$rc_attach_nl"
+contains "a basename with a trailing newline names the problem" "$out_attach_nl" "newline in its basename"
+
+# A focused (${FOCUS}) round is a reply inside an existing thread; the
+# "Attached context" section would list files the manual `mail reply`
+# bridge never sends, so --attach-file is refused up front.
+out_attach_focus="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject '[PATCH v3 0/2] improve the thing' \
+    --focus 'patch 2 only' --template "$focused_template" --attach-file "$attach_file1" 2>&1)"
+rc_attach_focus=$?
+check "a focused template with --attach-file refuses in print-only mode" "1" "$rc_attach_focus"
+contains "the focused+--attach-file refusal names the flag" "$out_attach_focus" "--attach-file"
+contains "the focused+--attach-file refusal states the reply-vs-thread reason" "$out_attach_focus" "reply inside an existing thread"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))
