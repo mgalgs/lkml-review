@@ -112,9 +112,12 @@ def sec(seq=20, status="CONVERGED", pver=1, verdict="SIGNED-OFF", sha=A, ver=1,
     return msg(seq, "@secretary", body, sha=sha, ver=ver)
 
 def green(sha=A, ver=1, verdict=None):
+    # v1 is the human's own head, so the root's Frozen-Head is v1's sha;
+    # a later version is a re-roll on top of the root's (fff...) head.
     if verdict is None:
         verdict = "SIGNED-OFF" if ver == 1 else "RESPIN"
-    return ([root(sha=sha, ver=ver)] + panel_positive(sha=sha, ver=ver)
+    body = ROOT_BODY.replace("f" * 40, sha) if ver == 1 else ROOT_BODY
+    return ([root(sha=sha, ver=ver, body=body)] + panel_positive(sha=sha, ver=ver)
             + [sec(20, "CONVERGED", ver, verdict, sha, ver)])
 
 def run(rid, state, agent="@core"):
@@ -1058,11 +1061,13 @@ check "SIGNED-OFF on v2: the secretary object still shows what it said" "SIGNED-
 reason_has "SIGNED-OFF on v2: the contradiction is named" "SIGNED-OFF contradicts target v2"
 
 gen v2 <<'PY'
-write(D, export(green(sha=A, ver=1, verdict="RESPIN")), status())
+e = green(sha=A, ver=1, verdict="RESPIN")
+e[0] = root(body=ROOT_BODY.replace("Frozen-Head: " + "f" * 40, ""))
+write(D, export(e), status())
 PY
 run_case v2
-check "RESPIN on a v1 target: not CONVERGED" "STALLED" "$(jr .status)"
-reason_has "RESPIN on v1: the contradiction is named" "RESPIN contradicts target v1"
+check "RESPIN on a v1 target, no frozen head known: not CONVERGED" "STALLED" "$(jr .status)"
+reason_has "RESPIN on v1, no frozen head known: the contradiction is named" "RESPIN contradicts target v1"
 check "RESPIN on v1: no bundle" "null" "$(j .bundle)"
 
 gen v3 <<'PY'
@@ -1070,6 +1075,158 @@ write(D, export(green(sha=C, ver=4)), status(sha=C, ver=4))
 PY
 run_case v3
 check "v4 RESPIN: CONVERGED" "CONVERGED" "$(jr .status)"
+
+printf '\n== per-version frozen head ==\n'
+# F is the root's Frozen-Head, H the human author's pushed head, T2/T4 the
+# author persona's re-rolls. UP is the postmaster's upstream-moved mail.
+cat >> "$work/fx.py" <<'FX2'
+F = sha("f")
+H, T2, T4 = sha("1"), sha("2"), sha("4")
+
+def frozen_root(head=F):
+    return root(sha=F, ver=1, body=ROOT_BODY.replace("f" * 40, head))
+
+def upstream(seq, head=H, frm="@postmaster"):
+    return msg(seq, frm, "The human author pushed a new head.",
+               extra=[["X-Upstream-Head", "pr/example " + head]])
+
+def cover(seq, target, ver, body, frm="@pr-author"):
+    return msg(seq, frm, body, sha=target, ver=ver, set_target=target,
+               subject="Re: [PATCH v%d 0/0] Fix the thing" % ver)
+
+def human_thread(seq_up=2, seq_cover=3, cover_head=H, up_head=H, verdict="SIGNED-OFF",
+                 pver=3, target=H, ver=3, with_up=True):
+    m = [frozen_root()]
+    if with_up:
+        m.append(upstream(seq_up, up_head))
+    m.append(cover(seq_cover, target, ver, "Human integration.\n\nFrozen-Head: " + cover_head))
+    m += panel_positive(sha=target, ver=ver, start=10)
+    m.append(sec(20, "CONVERGED", pver, verdict, target, ver))
+    return m
+FX2
+
+gen fh_a <<'PY'
+e = [frozen_root()] + panel_positive(sha=F, ver=1) + [sec(20, "CONVERGED", 1, "SIGNED-OFF", F, 1)]
+write(D, export(e), status(sha=F, ver=1))
+PY
+run_case fh_a
+check "(a) root Frozen-Head == v1 target: CONVERGED" "CONVERGED" "$(jr .status)"
+check "(a) SIGNED-OFF" "SIGNED-OFF" "$(jr .verdict)"
+check "(a) frozen_head is the root's" "{\"sha\":\"$(printf "f%.0s" $(seq 40))\",\"source\":\"root\"}" "$(j .frozen_head)"
+
+gen fh_b <<'PY'
+e = [frozen_root(), cover(2, T2, 2, "Re-roll after review.")]
+e += panel_positive(sha=T2, ver=2, start=10) + [sec(20, "CONVERGED", 2, "RESPIN", T2, 2)]
+write(D, export(e), status(sha=T2, ver=2))
+PY
+run_case fh_b
+check "(b) author re-roll, no Frozen-Head line: CONVERGED" "CONVERGED" "$(jr .status)"
+check "(b) RESPIN" "RESPIN" "$(jr .verdict)"
+check "(b) bundle base is the root's frozen head" "$(printf "f%.0s" $(seq 40))" "$(jr .bundle.base)"
+check "(b) frozen_head falls back to the root" "{\"sha\":\"$(printf "f%.0s" $(seq 40))\",\"source\":\"root\"}" "$(j .frozen_head)"
+
+gen fh_c <<'PY'
+write(D, export(human_thread()), status(sha=H, ver=3))
+PY
+run_case fh_c
+check "(c) human integration signed off: CONVERGED" "CONVERGED" "$(jr .status)"
+check "(c) SIGNED-OFF at v3" "SIGNED-OFF" "$(jr .verdict)"
+check "(c) frozen_head is the vouched upstream head" "{\"sha\":\"$(printf "1%.0s" $(seq 40))\",\"source\":\"upstream\"}" "$(j .frozen_head)"
+check "(c) no bundle" "null" "$(j .bundle)"
+check "(c) roster.frozen_head stays the root's" "$(printf "f%.0s" $(seq 40))" "$(jr .roster.frozen_head)"
+check "(c) no reasons" "[]" "$(j .reasons)"
+
+gen fh_d <<'PY'
+write(D, export(human_thread(verdict="RESPIN")), status(sha=H, ver=3))
+PY
+run_case fh_d
+check "(d) RESPIN on the frozen head: not CONVERGED" "STALLED" "$(jr .status)"
+reason_has "(d) the contradiction is named" "RESPIN contradicts target v3 (11111111)"
+reason_has "(d) and names the frozen head" "frozen head (11111111)"
+
+gen fh_e <<'PY'
+write(D, export(human_thread(with_up=False)), status(sha=H, ver=3))
+PY
+run_case fh_e
+check "(e) no X-Upstream-Head anywhere: not CONVERGED" "STALLED" "$(jr .status)"
+reason_has "(e) the unvouched Frozen-Head is a reason" "cover Frozen-Head 11111111 is not a stamped X-Upstream-Head on this thread"
+check "(e) frozen_head falls back to the root" "{\"sha\":\"$(printf "f%.0s" $(seq 40))\",\"source\":\"root\"}" "$(j .frozen_head)"
+reason_has "(e) SIGNED-OFF contradicts (H != F)" "SIGNED-OFF contradicts target v3 (11111111)"
+reason_has "(e) and names the root's frozen head" "frozen head (ffffffff)"
+
+gen fh_f <<'PY'
+write(D, export(human_thread(seq_up=5, seq_cover=3)), status(sha=H, ver=3))
+PY
+run_case fh_f
+check "(f) X-Upstream-Head AFTER the cover: not CONVERGED" "STALLED" "$(jr .status)"
+check "(f) frozen_head falls back to the root" "{\"sha\":\"$(printf "f%.0s" $(seq 40))\",\"source\":\"root\"}" "$(j .frozen_head)"
+reason_has "(f) the unvouched Frozen-Head is a reason" "is not a stamped X-Upstream-Head"
+
+gen fh_g <<'PY'
+write(D, export(human_thread(up_head=T2)), status(sha=H, ver=3))
+PY
+run_case fh_g
+check "(g) X-Upstream-Head names another sha: not CONVERGED" "STALLED" "$(jr .status)"
+check "(g) frozen_head falls back to the root" "{\"sha\":\"$(printf "f%.0s" $(seq 40))\",\"source\":\"root\"}" "$(j .frozen_head)"
+reason_has "(g) the unvouched Frozen-Head is a reason" "is not a stamped X-Upstream-Head"
+
+gen fh_h <<'PY'
+e = [frozen_root(), upstream(2), cover(3, H, 3, "Human integration.\n\nFrozen-Head: " + H),
+     cover(4, T4, 4, "Re-roll.\n\nFrozen-Head: " + H)]
+e += panel_positive(sha=T4, ver=4, start=10) + [sec(20, "CONVERGED", 4, "RESPIN", T4, 4)]
+write(D, export(e), status(sha=T4, ver=4))
+PY
+run_case fh_h
+check "(h) re-roll on the human's head: CONVERGED" "CONVERGED" "$(jr .status)"
+check "(h) RESPIN" "RESPIN" "$(jr .verdict)"
+check "(h) bundle base is the human's head" "$(printf "1%.0s" $(seq 40))" "$(jr .bundle.base)"
+check "(h) frozen_head is upstream" "{\"sha\":\"$(printf "1%.0s" $(seq 40))\",\"source\":\"upstream\"}" "$(j .frozen_head)"
+
+gen fh_h2 <<'PY'
+e = [frozen_root(), upstream(2), cover(3, H, 3, "Human integration.\n\nFrozen-Head: " + H),
+     cover(4, T4, 4, "Re-roll.\n\nFrozen-Head: " + H)]
+e += panel_positive(sha=T4, ver=4, start=10) + [sec(20, "CONVERGED", 4, "SIGNED-OFF", T4, 4)]
+write(D, export(e), status(sha=T4, ver=4))
+PY
+run_case fh_h2
+check "(h) SIGNED-OFF on the author's re-roll: not CONVERGED" "STALLED" "$(jr .status)"
+reason_has "(h) the contradiction names both shas" "SIGNED-OFF contradicts target v4 (44444444)"
+
+gen fh_i <<'PY'
+e = [frozen_root(), cover(2, T2, 2, "Re-roll.\n\nFrozen-Head: 1234")]
+e += panel_positive(sha=T2, ver=2, start=10) + [sec(20, "CONVERGED", 2, "RESPIN", T2, 2)]
+write(D, export(e), status(sha=T2, ver=2))
+PY
+run_case fh_i
+check "(i) malformed cover Frozen-Head: root fallback" "{\"sha\":\"$(printf "f%.0s" $(seq 40))\",\"source\":\"root\"}" "$(j .frozen_head)"
+reason_has "(i) and it is a reason" "cover seq 2: malformed Frozen-Head"
+check "(i) so the panel is not CONVERGED" "STALLED" "$(jr .status)"
+
+gen fh_j <<'PY'
+e = human_thread()
+e.insert(3, msg(6, "@core", "Frozen-Head: " + T2 + "\nReviewed-by: C", sha=H, ver=3))
+e.insert(3, msg(7, "@secretary", "Frozen-Head: " + T2, sha=H, ver=3))
+q = [msg(8, "@docs", "Frozen-Head: " + T2, sha=H, ver=3, set_target=H)]
+write(D, export(e + q), status(sha=H, ver=3))
+PY
+run_case fh_j
+check "(j) Frozen-Head lines from non-Author messages change nothing" "{\"sha\":\"$(printf "1%.0s" $(seq 40))\",\"source\":\"upstream\"}" "$(j .frozen_head)"
+check "(j) still CONVERGED" "CONVERGED" "$(jr .status)"
+
+gen fh_k <<'PY'
+e = human_thread()
+e[2] = cover(3, H, 3, "Human integration.\n\n   Frozen-Head: " + H + "  \nFrozen-Head: " + T2)
+write(D, export(e), status(sha=H, ver=3))
+PY
+run_case fh_k
+check "the first Frozen-Head line wins, whitespace trimmed" "{\"sha\":\"$(printf "1%.0s" $(seq 40))\",\"source\":\"upstream\"}" "$(j .frozen_head)"
+
+gen fh_m <<'PY'
+e = [root(body=ROOT_BODY.replace("Frozen-Head: " + "f" * 40, ""))] + panel_positive()
+write(D, export(e), status())
+PY
+run_case fh_m
+check "no frozen head anywhere (no root value, no cover line): null" "null" "$(j .frozen_head)"
 
 printf '\n== postmaster facts: what counts as live and pending ==\n'
 gen p1 <<'PY'
@@ -1187,7 +1344,7 @@ run_case nohdr2
 check "an unparseable X-Review-Target NAK: not CONVERGED" "STALLED" "$(jr .status)"
 
 gen nohdr3 <<'PY'
-m = [root(), msg(2, "@core", "NAK", sha=None),
+m = [root(body=ROOT_BODY.replace("f" * 40, A)), msg(2, "@core", "NAK", sha=None),
      msg(3, "@core", "Reviewed-by: C", sha=A, ver=1),
      msg(4, "@tests", "Reviewed-by: T", sha=A, ver=1),
      msg(5, "@docs", "Reviewed-by: D", sha=A, ver=1), sec(20)]
@@ -1224,7 +1381,7 @@ for c in "${cases_run[@]}"; do
     o="$("$ps" --export-file "$d/export.json" --status-file "$d/status.json" 2>/dev/null)" || { inv_bad+=" $c(exit)"; continue; }
     inv_n=$(( inv_n + 1 ))
     if ! jq -e '
-        (["schema","thread","subject","status","verdict","target","roster","seats","secretary","postmaster","bundle","reasons"]
+        (["schema","thread","subject","status","verdict","target","roster","frozen_head","seats","secretary","postmaster","bundle","reasons"]
          - keys | length) == 0
         and (.status | IN("CONVERGED","IN-PROGRESS","STALLED","NEEDS-OPERATOR"))
         and ((.status == "CONVERGED") == (.reasons | length == 0))

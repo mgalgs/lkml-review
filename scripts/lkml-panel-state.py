@@ -51,6 +51,33 @@ with a reason (and, being a reason, blocks CONVERGED: a seat silently
 dropped from the panel is a seat nobody waits for). A missing or empty
 Panel means the roster is unusable.
 
+Frozen head -- the commit the human's PR stood on when a version's review
+began, which decides what a sign-off means. roster.frozen_head is the
+ROOT's value and keeps that meaning. The top-level "frozen_head"
+({"sha", "source"}, null when unknown) is the frozen head of the CURRENT
+target, resolved so:
+
+  1. The candidate is the `Frozen-Head: <sha>` line (same line rules as
+     the roster: alone on its line, whitespace ignored, the first
+     occurrence wins, 40- or 64-hex) of the newest message FROM the
+     roster's Author whose X-Review-Target-Set sha is the current
+     target's: the cover that set this version. A malformed line is
+     ignored, with a reason.
+  2. A candidate equal to the root's frozen head -> source "root".
+  3. Any other candidate is accepted only if a message with a LOWER seq
+     than that cover carries an X-Upstream-Head whose sha equals it
+     (source "upstream"). That header is stamped by the postmaster when
+     the human author pushes a new head to the PR; nobody else can
+     forge it. This is the anti-false-green gate: the author is a model
+     and must not be able to declare its own commits "frozen" and so
+     earn a SIGNED-OFF. An unvouched candidate is a reason, and the
+     frozen head falls back to the root's (source "root").
+  4. No candidate -> the root's value (source "root"), else null.
+
+A version whose target IS its frozen head is the human's own head
+(v1, or a later human integration); a version whose target differs is
+the author persona's re-roll on top of it.
+
 Current target -- the postmaster's review_target is authoritative. The
 newest message carrying X-Review-Target-Set is the mail-side witness: it
 is the fallback when the postmaster has none (source "mail", with a
@@ -108,9 +135,12 @@ Status -- precedence top to bottom, first match wins:
                     positive; the secretary's message on target,
                     well-formed and saying CONVERGED; quiescent; the
                     target sources agree; no other reason. verdict is
-                    the secretary's Panel-Verdict -- but SIGNED-OFF on a
-                    target version above 1, or RESPIN on version 1, is a
-                    contradiction and not CONVERGED
+                    the secretary's Panel-Verdict -- but with a frozen
+                    head known, SIGNED-OFF is valid only when the target
+                    sha IS the frozen head and RESPIN only when it is
+                    not; the other is a contradiction and not CONVERGED.
+                    With no frozen head known, SIGNED-OFF is valid only
+                    on version 1 and RESPIN only above it
     STALLED         quiescent but not converged: nobody will wake, the
                     operator must look
     IN-PROGRESS     otherwise
@@ -125,12 +155,15 @@ Output (null, never an omitted key, for what is unknown):
      "status", "verdict",          # verdict only when CONVERGED
      "target": {"branch","sha","version","set_by","set_at","source"},
      "roster": {"author","panel","secretary","version_limit","frozen_head"},
+     "frozen_head": {"sha","source"},   # of the current target; source
+                                        # "root" or "upstream"
      "seats": [{"seat","state","verdict","message_id","version","sha"}],
      "secretary": {"message_id","version","status","verdict",
                    "on_target","malformed"},
      "postmaster": {"quiescent","flagged","flag_reason","live_runs",
                     "pending_retries","held","unrouted"},
-     "bundle": {"base","tip","branch"},   # RESPIN + a Frozen-Head only
+     "bundle": {"base","tip","branch"},   # RESPIN + a frozen head only;
+                                          # base is that frozen head
      "reasons": [...]}                    # empty only for CONVERGED
 """
 
@@ -159,6 +192,7 @@ VERDICT_RE = {
 ADDRESS_RE = re.compile(r"^@[a-z0-9][a-z0-9-]*$")
 HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
 FROZEN_HEAD_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
+FROZEN_HEAD_LINE_RE = re.compile(r"^Frozen-Head:(.*)$")
 ROSTER_KEYS = ("Author", "Panel", "Secretary", "Version-Limit", "Frozen-Head")
 ROSTER_LINE_RE = re.compile(r"^(" + "|".join(ROSTER_KEYS) + r"):(.*)$")
 PANEL_LINE_RE = re.compile(r"^Panel-[A-Za-z]+:")
@@ -514,7 +548,19 @@ def parse_trailer(body):
     return fields, None
 
 
-def verdict_contradiction(verdict, target):
+def verdict_contradiction(verdict, target, frozen_head):
+    if frozen_head is not None and target is not None:
+        is_head = target["sha"] == frozen_head["sha"]
+        where = f"target {target_label(target)}"
+        head = f"frozen head ({frozen_head['sha'][:8]})"
+        if verdict == "SIGNED-OFF" and not is_head:
+            return (f"secretary verdict SIGNED-OFF contradicts {where} "
+                    f"(SIGNED-OFF is only possible when the target is the "
+                    f"{head})")
+        if verdict == "RESPIN" and is_head:
+            return (f"secretary verdict RESPIN contradicts {where} "
+                    f"(the target is the {head}; nothing to respin)")
+        return None
     v = target["version"] if target else None
     if v is None:
         return None
@@ -524,6 +570,50 @@ def verdict_contradiction(verdict, target):
     if verdict == "RESPIN" and v == 1:
         return "secretary verdict RESPIN contradicts target v1 (nothing to respin yet)"
     return None
+
+
+def resolve_frozen_head(msgs, roster, target):
+    """The frozen head of the current target -> ({sha, source}|None,
+    reasons). See the module docstring, "Frozen head"."""
+    root_sha = roster["frozen_head"]
+    fallback = {"sha": root_sha, "source": "root"} if root_sha else None
+    author = roster["author"]
+    if target is None or author is None:
+        return fallback, []
+    covers = []
+    for m in msgs:
+        if m["ok"] and m["from"] == author:
+            tgt = single_target_header(m, "X-Review-Target-Set")
+            if tgt is not None and tgt[1] == target["sha"]:
+                covers.append(m)
+    if not covers:
+        return fallback, []
+    cover = covers[-1]
+    raw = None
+    for line in cover["body"].split("\n"):
+        mt = FROZEN_HEAD_LINE_RE.match(line.strip(" \t\r"))
+        if mt:
+            raw = mt.group(1).strip(" \t\r")
+            break
+    if raw is None:
+        return fallback, []
+    if not FROZEN_HEAD_RE.match(raw):
+        # The root's own malformed line already has a roster reason.
+        why = [] if cover is msgs[0] else [
+            f"cover seq {cover['seq']}: malformed Frozen-Head "
+            f"{clip(raw)!r} ignored"]
+        return fallback, why
+    cand = raw.lower()
+    if cand == root_sha:
+        return {"sha": cand, "source": "root"}, []
+    for m in msgs:
+        if m["ok"] and m["seq"] < cover["seq"]:
+            for v in header_values(m, "X-Upstream-Head"):
+                parsed = parse_target_value(v)
+                if parsed is not None and parsed[1] == cand:
+                    return {"sha": cand, "source": "upstream"}, []
+    return fallback, [f"cover Frozen-Head {cand[:8]} is not a stamped "
+                      f"X-Upstream-Head on this thread"]
 
 
 def judge_secretary(msgs, roster, target):
@@ -640,6 +730,9 @@ def build_state(export, status):
     target, target_reasons = resolve_target(status, msgs)
     reasons += target_reasons
 
+    frozen_head, fh_reasons = resolve_frozen_head(msgs, roster, target)
+    reasons += fh_reasons
+
     seats = []
     for seat in roster["panel"]:
         entry, why = judge_seat(seat, msgs, target)
@@ -665,7 +758,7 @@ def build_state(export, status):
             reasons.append("secretary says CONVERGED but the thread is not quiescent")
         if pm["flagged"]:
             reasons.append("secretary says CONVERGED but the thread is flagged")
-        contradiction = verdict_contradiction(secretary["verdict"], target)
+        contradiction = verdict_contradiction(secretary["verdict"], target, frozen_head)
         if contradiction:
             reasons.append(contradiction)
 
@@ -687,8 +780,8 @@ def build_state(export, status):
 
     verdict = secretary["verdict"] if status_word == "CONVERGED" else None
     bundle = None
-    if verdict == "RESPIN" and roster["frozen_head"]:
-        bundle = {"base": roster["frozen_head"], "tip": target["sha"],
+    if verdict == "RESPIN" and frozen_head:
+        bundle = {"base": frozen_head["sha"], "tip": target["sha"],
                   "branch": target["branch"]}
 
     return {
@@ -699,6 +792,7 @@ def build_state(export, status):
         "verdict": verdict,
         "target": target,
         "roster": roster,
+        "frozen_head": frozen_head,
         "seats": seats,
         "secretary": secretary,
         "postmaster": pm,
