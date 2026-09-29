@@ -1221,6 +1221,44 @@ PY
 run_case fh_k
 check "the first Frozen-Head line wins, whitespace trimmed" "{\"sha\":\"$(printf "1%.0s" $(seq 40))\",\"source\":\"upstream\"}" "$(j .frozen_head)"
 
+gen fh_n <<'PY'
+# A second push lands after the panel signed off on the first; the author's
+# only reply is a mismatch report to the operator.
+H2 = sha("5")
+e = human_thread()
+e.append(upstream(30, H2))
+e.append(msg(31, "@pr-author", "Expected upstream 55555555, found none.", sha=H, ver=3))
+write(D, export(e), status(sha=H, ver=3))
+PY
+run_case fh_n
+check "(n) an unanswered second push: not CONVERGED" "STALLED" "$(jr .status)"
+check "(n) no verdict is reported" "null" "$(j .verdict)"
+reason_has "(n) the unanswered push is named" "the human author's newest push 55555555 (seq 30) is not the frozen head of the current target (11111111)"
+
+gen fh_o <<'PY'
+# The push after the sign-off was answered: a later version whose cover
+# carries it as Frozen-Head, so the newest push IS the frozen head.
+H2 = sha("5")
+e = human_thread()
+e.append(upstream(30, H2))
+e.append(cover(31, H2, 4, "Human integration.\n\nFrozen-Head: " + H2))
+e += panel_positive(sha=H2, ver=4, start=40) + [sec(50, "CONVERGED", 4, "SIGNED-OFF", H2, 4)]
+write(D, export(e), status(sha=H2, ver=4))
+PY
+run_case fh_o
+check "(o) the newest push answered by a version: CONVERGED" "CONVERGED" "$(jr .status)"
+check "(o) SIGNED-OFF" "SIGNED-OFF" "$(jr .verdict)"
+
+gen fh_q <<'PY'
+# A push on a v1 thread whose panel already signed off, with no cover yet.
+e = [frozen_root()] + panel_positive(sha=F, ver=1) + [sec(20, "CONVERGED", 1, "SIGNED-OFF", F, 1)]
+e.append(upstream(30, H))
+write(D, export(e), status(sha=F, ver=1))
+PY
+run_case fh_q
+check "(q) a push after a v1 sign-off, unanswered: not CONVERGED" "STALLED" "$(jr .status)"
+reason_has "(q) the unanswered push is named" "the human author's newest push 11111111 (seq 30)"
+
 gen fh_m <<'PY'
 e = [root(body=ROOT_BODY.replace("Frozen-Head: " + "f" * 40, ""))] + panel_positive()
 write(D, export(e), status())

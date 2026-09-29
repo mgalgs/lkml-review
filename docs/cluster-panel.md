@@ -216,6 +216,13 @@ and `RESPIN` only when it differs; the other is a contradiction, named in
 on v1 and `RESPIN` only above it. The change is additive, so the schema stays
 `lkml-panel-state/1`.
 
+The gate also compares the newest `X-Upstream-Head` on the thread with the
+resolved frozen head. When they differ, the human author's newest push has no
+version posted for it, so a sign-off on an older head does not describe the PR
+as it now stands. That is a reason and the thread is not `CONVERGED`. It covers
+an author that has not run yet, one that failed to post, and one that answered
+a push with a mismatch report to the operator.
+
 ### Why the gate and the personas read verdicts differently
 
 Three readers judge verdicts: the author seat, the secretary, and

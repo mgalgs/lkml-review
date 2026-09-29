@@ -78,6 +78,14 @@ A version whose target IS its frozen head is the human's own head
 (v1, or a later human integration); a version whose target differs is
 the author persona's re-roll on top of it.
 
+Unanswered push -- the newest X-Upstream-Head on the thread names the
+PR's current head. When its sha is not the resolved frozen head, the
+human author's newest push has no version posted for it (the author has
+not run yet, failed to post, or answered with a mismatch report to the
+operator), and a sign-off on an older head says nothing about the PR as
+it now stands. That is a reason, so the thread is not CONVERGED; it is
+not a status of its own.
+
 Current target -- the postmaster's review_target is authoritative. The
 newest message carrying X-Review-Target-Set is the mail-side witness: it
 is the fallback when the postmaster has none (source "mail", with a
@@ -616,6 +624,29 @@ def resolve_frozen_head(msgs, roster, target):
                       f"X-Upstream-Head on this thread"]
 
 
+def unanswered_push(msgs, frozen_head):
+    """-> reasons. The newest X-Upstream-Head on the thread is the PR's
+    current head; when it is not the resolved frozen head, the human
+    author's newest push has not been posted as a version, and whatever the
+    panel signed off is not the PR as it now stands."""
+    newest = None
+    for m in msgs:
+        if not m["ok"]:
+            continue
+        for v in header_values(m, "X-Upstream-Head"):
+            parsed = parse_target_value(v)
+            if parsed is not None:
+                newest = (m["seq"], parsed[1])
+    if newest is None:
+        return []
+    if frozen_head is not None and frozen_head["sha"] == newest[1]:
+        return []
+    have = frozen_head["sha"][:8] if frozen_head else "none"
+    return [f"the human author's newest push {newest[1][:8]} (seq {newest[0]}) "
+            f"is not the frozen head of the current target ({have}): "
+            f"no version has been posted for it"]
+
+
 def judge_secretary(msgs, roster, target):
     """-> (secretary entry|None, reasons)."""
     sec = roster["secretary"]
@@ -732,6 +763,7 @@ def build_state(export, status):
 
     frozen_head, fh_reasons = resolve_frozen_head(msgs, roster, target)
     reasons += fh_reasons
+    reasons += unanswered_push(msgs, frozen_head)
 
     seats = []
     for seat in roster["panel"]:
