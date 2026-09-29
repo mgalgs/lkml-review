@@ -222,18 +222,23 @@ what they did not take counts as rejected, and the new version is exactly H.
    when vN was itself a human version) against H, mechanically, and record
    which method decided it. Check H out to test it (`git switch --detach
    upstream`) and switch back to your branch when done.
-   - (a) `git patch-id --stable` of the commit equals that of a commit in
-     `$(git merge-base <vN sha> upstream)..upstream` (compare `git show <c> |
-     git patch-id --stable` with `git log -p --reverse <that range> | git
-     patch-id --stable`): **taken**.
-   - (b) Else its diff reverse-applies cleanly on H (`git diff <c>^ <c> | git
+   - (a) The commit is an ancestor of H (`git merge-base --is-ancestor <c>
+     upstream`): **taken**. This is a fast-forward or merge of your tip, and
+     the commit is in H byte for byte.
+   - (b) Else `git patch-id --stable` of the commit equals that of a commit in
+     `$(git merge-base <vN frozen head> upstream)..upstream` (compare `git
+     show <c> | git patch-id --stable` with `git log -p --reverse <that
+     range> | git patch-id --stable`): **taken**. The range starts at the
+     frozen head, not at the merge-base with vN's sha, so it still holds the
+     human's copies when H sits on top of your commits.
+   - (c) Else its diff reverse-applies cleanly on H (`git diff <c>^ <c> | git
      apply --check -R`, run with H checked out): **taken**.
-   - (c) Else its diff forward-applies cleanly on H (`git diff <c>^ <c> | git
+   - (d) Else its diff forward-applies cleanly on H (`git diff <c>^ <c> | git
      apply --check`): **not taken**.
-   - (d) Else: **changed**.
+   - (e) Else: **changed**.
 
-   Say in one line in the cover that squashing and rebasing make (a) miss,
-   which is why (b) to (d) exist.
+   Say in one line in the cover that
+   squashing and rebasing make (a) and (b) miss, which is why (c) to (e) exist.
 3. `git reset --hard upstream`. The branch you are on is now H. Commit nothing
    else. Run the project's test suite on H and report it like any version.
 4. Integration notes. The upstream-moved mail may carry the human's notes
@@ -264,7 +269,7 @@ the upstream-moved mail; `Version: <N+1>`; `Subject: [PATCH v<N+1> 0/0]
   `git log <base>..HEAD`.
 - `## Integration of v<N>`: one line per commit of vN's panel commits: short
   sha, subject, taken / changed / not taken, the method that decided it (a to
-  d), and the reason. Add the one-line note about squashing and rebasing, and
+  e), and the reason. Add the one-line note about squashing and rebasing, and
   any note that the human's block was ignored.
 - `## Decided`: a suggestion the human author did not take is decided.
   Re-raise it only as a blocking objection saying why the decision is wrong;

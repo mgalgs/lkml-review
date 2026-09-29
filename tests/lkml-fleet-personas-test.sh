@@ -605,11 +605,15 @@ has "$pra" 'so it existing does not mean the push is unanswered' \
     "pr-author.md decides answered from the thread, not from the upstream branch"
 has "$pra" "## Integrating the human author's push" \
     "pr-author.md carries the integration section"
+has "$pra" 'git merge-base --is-ancestor <c>' \
+    "pr-author.md classifies by ancestry in H first"
+has "$pra" '$(git merge-base <vN frozen head> upstream)..upstream' \
+    "pr-author.md takes the patch-id range from the frozen head, not vN's sha"
 has "$pra" 'git patch-id --stable' \
-    "pr-author.md classifies by patch-id first"
+    "pr-author.md classifies by patch-id second"
 has "$pra" 'apply --check -R' \
-    "pr-author.md classifies by reverse-apply second"
-has "$pra" 'squashing and rebasing make (a) miss' \
+    "pr-author.md classifies by reverse-apply third"
+has "$pra" 'squashing and rebasing make (a) and (b) miss' \
     "pr-author.md explains why patch-id alone is not enough"
 has "$pra" '`git reset --hard upstream`' \
     "pr-author.md resets its branch to the pushed head"
