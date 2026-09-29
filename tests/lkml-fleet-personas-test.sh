@@ -578,6 +578,70 @@ has "$pra" 'GIT_SEQUENCE_EDITOR=true' \
     "pr-author.md re-rolls with autosquash"
 has "$pra" 'Comment-only:' \
     "pr-author.md keeps the Comment-only trailer rule"
+# The human author's push: the persona posts it, unchanged, as the next
+# version. These strings are the protocol; lkml-panel-state.py's
+# per-version frozen head reads the cover line the persona is told to write.
+# shellcheck disable=SC2016  # literal backticks in the needles
+{
+has "$pra" '**frozen head is per version**' \
+    "pr-author.md makes the frozen head per version"
+has "$pra" 'cover that posted the current version N, else the `Frozen-Head:` line of the' \
+    "pr-author.md takes the frozen head from its own cover for N, else the root's"
+has "$pra" '3. **Has the human author pushed?**' \
+    "pr-author.md has the Has the human author pushed? checklist step, before the every-seat test"
+has "$pra" '4. **Has every Panel seat replied on N?**' \
+    "pr-author.md keeps the every-seat test right after the push step"
+has "$pra" '`X-Upstream-Head: <branch> <sha>` header is UNANSWERED unless a later' \
+    "pr-author.md reads the newest X-Upstream-Head as unanswered until a later cover answers it"
+has "$pra" 'carries `Frozen-Head: <that sha>`' \
+    "pr-author.md ties an answered push to a cover's Frozen-Head line"
+has "$pra" 'Only the newest counts;' \
+    "pr-author.md counts only the newest X-Upstream-Head"
+has "$pra" 'A push never aborts a round.' \
+    "pr-author.md never lets a push abort a round"
+has "$pra" 'the local branch `upstream`' \
+    "pr-author.md names the upstream branch as the pushed head"
+has "$pra" 'so it existing does not mean the push is unanswered' \
+    "pr-author.md decides answered from the thread, not from the upstream branch"
+has "$pra" "## Integrating the human author's push" \
+    "pr-author.md carries the integration section"
+has "$pra" 'git patch-id --stable' \
+    "pr-author.md classifies by patch-id first"
+has "$pra" 'apply --check -R' \
+    "pr-author.md classifies by reverse-apply second"
+has "$pra" 'squashing and rebasing make (a) miss' \
+    "pr-author.md explains why patch-id alone is not enough"
+has "$pra" '`git reset --hard upstream`' \
+    "pr-author.md resets its branch to the pushed head"
+has "$pra" 'reply `To: @operator` only, one short' \
+    "pr-author.md replies to the operator alone when upstream is missing or differs"
+has "$pra" 'which sha was expected and what was found' \
+    "pr-author.md names the expected and found sha in that reply"
+has "$pra" 'not taken by the human author; no reason given' \
+    "pr-author.md uses the exact no-reason wording"
+has "$pra" 'invent a reason, and never ask the human for one' \
+    "pr-author.md never invents a reason nor asks for one"
+has "$pra" '`--- lkml-integration begin ---`' \
+    "pr-author.md reads the human's notes block by its begin line"
+has "$pra" 'ends in the first 7 hex characters of the ROOT' \
+    "pr-author.md checks the notes block against the root frozen head"
+has "$pra" '`Frozen-Head: <H>` alone on its line' \
+    "pr-author.md's integration cover carries Frozen-Head: <H>"
+has "$pra" 'Every cover you post carries this' \
+    "pr-author.md puts a Frozen-Head line on every cover"
+has "$pra" '## Integration of v<N>' \
+    "pr-author.md's integration cover classifies each commit"
+has "$pra" '## Decided' \
+    "pr-author.md's integration cover has a Decided section"
+has "$pra" 'A suggestion the human author did not take is decided.' \
+    "pr-author.md treats a dropped suggestion as decided"
+has "$pra" 'A human-integration version does not count toward Version-Limit.' \
+    "pr-author.md excludes human-integration versions from Version-Limit"
+has "$pra" 'The version count is 1 plus the number of' \
+    "pr-author.md counts only its own re-rolls against Version-Limit"
+has "$pra" '[PATCH v<N+1> 0/0]' \
+    "pr-author.md's integration cover subject is 0/0"
+}
 
 # pr-review kickoff: the roster lines are how every seat finds the
 # author, the panel, the secretary and the frozen head, so each must sit
