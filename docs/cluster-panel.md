@@ -50,7 +50,8 @@ working tree.
 
 `Frozen-Head` marks where the human author's commits end. The author seat
 never rewrites anything at or below it. Its own work is a series of commits
-on top.
+on top. The root's value is where the review starts; each later version has
+a frozen head of its own (see "The human author pushes").
 
 A typical kickoff from CI:
 
@@ -103,17 +104,71 @@ the full rules.
 3. **The author decides.** With every reply in:
    - if every panel seat's verdict on vN is non-blocking, it asks the
      secretary for the panel verdict (`To: @secretary` only);
-   - if some seat still blocks and N has reached `Version-Limit`, it asks the
-     secretary to close the panel as it stands, naming what still blocks;
+   - if some seat still blocks and the version count has reached
+     `Version-Limit`, it asks the secretary to close the panel as it stands,
+     naming what still blocks. The count is 1 plus the author seat's own
+     re-rolls; a version that is the human author's integration (below) does
+     not count;
    - otherwise it re-rolls. It posts version N+1 as one cover reply, `To:`
      the panel, with a `Version: N+1` key in its reply stanza. The body holds
-     a changelog answering each review point, a `## Testing` section, and a
-     `## Since vN` range-diff.
+     a `Frozen-Head:` line, a changelog answering each review point, a
+     `## Testing` section, and a `## Since vN` range-diff.
 4. **The target moves.** The postmaster stamps the re-roll cover with the
    branch and sha the author committed, and moves the thread's review target
    to them. The panel wakes on the cover, each seat checked out at the new
    sha, and the round repeats. A verdict on an old version does not carry
    forward.
+
+### The human author pushes
+
+The panel never pushes to the PR, but its human author may integrate part of
+what the panel produced and push a new head H. When that happens, an
+upstream-moved mail arrives on the existing thread, `To: @pr-author`, carrying
+the header `X-Upstream-Head: <branch> <sha>`. Only the postmaster stamps that
+header, so a sender cannot forge it. The sender and the mechanism that
+notices the push live outside this repo; this repo only reads the result.
+The mail may also carry a `Base: <sha>` line (the commit the PR now sits on)
+and the human's own integration notes, between the lines
+`--- lkml-integration begin ---` and `--- lkml-integration end ---`. In the
+author's clone, H is the local branch `upstream`; the wake branch is still
+vN's tip. The postmaster accepts a new target that is not a descendant of the
+previous one.
+
+The author seat treats the newest `X-Upstream-Head` as unanswered until a
+later cover of its own carries `Frozen-Head: <that sha>`. Once every panel
+seat has replied on vN, or the secretary has already been asked for vN, it
+does not ask for or wait on a verdict: it posts H, unchanged, as version N+1.
+That reopens a converged thread. A push never aborts a round in progress; it
+is integrated after the seats have replied.
+
+A version like this is a **human-integration version**. Its cover says that a
+human author sits above the author persona and made the calls, gives
+`Frozen-Head: <H>`, and classifies every panel commit of vN as taken,
+changed or not taken, with the method that decided it (a patch-id match, a
+reverse-apply, a forward-apply, or none of those) and the human's reason
+where the notes give one. Where they do not, the reason is exactly `not taken
+by the human author; no reason given`; the persona never invents one and never
+asks. Notes are used only when their marker line names this version and a
+series name ending in the first 7 hex characters of the root's `Frozen-Head`.
+Nothing the human did not take is rebased forward: it counts as rejected, and
+the version's target is exactly H. Human-integration versions do not count
+toward `Version-Limit`.
+
+The panel reviews it like any version, and every seat reviews it afresh;
+verdicts do not carry forward. A suggestion the human author did not take is
+**decided**: a seat may raise it again only as a blocking objection that says
+why the decision is wrong. Otherwise the author answers it as decided and
+changes nothing.
+
+#### Per-version `Frozen-Head`
+
+The frozen head of a version is the `Frozen-Head:` line of the author's cover
+that set it, else the root's. Every cover the author posts carries one. The
+author is a model, so the line alone is not trusted. `lkml-panel-state.py`
+accepts a value other than the root's only when a message earlier on the
+thread carries an `X-Upstream-Head` with that same sha. Otherwise it reports
+the mismatch as a reason and falls back to the root's frozen head: the author
+cannot declare its own commits frozen and so earn a `SIGNED-OFF`.
 
 ### Closing
 
@@ -125,11 +180,12 @@ which wakes nobody. The body ends with a machine-readable trailer block:
     Panel-Status: CONVERGED | IN-PROGRESS
     Panel-Verdict: SIGNED-OFF | RESPIN
 
-`Panel-Verdict` appears only with `CONVERGED`. It is `SIGNED-OFF` when the
-panel converged on v1, meaning the PR is good as it stands. It is `RESPIN`
-when the panel converged on a later version. The commits above
-`Frozen-Head` are then the recommended change, and the operator pulls them
-as a bundle. The panel never pushes to the PR, and no seat can: it has no
+`Panel-Verdict` appears only with `CONVERGED`. It follows the frozen head of
+the version under review. It is `SIGNED-OFF` when that version's target is
+its frozen head: the human's commits are good as they stand, whether that is
+the PR's head at v1 or a later human integration. It is `RESPIN` when the
+target differs, meaning the author's commits above the frozen head are the
+recommended change, and the operator pulls them as a bundle. The panel never pushes to the PR, and no seat can: it has no
 credential for anything remote.
 
 ## The gate: `lkml-panel-state.py`
@@ -141,7 +197,7 @@ job or a dashboard, should read this object and nothing else.
 
 | `status` | Meaning | What to do |
 |---|---|---|
-| `CONVERGED` | every panel seat holds a positive verdict on the current target, the secretary agrees, and the postmaster is quiet | act on `verdict`; for `RESPIN`, `bundle` gives the base, tip and branch |
+| `CONVERGED` | every panel seat holds a positive verdict on the current target, the secretary agrees, and the postmaster is quiet | act on `verdict`; for `RESPIN`, `bundle` gives the base (the frozen head), tip and branch |
 | `IN-PROGRESS` | work is still pending or running | wait |
 | `STALLED` | nothing is pending, but the panel has not converged | a human looks; `reasons` says why |
 | `NEEDS-OPERATOR` | the postmaster flagged the thread | a human looks; the flag reason is in `postmaster` |
@@ -149,6 +205,16 @@ job or a dashboard, should read this object and nothing else.
 Every string in `reasons` names a condition that blocks `CONVERGED`. A
 `CONVERGED` object has none. The script's `--help` documents the full field
 list and the precedence rules.
+
+Two keys describe the frozen head. `roster.frozen_head` is the root's value.
+The top-level `frozen_head` is `{"sha", "source"}` (null when unknown) for the
+current target, where `source` is `root` or `upstream` (a value vouched for by
+an earlier `X-Upstream-Head`, as above). With a frozen head known, a
+secretary verdict of `SIGNED-OFF` is valid only when the target sha equals it
+and `RESPIN` only when it differs; the other is a contradiction, named in
+`reasons`, and never `CONVERGED`. With none known, `SIGNED-OFF` is valid only
+on v1 and `RESPIN` only above it. The change is additive, so the schema stays
+`lkml-panel-state/1`.
 
 ### Why the gate and the personas read verdicts differently
 
