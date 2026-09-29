@@ -223,14 +223,21 @@ what they did not take counts as rejected, and the new version is exactly H.
    which method decided it. Check H out to test it (`git switch --detach
    upstream`) and switch back to your branch when done.
    - (a) The commit is an ancestor of H (`git merge-base --is-ancestor <c>
-     upstream`): **taken**. This is a fast-forward or merge of your tip, and
-     the commit is in H byte for byte.
+     upstream`). That puts it in H's history, not its change in H's tree: the
+     human may have pulled your tip and then reverted what they did not want.
+     So test the tree. If its diff forward-applies cleanly on H (`git diff
+     <c>^ <c> | git apply --check`), the change was undone: **not taken**,
+     and stop here (do not try (b), which would match the commit against
+     itself). Otherwise **taken**: a fast-forward or merge of your tip keeps
+     the commit's change in H.
    - (b) Else `git patch-id --stable` of the commit equals that of a commit in
      `$(git merge-base <vN frozen head> upstream)..upstream` (compare `git
      show <c> | git patch-id --stable` with `git log -p --reverse <that
-     range> | git patch-id --stable`): **taken**. The range starts at the
-     frozen head, not at the merge-base with vN's sha, so it still holds the
-     human's copies when H sits on top of your commits.
+     range> | git patch-id --stable`): **taken**, unless its diff forward-
+     applies cleanly on H, which means the human's copy was reverted: **not
+     taken**. The range starts at the frozen head, not at the merge-base with
+     vN's sha, so it still holds the human's copies when H sits on top of
+     your commits.
    - (c) Else its diff reverse-applies cleanly on H (`git diff <c>^ <c> | git
      apply --check -R`, run with H checked out): **taken**.
    - (d) Else its diff forward-applies cleanly on H (`git diff <c>^ <c> | git

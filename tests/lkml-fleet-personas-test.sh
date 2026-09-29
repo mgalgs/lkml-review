@@ -607,6 +607,10 @@ has "$pra" "## Integrating the human author's push" \
     "pr-author.md carries the integration section"
 has "$pra" 'git merge-base --is-ancestor <c>' \
     "pr-author.md classifies by ancestry in H first"
+has "$pra" 'and then reverted what they did not want' \
+    "pr-author.md qualifies ancestry by the tree, so a pulled-then-reverted commit is not taken"
+has "$pra" 'copy was reverted: **not' \
+    "pr-author.md does not count a reverted patch-id match as taken"
 has "$pra" '$(git merge-base <vN frozen head> upstream)..upstream' \
     "pr-author.md takes the patch-id range from the frozen head, not vN's sha"
 has "$pra" 'git patch-id --stable' \
