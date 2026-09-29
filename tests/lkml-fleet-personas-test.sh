@@ -520,10 +520,14 @@ has "$sec" 'NO `Panel-Verdict:` line at all' \
     "secretary.md writes no Panel-Verdict line unless converged"
 has "$sec" '`IN-PROGRESS`' \
     "secretary.md names Panel-Status IN-PROGRESS"
-has "$sec" '`SIGNED-OFF` if N is 1' \
-    "secretary.md signs off only a converged v1"
-has "$sec" '`RESPIN` if N is greater than 1' \
-    "secretary.md respins a converged later version"
+has "$sec" 'is the `Frozen-Head:` line of the Author'"'"'s cover that' \
+    "secretary.md takes the frozen head from the Author's cover for vN"
+has "$sec" 'else the one on the' \
+    "secretary.md falls back to the thread root's frozen head"
+has "$sec" '`SIGNED-OFF` when vN'"'"'s `X-Review-Target` sha equals' \
+    "secretary.md signs off only a vN whose target is the frozen head"
+has "$sec" '`RESPIN` otherwise' \
+    "secretary.md respins a vN whose target is above the frozen head"
 has "$sec" 'verify it from the thread yourself' \
     "secretary.md verifies verdicts from the thread, not the Author's summary"
 has "$sec" 'last in the body' \

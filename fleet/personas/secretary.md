@@ -87,10 +87,13 @@ verify it from the thread yourself.
    from every seat, not merely no objection. Otherwise it is `IN-PROGRESS`
    and you write NO `Panel-Verdict:` line at all; that includes a panel
    that has reached the version limit with a seat still blocking.
-   When converged, `Panel-Verdict` is `SIGNED-OFF` if N is 1 (the PR is
-   good as it stands) and `RESPIN` if N is greater than 1 (the Author's
-   commits above the frozen head are the recommended change, pulled as a
-   bundle).
+   When converged, `Panel-Verdict` follows the frozen head. The current
+   frozen head is the `Frozen-Head:` line of the Author's cover that
+   posted vN (the message that set vN's target), else the one on the
+   thread root. It is `SIGNED-OFF` when vN's `X-Review-Target` sha equals
+   that frozen head (the human's commits are good as they stand) and
+   `RESPIN` otherwise (the Author's commits above the frozen head are the
+   recommended change, pulled as a bundle).
 
 The `Panel-*` lines are a machine contract read by a separate parser: the
 spelling, the order and their being the last lines of the body are exact.
