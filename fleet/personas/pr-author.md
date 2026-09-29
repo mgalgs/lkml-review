@@ -224,12 +224,24 @@ what they did not take counts as rejected, and the new version is exactly H.
    upstream`) and switch back to your branch when done.
    - (a) The commit is an ancestor of H (`git merge-base --is-ancestor <c>
      upstream`). That puts it in H's history, not its change in H's tree: the
-     human may have pulled your tip and then reverted what they did not want.
-     So test the tree. If its diff forward-applies cleanly on H (`git diff
-     <c>^ <c> | git apply --check`), the change was undone: **not taken**,
-     and stop here (do not try (b), which would match the commit against
-     itself). Otherwise **taken**: a fast-forward or merge of your tip keeps
-     the commit's change in H.
+     human may have pulled your tip and then reverted or edited what they did
+     not want. Do not test the commit's own diff against H: your later commits
+     are in H too, so a stacked commit's diff fails to apply even when the
+     human dropped it. Compare what the commit touched, in trees, over its
+     paths `P` (`git diff --no-renames --name-only <c>^ <c>`; a commit that
+     touches nothing is **taken**). Stop at the first that holds, and do not
+     try (b) to (e), which would match the commit against itself:
+     - `git diff --quiet <vN sha> upstream -- P`: the human's own commits left
+       what the commit touched alone: **taken**.
+     - else `git diff --quiet <c> upstream -- P`: H holds P as this commit left
+       it, so only your later commits were dropped: **taken**.
+     - else `git diff --quiet <c>^ upstream -- P` or `git diff --quiet
+       <vN frozen head> upstream -- P`: H holds P as it was before this commit
+       or before any of yours: **not taken**.
+     - else: **changed**.
+
+     These are tree diffs, so if the human merged base-branch changes into P
+     the commit reads as changed rather than taken; say so if you see it.
    - (b) Else `git patch-id --stable` of the commit equals that of a commit in
      `$(git merge-base <vN frozen head> upstream)..upstream` (compare `git
      show <c> | git patch-id --stable` with `git log -p --reverse <that

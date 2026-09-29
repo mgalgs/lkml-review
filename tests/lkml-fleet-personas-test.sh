@@ -607,8 +607,16 @@ has "$pra" "## Integrating the human author's push" \
     "pr-author.md carries the integration section"
 has "$pra" 'git merge-base --is-ancestor <c>' \
     "pr-author.md classifies by ancestry in H first"
-has "$pra" 'and then reverted what they did not want' \
-    "pr-author.md qualifies ancestry by the tree, so a pulled-then-reverted commit is not taken"
+has "$pra" 'Do not test the commit'"'"'s own diff against H' \
+    "pr-author.md does not test an ancestor's own diff against H, which misreads a stack"
+has "$pra" 'git diff --quiet <vN sha> upstream -- P' \
+    "pr-author.md calls an ancestor taken when the human left its paths alone"
+has "$pra" 'git diff --quiet <c> upstream -- P' \
+    "pr-author.md calls an ancestor taken when H holds its paths as the commit left them"
+has "$pra" '<vN frozen head> upstream -- P' \
+    "pr-author.md calls an ancestor not taken when H holds its paths as before the panel"
+has "$pra" 'else: **changed**' \
+    "pr-author.md can report an ancestor as changed"
 has "$pra" 'copy was reverted: **not' \
     "pr-author.md does not count a reverted patch-id match as taken"
 has "$pra" '$(git merge-base <vN frozen head> upstream)..upstream' \

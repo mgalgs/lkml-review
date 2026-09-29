@@ -146,9 +146,13 @@ human author sits above the author persona and made the calls, gives
 `Frozen-Head: <H>`, and classifies every panel commit of vN as taken,
 changed or not taken, with the method that decided it (ancestry in H, a
 patch-id match, a reverse-apply, a forward-apply, or none of those) and the
-human's reason where the notes give one. Ancestry and a patch-id match count
-as taken only while the commit's change is still in H's tree: a commit the
-human pulled and then reverted is not taken. Where they give no reason, the
+human's reason where the notes give one. A commit that is an ancestor of H
+is classified by comparing H's tree with the panel's over the paths the
+commit touched, not by ancestry alone and not by applying the commit's own
+diff, which misreads a stack: a commit the human pulled and then reverted is
+not taken, and one they pulled and then edited is changed. A patch-id match
+counts as taken only while the copy's change is still in H's tree. Where
+they give no reason, the
 reason is exactly `not taken
 by the human author; no reason given`; the persona never invents one and never
 asks. Notes are used only when their marker line names this version and a
