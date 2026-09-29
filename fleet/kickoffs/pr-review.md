@@ -107,5 +107,14 @@ carry forward. If the panel is still blocked when the version limit
 above is reached, the Author stops and asks the Secretary to close the
 panel with what still blocks.
 
+A version may instead be the PR's human author's own integration: when
+they push a new head, the Author posts it unchanged as the next version
+and its cover says so, classifying which commits were taken. Review it
+like any other version. A suggestion the human author did not take is
+decided: re-raise it only as a blocking objection saying why the
+decision is wrong; otherwise leave it closed. The frozen head can move to
+the human's push, so the head that counts as the PR's own is the one on
+the newest cover, not only the one at the top of this mail.
+
 The Secretary's summary is the last message on the thread. It goes to
 the operator; do not reply to it.

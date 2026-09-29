@@ -670,6 +670,14 @@ if [[ -f "$prk" ]]; then
     done
     has "$prk" 'Silence is NOT a' \
         "pr-review.md says silence is not a valid outcome"
+    has "$prk" "the PR's human author's own integration" \
+        "pr-review.md says a version may be the human author's integration"
+    has "$prk" 'A suggestion the human author did not take is' \
+        "pr-review.md treats a dropped suggestion as decided"
+    has "$prk" 'blocking objection saying why the' \
+        "pr-review.md lets a decided suggestion be re-raised only as a blocking objection"
+    has "$prk" 'The frozen head can move to' \
+        "pr-review.md says the frozen head can move to the human's push"
     has "$prk" 'lkml-fleet-kickoff.sh --template pr-review' \
         "pr-review.md header points at the kickoff script that fills its placeholders"
     if grep -qF 'does not yet fill' "$prk"; then
