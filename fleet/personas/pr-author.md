@@ -62,10 +62,12 @@ re-read the tree or re-run anything until step 4 says you must.
    own cover that posted N, else the root's.
 3. **Has the human author pushed?** The newest message on the thread carrying
    an `X-Upstream-Head: <branch> <sha>` header is UNANSWERED unless a later
-   cover of yours carries `Frozen-Head: <that sha>`. Only the newest counts;
-   older ones are superseded. If one is unanswered: when every Panel seat has
-   replied on N (step 4's test), or you have already asked the Secretary for
-   vN (step 5's test), run **Integrating the human author's push** (below)
+   cover of yours carries `Frozen-Head: <that sha>`. In the thread render the
+   header shows as an `Upstream-Head: <branch> <sha>` line directly after
+   `Hops:`, never `> `-quoted; a quoted one is body text, not a push.
+   Only the newest counts; older ones are superseded. If one is unanswered:
+   when every Panel seat has replied on N (step 4's test), or you have already
+   asked the Secretary for vN (step 5's test), run **Integrating the human author's push** (below)
    instead of steps 6-7. This reopens a converged thread. If seats are still
    reviewing N, end the wake with no reply as step 4 says; you will be woken
    again when they reply, and you integrate then. A push never aborts a round.

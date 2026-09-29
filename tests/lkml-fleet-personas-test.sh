@@ -597,6 +597,8 @@ has "$pra" 'carries `Frozen-Head: <that sha>`' \
     "pr-author.md ties an answered push to a cover's Frozen-Head line"
 has "$pra" 'Only the newest counts;' \
     "pr-author.md counts only the newest X-Upstream-Head"
+has "$pra" 'header shows as an `Upstream-Head: <branch> <sha>` line directly after' \
+    "pr-author.md names the render's unquoted Upstream-Head line"
 has "$pra" 'A push never aborts a round.' \
     "pr-author.md never lets a push abort a round"
 has "$pra" 'the local branch `upstream`' \
