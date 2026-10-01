@@ -120,6 +120,21 @@ def green(sha=A, ver=1, verdict=None):
     return ([root(sha=sha, ver=ver, body=body)] + panel_positive(sha=sha, ver=ver)
             + [sec(20, "CONVERGED", ver, verdict, sha, ver)])
 
+def suite_case(tests_body, suite_lines=("Suite: pytest -q", "Suite-Seats: @tests"),
+               panel="@core, @tests, @docs", older=None):
+    # A v1 panel that is otherwise converged; @tests' verdict message is
+    # tests_body, @docs' and @core's are plain Reviewed-by.
+    body = ROOT_BODY.replace("f" * 40, A).replace("@core, @tests, @docs", panel)
+    body = "\n".join([body] + list(suite_lines))
+    m = [root(body=body)]
+    if older:
+        m.append(msg(2, "@tests", older, sha=B, ver=1))
+    m += [msg(3, "@core", "Reviewed-by: C", sha=A, ver=1),
+          msg(4, "@tests", tests_body, sha=A, ver=1),
+          msg(5, "@docs", "Reviewed-by: D", sha=A, ver=1),
+          sec(20)]
+    return m
+
 def run(rid, state, agent="@core"):
     return {"run_id": rid, "agent": agent, "state": state,
             "run_dir": "/run/" + rid, "resumed": False}
@@ -1412,6 +1427,214 @@ check "huge X-Version is null on the seat" "null" "$(seat @core version)"
 reason_has "huge Panel-Version is a malformed trailer" "is not a number"
 check "and it is not CONVERGED" "STALLED" "$(jr .status)"
 
+printf '\n== suite run: the roster lines and the Suite-Run claim ==\n'
+gen suite0 <<'PY'
+write(D, export(green()), status())
+PY
+run_case suite0
+check "no Suite on the root: still CONVERGED" "CONVERGED" "$(jr .status)"
+check "no Suite: roster.suite is null" "null" "$(j .roster.suite)"
+check "no Suite: roster.suite_seats is []" "[]" "$(j .roster.suite_seats)"
+check "no Suite: every suite_run is null" "[null,null,null]" "$(j '[.seats[].suite_run]')"
+
+gen suite1 <<'PY'
+write(D, export(suite_case("Suite-Run: 12 passed, 0 failed\nReviewed-by: T")), status())
+PY
+run_case suite1
+check "clean suite run on the verdict message: CONVERGED" "CONVERGED" "$(jr .status)"
+check "roster.suite is the command" "pytest -q" "$(jr .roster.suite)"
+check "roster.suite_seats" '["@tests"]' "$(j .roster.suite_seats)"
+check "the suite seat's suite_run is clean" \
+    '{"status":"clean","passed":12,"failed":0,"detail":null}' "$(j '.seats[] | select(.seat == "@tests") | .suite_run')"
+check "a non-suite seat's suite_run is null" "null" "$(j '.seats[] | select(.seat == "@docs") | .suite_run')"
+
+gen suite2 <<'PY'
+write(D, export(suite_case("Suite-Run: could-not-run ModuleNotFoundError: No module named 'requests'\nReviewed-by: T")), status())
+PY
+run_case suite2
+check "could-not-run on a positive suite seat: STALLED (quiescent)" "STALLED" "$(jr .status)"
+reason_has "the reason names the seat" "@tests signed off without a clean suite run"
+reason_has "the reason names could-not-run and the error" "could-not-run: ModuleNotFoundError: No module named 'requests'"
+check "the seat's state stays positive" "positive" "$(seat @tests state)"
+check "suite_run status" "could-not-run" "$(seat @tests suite_run.status)"
+check "suite_run detail is the first error line" "ModuleNotFoundError: No module named 'requests'" "$(seat @tests suite_run.detail)"
+
+gen suite2b <<'PY'
+write(D, export(suite_case("Suite-Run: could-not-run ModuleNotFoundError\nReviewed-by: T")), status(runs=[run("r1", "live")]))
+PY
+run_case suite2b
+check "could-not-run while a run is live: IN-PROGRESS, not STALLED" "IN-PROGRESS" "$(jr .status)"
+
+gen suite3 <<'PY'
+write(D, export(suite_case("Suite-Run: 3 passed, 1 failed\nReviewed-by: T")), status())
+PY
+run_case suite3
+check "failed suite run: not CONVERGED" "STALLED" "$(jr .status)"
+check "failed: status, counts" "failed 3 1" "$(seat @tests suite_run.status) $(seat @tests suite_run.passed) $(seat @tests suite_run.failed)"
+reason_has "failed: the reason says so" "failed: 3 passed, 1 failed"
+
+gen suite4 <<'PY'
+write(D, export(suite_case("Suite-Run: 0 passed, 0 failed\nReviewed-by: T")), status())
+PY
+run_case suite4
+check "0 passed, 0 failed: not CONVERGED" "STALLED" "$(jr .status)"
+check "no-tests status" "no-tests" "$(seat @tests suite_run.status)"
+reason_has "no-tests: the reason says so" "no-tests"
+
+gen suite5 <<'PY'
+write(D, export(suite_case("Reviewed-by: T")), status())
+PY
+run_case suite5
+check "no Suite-Run line: not CONVERGED" "STALLED" "$(jr .status)"
+check "missing status" "missing" "$(seat @tests suite_run.status)"
+reason_has "missing: the reason says so" "missing"
+
+gen suite6 <<'PY'
+write(D, export(suite_case("Suite-Run: lots passed\nReviewed-by: T")), status())
+PY
+run_case suite6
+check "malformed Suite-Run: not CONVERGED" "STALLED" "$(jr .status)"
+check "malformed status" "malformed" "$(seat @tests suite_run.status)"
+check "malformed detail is the offending line" "Suite-Run: lots passed" "$(seat @tests suite_run.detail)"
+
+gen suite6b <<'PY'
+bodies = ["Suite-Run: 5 passed, 0 failed extra", "Suite-Run: 5 passed, 0 failed.", "Suite-Run: 5 passed,  0 failed",
+          "suite-run: 5 passed, 0 failed", "Suite-Run: could-not-runX", "Suite-Run:", "Suite-Run: -1 passed, 0 failed",
+          "Suite-Run: " + "9" * 19 + " passed, 0 failed"]
+for i, b in enumerate(bodies):
+    os.makedirs(D + "-%d" % i, exist_ok=True)
+    write(D + "-%d" % i, export(suite_case(b + "\nReviewed-by: T")), status())
+PY
+for i in 0 1 2 3 4 5 6 7; do
+    gen_dir="$work/case-suite6b-$i"; cases_run+=("suite6b-$i")
+    OUT="$("$ps" --export-file "$gen_dir/export.json" --status-file "$gen_dir/status.json" 2>/dev/null)"
+    want=malformed; [[ "$i" == 3 ]] && want=missing   # variant 3 is not a Suite-Run line at all
+    check "grammar is exact: variant $i is $want" "$want" "$(seat @tests suite_run.status)"
+    check "grammar is exact: variant $i is not CONVERGED" "STALLED" "$(jr .status)"
+done
+
+gen suite7 <<'PY'
+write(D, export(suite_case("> Suite-Run: 5 passed, 0 failed\n  Suite-Run: 5 passed, 0 failed\nReviewed-by: T")), status())
+PY
+run_case suite7
+check "quoted or indented Suite-Run does not count: missing" "missing" "$(seat @tests suite_run.status)"
+check "and it is not CONVERGED" "STALLED" "$(jr .status)"
+
+gen suite8 <<'PY'
+write(D, export(suite_case("Reviewed-by: T", older="Suite-Run: 5 passed, 0 failed\nReviewed-by: T")), status())
+PY
+run_case suite8
+check "a clean run on an OLDER target message does not count: missing" "missing" "$(seat @tests suite_run.status)"
+check "and it is not CONVERGED" "STALLED" "$(jr .status)"
+
+gen suite9 <<'PY'
+write(D, export(suite_case("Suite-Run: 5 passed, 0 failed\nSuite-Run: could-not-run no network\nReviewed-by: T")), status())
+PY
+run_case suite9
+check "two Suite-Run lines: the last counts (clean then could-not-run)" "could-not-run" "$(seat @tests suite_run.status)"
+check "and it is not CONVERGED" "STALLED" "$(jr .status)"
+
+gen suite9b <<'PY'
+write(D, export(suite_case("Suite-Run: could-not-run no network\nSuite-Run: 5 passed, 0 failed\nReviewed-by: T")), status())
+PY
+run_case suite9b
+check "two Suite-Run lines: could-not-run then clean is clean" "CONVERGED" "$(jr .status)"
+
+gen suite9c <<'PY'
+write(D, export(suite_case("Suite-Run: could-not-run\nReviewed-by: T")), status())
+PY
+run_case suite9c
+check "bare could-not-run: status" "could-not-run" "$(seat @tests suite_run.status)"
+check "bare could-not-run: detail null" "null" "$(seat @tests suite_run.detail)"
+
+gen suite10 <<'PY'
+write(D, export(suite_case("Suite-Run: 4 passed, 0 failed\nReviewed-by: T", suite_lines=["Suite: pytest -q"])), status())
+PY
+run_case suite10
+check "Suite without Suite-Seats, @tests on the panel: defaults to @tests" '["@tests"]' "$(j .roster.suite_seats)"
+check "and it converges with a clean run" "CONVERGED" "$(jr .status)"
+
+gen suite11 <<'PY'
+write(D, export(suite_case("Reviewed-by: T", suite_lines=["Suite: pytest -q"], panel="@core, @qa, @docs")), status())
+PY
+run_case suite11
+check "Suite without Suite-Seats and no @tests: no suite seats" "[]" "$(j .roster.suite_seats)"
+reason_has "that is a reason" "Suite: set but no Suite-Seats and @tests is not on the panel"
+check "and not CONVERGED" "STALLED" "$(jr .status)"
+
+gen suite12 <<'PY'
+write(D, export(suite_case("Suite-Run: 4 passed, 0 failed\nReviewed-by: T", suite_lines=["Suite: pytest -q", "Suite-Seats: @tests, @ghost"])), status())
+PY
+run_case suite12
+reason_has "a Suite-Seats entry not on the panel is a reason" "@ghost"
+check "and is dropped" '["@tests"]' "$(j .roster.suite_seats)"
+check "and the thread is not CONVERGED" "STALLED" "$(jr .status)"
+
+gen suite12b <<'PY'
+write(D, export(suite_case("Reviewed-by: T", suite_lines=["Suite: pytest -q", "Suite-Seats: @ghost, tests"])), status())
+PY
+run_case suite12b
+reason_has "a malformed Suite-Seats address is a reason" "malformed Suite-Seats address 'tests'"
+reason_has "a Suite-Seats line that leaves no seat is a reason" "names no seat on the panel"
+check "and no seat is a suite seat" "[null,null,null]" "$(j '[.seats[].suite_run]')"
+
+gen suite13 <<'PY'
+write(D, export(suite_case("Reviewed-by: T", suite_lines=["Suite-Seats: @tests"])), status())
+PY
+run_case suite13
+reason_has "Suite-Seats without Suite is a reason" "Suite-Seats without a Suite"
+check "and there is no Suite" "null" "$(j .roster.suite)"
+check "and no suite seats" "[]" "$(j .roster.suite_seats)"
+check "and not CONVERGED" "STALLED" "$(jr .status)"
+
+gen suite14 <<'PY'
+write(D, export(suite_case("Reviewed-by: T", suite_lines=["Suite:   ", "Suite-Seats: @tests"])), status())
+PY
+run_case suite14
+reason_has "an empty Suite is a reason" "empty Suite"
+check "an empty Suite reads as no Suite" "null" "$(j .roster.suite)"
+check "an empty Suite never satisfies: not CONVERGED" "STALLED" "$(jr .status)"
+
+gen suite14b <<'PY'
+write(D, export(suite_case("Reviewed-by: T", suite_lines=["Suite:", "Suite: pytest -q", "Suite-Seats: @tests"])), status())
+PY
+run_case suite14b
+check "an empty first Suite wins over a later one" "null" "$(j .roster.suite)"
+
+gen suite15 <<'PY'
+write(D, export(suite_case("Suite-Run: 4 passed, 0 failed\nReviewed-by: T", suite_lines=["Suite: pytest -q", "Suite-Seats: @tests"])), status())
+PY
+run_case suite15
+check "a non-suite seat with no Suite-Run line, positive: no reason from it" "0" \
+    "$(jq '[.reasons[] | select(contains("@docs") or contains("@core"))] | length' <<<"$OUT")"
+check "and its suite_run is null" "null" "$(seat @docs suite_run)"
+
+gen suite16 <<'PY'
+m = suite_case("Changes-requested\nSuite-Run: could-not-run no network")
+write(D, export(m), status())
+PY
+run_case suite16
+check "a blocking suite seat has its suite_run filled in" "could-not-run" "$(seat @tests suite_run.status)"
+check "a blocking suite seat: state stays blocking" "blocking" "$(seat @tests state)"
+reason_lacks "a blocking suite seat needs no 'signed off' reason" "signed off without"
+
+gen suite17 <<'PY'
+m = [x for x in suite_case("Reviewed-by: T") if x["from"] != "@tests"]
+write(D, export(m), status())
+PY
+run_case suite17
+check "a silent suite seat: suite_run is missing" "missing" "$(seat @tests suite_run.status)"
+check "a silent suite seat: state is silent" "silent" "$(seat @tests state)"
+reason_lacks "a silent suite seat needs no 'signed off' reason" "signed off without"
+
+gen suite18 <<'PY'
+m = suite_case("Suite-Run: could-not-run no database\nAcked-by: T")
+write(D, export(m), status())
+PY
+run_case suite18
+check "wake-gate's view: a suite seat with could-not-run keeps state positive" "positive" "$(seat @tests state)"
+check "and keeps its verdict" "Acked-by" "$(seat @tests verdict)"
+
 printf '\n== invariants over every case above ==\n'
 inv_bad=""; inv_n=0; inv_conv=0
 for c in "${cases_run[@]}"; do
@@ -1427,8 +1650,12 @@ for c in "${cases_run[@]}"; do
         and (.bundle == null or .verdict == "RESPIN")
         and (.postmaster | has("quiescent") and has("flagged") and has("flag_reason") and has("live_runs")
              and has("pending_retries") and has("held") and has("unrouted"))
-        and (.roster | has("author") and has("panel") and has("secretary") and has("version_limit") and has("frozen_head"))
-        and all(.seats[]; has("seat") and has("state") and has("verdict") and has("message_id") and has("version") and has("sha"))
+        and (.roster | has("author") and has("panel") and has("secretary") and has("version_limit") and has("frozen_head")
+             and has("suite") and has("suite_seats"))
+        and all(.seats[]; has("seat") and has("state") and has("verdict") and has("message_id") and has("version") and has("sha") and has("suite_run"))
+        and all(.seats[]; (.suite_run == null) or (.suite_run | has("status") and has("passed") and has("failed") and has("detail")))
+        and (.status != "CONVERGED" or all(.seats[]; .suite_run == null or .suite_run.status == "clean"))
+        and (.roster.suite != null or .roster.suite_seats == [])
         and (.secretary == null or (.secretary | has("message_id") and has("version") and has("status")
              and has("verdict") and has("on_target") and has("malformed")))
         and (.target == null or (.target | has("branch") and has("sha") and has("version") and has("set_by") and has("set_at") and has("source")))

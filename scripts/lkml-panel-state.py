@@ -45,11 +45,26 @@ case-sensitive, the first occurrence of a key wins:
     Secretary: @secretary
     Version-Limit: 4
     Frozen-Head: <40- or 64-hex sha>
+    Suite: <command>
+    Suite-Seats: @tests[, @other]
 
 An address must match ^@[a-z0-9][a-z0-9-]*$; a malformed one is dropped
 with a reason (and, being a reason, blocks CONVERGED: a seat silently
 dropped from the panel is a seat nobody waits for). A missing or empty
 Panel means the roster is unusable.
+
+Suite -- the exact command the repository under review says its suite
+seats must run. Its value must be non-empty once stripped; an empty one
+is malformed: a reason, and the root is read as having no Suite line
+(never as a Suite that is present and satisfied). Suite-Seats lists the
+panel seats that must run it, comma-separated, each an address. It only
+means something with a Suite: without one it is a reason. With a Suite
+and no Suite-Seats line the suite seats default to @tests when @tests is
+on the panel; otherwise there are none, which is a reason ("Suite: set
+but no Suite-Seats and @tests is not on the panel"): a suite nobody must
+run is a gap, not a pass. A Suite-Seats entry not on the panel is a
+reason and is dropped, and so is a Suite-Seats line that leaves no seat.
+roster.suite_seats is the RESOLVED list ([] with no Suite).
 
 Frozen head -- the commit the human's PR stood on when a version's review
 began, which decides what a sign-off means. roster.frozen_head is the
@@ -111,6 +126,35 @@ Changes-requested, Question, then the -by trailers). state is:
                may retract it, so the positive is not trusted)
     silent     no tagged message from the seat at all
 
+Suite run -- every seat in roster.suite_seats must state, on the SAME
+message that supplied its verdict, that it ran the Suite command. On a
+line of its own at the left margin, not quoted (QUOTED_RE, the tags'
+rule); when a message has several the LAST one counts:
+
+    Suite-Run: <N> passed, <M> failed
+    Suite-Run: could-not-run <the first error line>
+
+The grammar is exact: ^Suite-Run: ([0-9]{1,18}) passed, ([0-9]{1,18})
+failed[ \t]*$ or ^Suite-Run: could-not-run( .*)?$; anything else that
+starts "Suite-Run:" is malformed. Each seat's suite_run is null for a
+seat that is not a suite seat (or with no Suite), else {"status",
+"passed", "failed", "detail"} with status:
+
+    clean          N >= 1 and M == 0
+    no-tests       N == 0 and M == 0: a run that matched nothing proved
+                   nothing
+    failed         M >= 1
+    could-not-run  detail is the line's text after "could-not-run"
+    malformed      detail is the clipped offending line
+    missing        no Suite-Run on the verdict message, or no verdict
+                   message at all (silent, stale)
+
+The rule: a suite seat that is positive without a clean suite run adds a
+reason, which blocks CONVERGED (STALLED once quiescent: an operator must
+fix the environment). Its state stays "positive": the seat HAS answered,
+and a consumer that keys off state (lkml-wake-gate.py) must still see
+that. A suite seat that is blocking or asking needs no extra reason.
+
 Secretary -- the roster's Secretary seat reports the panel's overall
 state in the LAST non-empty lines of a message body, in this order:
 
@@ -162,10 +206,14 @@ Output (null, never an omitted key, for what is unknown):
     {"schema": "lkml-panel-state/1", "thread", "subject",
      "status", "verdict",          # verdict only when CONVERGED
      "target": {"branch","sha","version","set_by","set_at","source"},
-     "roster": {"author","panel","secretary","version_limit","frozen_head"},
+     "roster": {"author","panel","secretary","version_limit","frozen_head",
+                "suite","suite_seats"},   # suite: string|null; suite_seats:
+                                          # the resolved list, [] w/o Suite
      "frozen_head": {"sha","source"},   # of the current target; source
                                         # "root" or "upstream"
-     "seats": [{"seat","state","verdict","message_id","version","sha"}],
+     "seats": [{"seat","state","verdict","message_id","version","sha",
+                "suite_run"}],   # null, or {"status","passed","failed",
+                                 # "detail"}; see "Suite run"
      "secretary": {"message_id","version","status","verdict",
                    "on_target","malformed"},
      "postmaster": {"quiescent","flagged","flag_reason","live_runs",
@@ -201,10 +249,15 @@ ADDRESS_RE = re.compile(r"^@[a-z0-9][a-z0-9-]*$")
 HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
 FROZEN_HEAD_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
 FROZEN_HEAD_LINE_RE = re.compile(r"^Frozen-Head:(.*)$")
-ROSTER_KEYS = ("Author", "Panel", "Secretary", "Version-Limit", "Frozen-Head")
+ROSTER_KEYS = ("Author", "Panel", "Secretary", "Version-Limit", "Frozen-Head",
+               "Suite", "Suite-Seats")
 ROSTER_LINE_RE = re.compile(r"^(" + "|".join(ROSTER_KEYS) + r"):(.*)$")
 PANEL_LINE_RE = re.compile(r"^Panel-[A-Za-z]+:")
 PANEL_KNOWN_RE = re.compile(r"^Panel-(?:Version|Status|Verdict):")
+SUITE_RUN_PREFIX = "Suite-Run:"
+SUITE_RUN_COUNTS_RE = re.compile(
+    r"Suite-Run: ([0-9]{1,18}) passed, ([0-9]{1,18}) failed[ \t]*")
+SUITE_RUN_COULD_NOT_RE = re.compile(r"Suite-Run: could-not-run( .*)?")
 SECRETARY_KEYS = ("Panel-Version", "Panel-Status", "Panel-Verdict")
 
 USAGE = """\
@@ -336,7 +389,8 @@ def address(value, what, reasons):
 def parse_roster(root):
     """The roster from the thread root -> (roster, reasons)."""
     roster = {"author": None, "panel": [], "secretary": None,
-              "version_limit": None, "frozen_head": None}
+              "version_limit": None, "frozen_head": None,
+              "suite": None, "suite_seats": []}
     reasons = []
     if root is None or not root["ok"]:
         reasons.append("thread root is unreadable; no panel roster")
@@ -372,7 +426,47 @@ def parse_roster(root):
                 f"roster: malformed Frozen-Head {seen['Frozen-Head']!r} dropped")
     if not roster["panel"]:
         reasons.append("no panel roster on the thread root")
+    reasons += resolve_suite(roster, seen)
     return roster, reasons
+
+
+def resolve_suite(roster, seen):
+    """Suite and Suite-Seats from the root's roster lines -> reasons;
+    fills roster["suite"] and roster["suite_seats"]. See the module
+    docstring, "Suite"."""
+    reasons = []
+    if "Suite" in seen:
+        if seen["Suite"]:
+            roster["suite"] = seen["Suite"]
+        else:
+            reasons.append("roster: empty Suite value; read as no Suite line")
+    if roster["suite"] is None:
+        if "Suite-Seats" in seen:
+            reasons.append("roster: Suite-Seats without a Suite")
+        return reasons
+    if "Suite-Seats" not in seen:
+        if "@tests" in roster["panel"]:
+            roster["suite_seats"] = ["@tests"]
+        else:
+            reasons.append("roster: Suite: set but no Suite-Seats and "
+                           "@tests is not on the panel")
+        return reasons
+    for tok in seen["Suite-Seats"].split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        addr = address(tok, "Suite-Seats", reasons)
+        if addr is None or addr in roster["suite_seats"]:
+            continue
+        if addr in roster["panel"]:
+            roster["suite_seats"].append(addr)
+        else:
+            reasons.append(f"roster: Suite-Seats names {addr}, "
+                           f"which is not on the panel; dropped")
+    if not roster["suite_seats"]:
+        reasons.append("roster: Suite: set but Suite-Seats names no seat "
+                       "on the panel")
+    return reasons
 
 
 def opt_int(value):
@@ -469,19 +563,64 @@ def seat_state_of(tag):
     return "question"
 
 
-def judge_seat(seat, msgs, target):
+def suite_run(status, passed=None, failed=None, detail=None):
+    return {"status": status, "passed": passed, "failed": failed,
+            "detail": detail}
+
+
+def parse_suite_run(body):
+    """The Suite-Run claim a message body makes -> a suite_run object.
+    Only non-quoted lines at the left margin count; the last one wins."""
+    last = None
+    for line in body.split("\n"):
+        if QUOTED_RE.match(line):
+            continue
+        line = line.rstrip("\r")
+        if line.startswith(SUITE_RUN_PREFIX):
+            last = line
+    if last is None:
+        return suite_run("missing")
+    mt = SUITE_RUN_COUNTS_RE.fullmatch(last)
+    if mt:
+        n, m = int(mt.group(1)), int(mt.group(2))
+        status = "failed" if m else ("clean" if n else "no-tests")
+        return suite_run(status, n, m)
+    mt = SUITE_RUN_COULD_NOT_RE.fullmatch(last)
+    if mt:
+        return suite_run("could-not-run",
+                         detail=clip((mt.group(1) or "").strip(" \t"), 200) or None)
+    return suite_run("malformed", detail=clip(last, 80))
+
+
+def suite_run_reason(seat, run):
+    st = run["status"]
+    if st == "clean":
+        return None
+    if st in ("failed", "no-tests"):
+        what = f"{st}: {run['passed']} passed, {run['failed']} failed"
+    elif st == "missing":
+        what = "missing: no Suite-Run line on the verdict message"
+    else:
+        what = st + (f": {run['detail']}" if run["detail"] else "")
+    return f"{seat} signed off without a clean suite run ({what})"
+
+
+def judge_seat(seat, msgs, target, suite_seats=()):
     """-> (seat entry, reason|None) for one panel seat."""
     tsha = target["sha"] if target else None
     mine = [m for m in msgs if m["ok"] and m["from"] == seat]
     tagged = [m for m in mine if m["tags"]]
     on = [m for m in tagged if tsha is not None and m["sha"] == tsha]
     entry = {"seat": seat, "state": "silent", "verdict": None,
-             "message_id": None, "version": None, "sha": None}
+             "message_id": None, "version": None, "sha": None,
+             "suite_run": suite_run("missing") if seat in suite_seats else None}
     if on:
         m = on[-1]
         tag = pick_tag(m["tags"])
         entry.update(state=seat_state_of(tag), verdict=tag,
                      message_id=m["id"], version=m["version"], sha=m["sha"])
+        if seat in suite_seats:
+            entry["suite_run"] = parse_suite_run(m["body"])
         if entry["state"] == "positive":
             newer = [x for x in tagged if x["seq"] > m["seq"] and x["sha"] is None]
             if newer:
@@ -494,6 +633,8 @@ def judge_seat(seat, msgs, target):
                 return entry, (f"{seat}: newer message {u['id']} carries "
                                f"{utag} with no usable X-Review-Target; "
                                f"{tag} on {target_label(target)} not trusted")
+            if entry["suite_run"] is not None:
+                return entry, suite_run_reason(seat, entry["suite_run"])
             return entry, None
         where = f"v{target['version']}" if target["version"] is not None \
             else f"({target['sha'][:8]})"
@@ -767,7 +908,7 @@ def build_state(export, status):
 
     seats = []
     for seat in roster["panel"]:
-        entry, why = judge_seat(seat, msgs, target)
+        entry, why = judge_seat(seat, msgs, target, roster["suite_seats"])
         seats.append(entry)
         if why:
             reasons.append(why)
