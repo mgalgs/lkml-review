@@ -69,6 +69,7 @@ PORCELAIN=(
     lkml-series-check.sh
     lkml-status.sh
     lkml-summarize.sh
+    lkml-wake-gate-install.sh
 )
 
 PLUMBING=(
