@@ -75,6 +75,7 @@ PLUMBING=(
     lkml-seats-parse.py
     lkml-seats-resolve
     lkml-series-check-py.py
+    lkml-wake-gate.py
 )
 
 usage() {
