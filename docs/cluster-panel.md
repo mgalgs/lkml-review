@@ -89,6 +89,18 @@ thread. `--header` adds headers of the caller's own; the headers the mail
 layer or this script owns are refused. `lkml-fleet-kickoff.sh --help` has
 the full rules.
 
+`--suite "<command>"` and `--suite-seats "@a,@b"` add `Suite:` and
+`Suite-Seats:` lines to the root (the roster file defaults the seats to
+`@tests`; the command is never defaulted). A suite seat must run the command
+and put `Suite-Run: <N> passed, <M> failed` (or `could-not-run <error>`) on
+its verdict reply. They exist because a seat whose environment cannot run the
+suite must not converge: one once signed off on a stub harness. A suite seat
+that is positive without a clean run (N of at least 1, M of 0) makes
+`lkml-panel-state.py` refuse `CONVERGED`, and `STALLED` once the thread is
+quiet, so an operator fixes the environment. The seat's `state` stays
+`positive`, since it has answered. The command comes from the repository under
+review, never from this repo, so the caller passes it on each kickoff.
+
 ### One round
 
 1. **Reviewers reply to the author.** Each panel seat replies once per
