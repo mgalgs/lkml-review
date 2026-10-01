@@ -383,8 +383,8 @@ agents:
   until they do. A human push, mail from anyone not on the panel, and a
   thread with no target always wake the author.
 - **`budget-reserve`** names both seats because the author's final post
-  comes before the secretary's verdict, so a reserve held for the secretary
-  alone could be spent before the post it is waiting on.
+  comes before the secretary's verdict. A reserve held for the secretary
+  alone would refuse that post, and the secretary would never be woken.
 - **Staging.** Run `lkml-wake-gate-install.sh`, then `lkml-wake-gate-install.sh
   --check`, before `install --postmaster`. The gate runs a staged copy of
   `lkml-panel-state.py`, and `--check` fails when that copy has drifted from
