@@ -528,6 +528,10 @@ has "$sec" '`SIGNED-OFF` when vN'"'"'s `X-Review-Target` sha equals' \
     "secretary.md signs off only a vN whose target is the frozen head"
 has "$sec" '`RESPIN` otherwise' \
     "secretary.md respins a vN whose target is above the frozen head"
+has "$sec" '`Suite-Run: <N> passed, 0 failed` with N ≥ 1' \
+    "secretary.md counts a suite seat only with a clean Suite-Run on its verdict reply"
+has "$sec" 'report the panel `Panel-Status: IN-PROGRESS`, and say in one line which' \
+    "secretary.md reports IN-PROGRESS for a suite seat without a clean run"
 has "$sec" 'verify it from the thread yourself' \
     "secretary.md verifies verdicts from the thread, not the Author's summary"
 has "$sec" 'last in the body' \

@@ -72,6 +72,11 @@ verify it from the thread yourself.
    a reply with no recognizable verdict, has cast no non-blocking verdict:
    say exactly that about it, never that it agreed. A reply that carries a
    blocking tag beside a non-blocking one is blocking.
+   If the root carries `Suite:`, a seat on its `Suite-Seats:` line is
+   non-blocking only if its latest verdict on vN is positive AND that same
+   reply carries `Suite-Run: <N> passed, 0 failed` with N ≥ 1. Otherwise
+   report the panel `Panel-Status: IN-PROGRESS`, and say in one line which
+   seat lacks a clean run and what its Suite-Run line said.
 3. In "State of the series", name every Panel seat and its verdict on vN,
    or say that it has none. One line per seat.
 4. End the body with exactly these lines, last in the body, in this order,
