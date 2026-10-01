@@ -363,6 +363,40 @@ Check the file first with `lkml-fleet.sh fleet check --cluster` under the
 same `LKML_FLEET_FILE`. Set `FORK_SANDBOX_CLUSTER_CLAUDE=1` for that check
 when the install will carry a claude credential.
 
+### Gating the author's wakes
+
+Reviewers reply `To: @pr-author`, so the postmaster wakes the author on
+every reply, and most of those wakes find a reviewer still unanswered. Each
+one spends a spawn. A `wake-when` gate lets the postmaster ask first:
+
+```yaml
+budget-reserve: {spawns: 2, agents: [pr-author, secretary]}
+agents:
+  pr-author:
+    wake-when: lkml-panel        # this seat only
+```
+
+- **`wake-when: lkml-panel`** goes on the `pr-author` agent and no other.
+  The postmaster runs `$FORK_SANDBOX_HOOKS_DIR/wake-when.lkml-panel` before
+  each spawn of that seat. The gate asks `lkml-panel-state.py` whether every
+  panel seat holds a verdict on the current version, and defers the wake
+  until they do. A human push, mail from anyone not on the panel, and a
+  thread with no target always wake the author.
+- **`budget-reserve`** names both seats because the author's final post
+  comes before the secretary's verdict, so a reserve held for the secretary
+  alone could be spent before the post it is waiting on.
+- **Staging.** Run `lkml-wake-gate-install.sh`, then `lkml-wake-gate-install.sh
+  --check`, before `install --postmaster`. The gate runs a staged copy of
+  `lkml-panel-state.py`, and `--check` fails when that copy has drifted from
+  the repo's.
+- **Exit codes.** 0 wakes the author. 1 defers: nothing spawns and no budget
+  is spent, and the author's next wake sees the whole thread. 2 means the
+  gate itself failed (a missing input, or `lkml-panel-state.py` erroring);
+  the postmaster wakes the author anyway and logs `wake-gate-error`, so look
+  for that in the postmaster log. A defer that no later reply ever wakes shows
+  up as a `wake-deferred` flag, which `lkml-panel-state.py` reports as
+  `NEEDS-OPERATOR`.
+
 ## Known limits
 
 - A reviewer that Cc's another seat can buy that seat an extra wake on the
