@@ -1635,6 +1635,17 @@ run_case suite18
 check "wake-gate's view: a suite seat with could-not-run keeps state positive" "positive" "$(seat @tests state)"
 check "and keeps its verdict" "Acked-by" "$(seat @tests verdict)"
 
+gen suite19 <<'PY'
+m = suite_case("Suite-Run: 5 passed, 0 failed\nReviewed-by: T")
+m.insert(-1, msg(6, "@tests", "Changes-requested", sha=None))
+write(D, export(m), status())
+PY
+run_case suite19
+check "a stale override moves the seat to the newer message" "stale m006" "$(seat @tests state) $(seat @tests message_id)"
+check "and suite_run is missing, not the older message's clean run" "missing" "$(seat @tests suite_run.status)"
+check "and its counts are null" "null null" "$(seat @tests suite_run.passed) $(seat @tests suite_run.failed)"
+check "and the thread is not CONVERGED" "STALLED" "$(jr .status)"
+
 printf '\n== invariants over every case above ==\n'
 inv_bad=""; inv_n=0; inv_conv=0
 for c in "${cases_run[@]}"; do

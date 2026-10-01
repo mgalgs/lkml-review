@@ -630,6 +630,10 @@ def judge_seat(seat, msgs, target, suite_seats=()):
                 utag = pick_tag(u["tags"])
                 entry.update(state="stale", verdict=utag, message_id=u["id"],
                              version=u["version"], sha=None)
+                if entry["suite_run"] is not None:
+                    # The Suite-Run was read off the older message; the
+                    # entry now names a message that made no such claim.
+                    entry["suite_run"] = suite_run("missing")
                 return entry, (f"{seat}: newer message {u['id']} carries "
                                f"{utag} with no usable X-Review-Target; "
                                f"{tag} on {target_label(target)} not trusted")
