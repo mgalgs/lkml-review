@@ -8,8 +8,8 @@ secretary (fleet/personas/secretary.md) closes the thread.
 Send with `lkml-fleet-kickoff.sh --template pr-review --review-target
 <branch>:<sha> ...`, which fills every placeholder below: the roster
 from pr-review.roster (or --author/--panel/--secretary/--version-limit),
-${FROZEN_HEAD} from the --review-target sha. docs/cluster-panel.md walks
-through the whole flow.
+${FROZEN_HEAD} from the --review-target sha, ${SUITE} from --suite and
+--suite-seats. docs/cluster-panel.md walks through the whole flow.
 
 Placeholders (dumb substitution, not a template engine):
   ${FROM}          sending address (not the Author: reviewers address
@@ -28,6 +28,10 @@ Placeholders (dumb substitution, not a template engine):
   ${FROZEN_HEAD}   the 40-hex sha of the PR's head commit: everything up
                    to and including it belongs to the PR's human author
                    and is never rewritten
+  ${SUITE}         alone on its line: with --suite, the two roster lines
+                   "Suite: <command>" and "Suite-Seats: <seats>", which
+                   name the test command the seats on Suite-Seats must
+                   run and report; without it, the line is removed
   ${SUMMARY}       one paragraph: what the PR does and why
   ${BASE}          the base ref/commit the PR applies on top of
   ${BRANCH}        the PR's branch name
@@ -48,6 +52,7 @@ Panel: ${PANEL}
 Secretary: ${SECRETARY}
 Version-Limit: ${VERSION_LIMIT}
 Frozen-Head: ${FROZEN_HEAD}
+${SUITE}
 
 ${SUMMARY}
 
@@ -95,6 +100,27 @@ last non-empty, non-quoted line of the body; here it goes last.
 `Changes-requested`, `Question` and `NAK` are blocking. The panel has
 converged only when every seat's latest verdict on the current version
 is non-blocking.
+
+## Running the suite
+
+If the root above carries a `Suite:` line and the `Suite-Seats:` line
+names your seat, run that exact command at your checkout before you
+choose a verdict, and put one line directly above your verdict line:
+
+    Suite-Run: <N> passed, <M> failed
+
+or, if the run never reached a test (an import error, a missing
+dependency, an unreachable database or service):
+
+    Suite-Run: could-not-run <the first error line>
+
+A run that never reached a test is your ENVIRONMENT, not the code under
+review. Report it as could-not-run, never as a code finding, and do not
+ask the author to fix it. A positive verdict from a suite seat counts
+only with a clean run (at least one test passed, none failed). Without
+one, the panel cannot converge and an operator is called. Never
+substitute a stub, a mock harness, or a subset of your own choosing for
+the command: that is the exact failure this line exists to catch.
 
 ## Next version
 

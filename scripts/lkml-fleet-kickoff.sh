@@ -12,7 +12,8 @@
 #            [--context-ro <dir>] [--context-secret <name>]
 #            [--review-target <branch>:<sha>] [--header "Name: value"]...
 #            [--author <addr>] [--panel <addr-list>] [--secretary <addr>]
-#            [--version-limit <n>] [--remote] [--send] [--unless-exists]
+#            [--version-limit <n>] [--suite <command>] [--suite-seats <addr-list>]
+#            [--remote] [--send] [--unless-exists]
 #
 # <repo>       path to a local git repository.
 # <range>      a revision range passed straight to `git format-patch`
@@ -81,6 +82,27 @@
 #              ${PANEL}, which has no roster to fill them from.
 #              ${FROZEN_HEAD}, in any template, fills with the
 #              --review-target sha, and is refused without one.
+# --suite, --suite-seats
+#              the test suite a roster template's seats must RUN, not just
+#              read about: the roster template's ${SUITE} line fills with
+#              "Suite: <command>" and "Suite-Seats: <seats, comma-space>",
+#              which lkml-panel-state.py reads off the thread root and
+#              refuses to converge past a seat that signed off without
+#              a clean Suite-Run line. --suite is the exact command, and
+#              always comes from the repository under review, never from
+#              this repo: non-empty, one line, and never containing "${"
+#              (the fill is dumb substitution). It may also be set as
+#              SUITE in the roster file; the flag overrides. --suite-seats
+#              (or SUITE_SEATS in the roster file; pr-review.roster sets
+#              @tests) names the seats that must run it: comma-separated
+#              addresses, each on the resolved PANEL, de-duplicated. With
+#              no suite the line is simply absent and the body is
+#              byte-for-byte what it was before these flags existed; a
+#              SUITE_SEATS in the roster file with no suite does nothing,
+#              but --suite-seats on the command line with no suite is
+#              refused. Both flags are refused with a template that has no
+#              ${SUITE}, since they would silently do nothing, and each
+#              may be given once.
 # --hops       non-negative mail reply-hop budget. Omit it to retain the
 #              transport's own default.
 # --ci-first   address the kickoff to this CI seat alone, then have its
@@ -405,13 +427,15 @@ roster_author=""
 roster_panel=""
 roster_secretary=""
 roster_version_limit=""
+roster_suite=""
+roster_suite_seats=""
 review_target=""
 review_target_given=0
 unless_exists=0
 
 while (( $# > 0 )); do
     case "$1" in
-        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats|--header|--author|--panel|--secretary|--version-limit|--allow-namespace|--reach-probe|--context-ro|--context-secret|--review-target|--attach-file)
+        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats|--header|--author|--panel|--secretary|--version-limit|--suite|--suite-seats|--allow-namespace|--reach-probe|--context-ro|--context-secret|--review-target|--attach-file)
             (( $# >= 2 )) || { echo "Error: $1 requires a value. See --help." >&2; exit 1; }
             ;;
     esac
@@ -439,7 +463,7 @@ while (( $# > 0 )); do
         --review-target)
             (( ! review_target_given )) || { echo "Error: --review-target may only be given once. See --help." >&2; exit 1; }
             review_target="$2"; review_target_given=1; shift 2 ;;
-        --author|--panel|--secretary|--version-limit)
+        --author|--panel|--secretary|--version-limit|--suite|--suite-seats)
             roster_var="roster_${1#--}"; roster_var="${roster_var//-/_}"
             [[ -z "${!roster_var}" ]] || { echo "Error: $1 may only be given once. See --help." >&2; exit 1; }
             [[ -n "$2" ]] || { echo "Error: $1 requires a non-empty value. See --help." >&2; exit 1; }
@@ -515,11 +539,11 @@ has_placeholder() { [[ "$body" == *'${'"$1"'}'* ]]; }
 roster_mode=0
 has_placeholder PANEL && roster_mode=1
 if (( ! roster_mode )); then
-    if [[ -n "$roster_author$roster_panel$roster_secretary$roster_version_limit" ]]; then
-        echo "Error: --author/--panel/--secretary/--version-limit given but template '$template' has no \${PANEL}; they would silently do nothing. Use a roster template. See --help." >&2
+    if [[ -n "$roster_author$roster_panel$roster_secretary$roster_version_limit$roster_suite$roster_suite_seats" ]]; then
+        echo "Error: --author/--panel/--secretary/--version-limit/--suite/--suite-seats given but template '$template' has no \${PANEL}; they would silently do nothing. Use a roster template. See --help." >&2
         exit 1
     fi
-    for roster_ph in AUTHOR SECRETARY VERSION_LIMIT; do
+    for roster_ph in AUTHOR SECRETARY VERSION_LIMIT SUITE; do
         if has_placeholder "$roster_ph"; then
             echo "Error: template '$template' uses \${$roster_ph} but no \${PANEL}; the roster placeholders are only filled for a template that has \${PANEL}." >&2
             exit 1
@@ -535,7 +559,12 @@ roster_panel_spaced=""
 roster_author_value=""
 roster_secretary_value=""
 roster_version_limit_value=""
+roster_suite_block=""
 if (( roster_mode )); then
+    if [[ -n "$roster_suite$roster_suite_seats" ]] && ! has_placeholder SUITE; then
+        echo "Error: --suite/--suite-seats given but template '$template' has no \${SUITE}; they would silently do nothing. Use a template with \${SUITE}. See --help." >&2
+        exit 1
+    fi
     if [[ -n "$to" ]]; then
         echo "Error: --to given but template '$template' is a roster template: its To: is the panel, and two sources for one roster would disagree. Drop --to, or set the panel with --panel. See --help." >&2
         exit 1
@@ -572,8 +601,8 @@ if (( roster_mode )); then
             roster_val="${BASH_REMATCH[2]}"
             roster_val="${roster_val#"${roster_val%%[![:space:]]*}"}"
             case "$roster_key" in
-                AUTHOR|PANEL|SECRETARY|VERSION_LIMIT) ;;
-                *) echo "Error: $roster_file:$roster_lineno: unknown roster key '$roster_key' (known: AUTHOR, PANEL, SECRETARY, VERSION_LIMIT)." >&2; exit 1 ;;
+                AUTHOR|PANEL|SECRETARY|VERSION_LIMIT|SUITE|SUITE_SEATS) ;;
+                *) echo "Error: $roster_file:$roster_lineno: unknown roster key '$roster_key' (known: AUTHOR, PANEL, SECRETARY, VERSION_LIMIT, SUITE, SUITE_SEATS)." >&2; exit 1 ;;
             esac
             if [[ -n "${roster_kv[$roster_key]+x}" ]]; then
                 echo "Error: $roster_file:$roster_lineno: roster key '$roster_key' is set twice." >&2
@@ -586,6 +615,8 @@ if (( roster_mode )); then
     [[ -n "$roster_panel" ]] && roster_kv[PANEL]="$roster_panel"
     [[ -n "$roster_secretary" ]] && roster_kv[SECRETARY]="$roster_secretary"
     [[ -n "$roster_version_limit" ]] && roster_kv[VERSION_LIMIT]="$roster_version_limit"
+    [[ -n "$roster_suite" ]] && roster_kv[SUITE]="$roster_suite"
+    [[ -n "$roster_suite_seats" ]] && roster_kv[SUITE_SEATS]="$roster_suite_seats"
 
     roster_needed=(PANEL)
     for roster_ph in AUTHOR SECRETARY VERSION_LIMIT; do
@@ -646,6 +677,61 @@ if (( roster_mode )); then
     roster_author_value="${roster_kv[AUTHOR]-}"
     roster_secretary_value="${roster_kv[SECRETARY]-}"
     roster_version_limit_value="${roster_kv[VERSION_LIMIT]-}"
+
+    # The suite is validated only when one is in effect: a SUITE_SEATS
+    # default in the roster file means nothing to a panel running none.
+    roster_suite_value="${roster_kv[SUITE]-}"
+    roster_suite_value="${roster_suite_value#"${roster_suite_value%%[![:space:]]*}"}"
+    roster_suite_value="${roster_suite_value%"${roster_suite_value##*[![:space:]]}"}"
+    if [[ -z "$roster_suite_value" ]]; then
+        if [[ -n "$roster_suite_seats" ]]; then
+            echo "Error: --suite-seats given without a suite; it would silently do nothing. Pass --suite (or set SUITE in the roster file). See --help." >&2
+            exit 1
+        fi
+        if [[ -n "${roster_kv[SUITE]+x}" && -n "$roster_suite" ]]; then
+            echo "Error: --suite '$roster_suite' is blank; a suite nobody can run is no suite." >&2
+            exit 1
+        fi
+    else
+        if [[ "$roster_suite_value" == *$'\n'* || "$roster_suite_value" == *$'\r'* ]]; then
+            echo "Error: roster SUITE must be a single line; the Suite: line is one line of the thread root." >&2
+            exit 1
+        fi
+        if [[ "$roster_suite_value" == *\$\{* ]]; then
+            echo "Error: roster SUITE '$roster_suite_value' contains \${; the template fill is dumb substitution and would not expand it." >&2
+            exit 1
+        fi
+        if [[ -z "${roster_kv[SUITE_SEATS]-}" || -z "${roster_kv[SUITE_SEATS]//[[:space:]]/}" ]]; then
+            echo "Error: a suite is set but no SUITE_SEATS: pass --suite-seats, or set SUITE_SEATS in the roster file ('$roster_file'); a suite nobody must run is a gap, not a pass." >&2
+            exit 1
+        fi
+        roster_suite_seats_raw="${roster_kv[SUITE_SEATS]-}"
+        if [[ "$roster_suite_seats_raw" =~ (^|,)[[:space:]]*(,|$) ]]; then
+            echo "Error: roster SUITE_SEATS '$roster_suite_seats_raw' has an empty entry (a stray comma)." >&2
+            exit 1
+        fi
+        declare -A roster_suite_seen=()
+        roster_suite_list=()
+        IFS=',' read -r -a roster_suite_items <<<"$roster_suite_seats_raw"
+        for roster_addr in "${roster_suite_items[@]}"; do
+            roster_addr="${roster_addr#"${roster_addr%%[![:space:]]*}"}"
+            roster_addr="${roster_addr%"${roster_addr##*[![:space:]]}"}"
+            if [[ ! "$roster_addr" =~ $roster_addr_re ]]; then
+                echo "Error: roster SUITE_SEATS entry '$roster_addr' is not an address like @name (^@[a-z0-9][a-z0-9-]*\$)." >&2
+                exit 1
+            fi
+            if [[ -z "${roster_seen[$roster_addr]+x}" ]]; then
+                echo "Error: roster SUITE_SEATS entry '$roster_addr' is not on the PANEL ($roster_panel_spaced); a seat that is not reviewing cannot run the suite. Pass --suite-seats." >&2
+                exit 1
+            fi
+            if [[ -z "${roster_suite_seen[$roster_addr]+x}" ]]; then
+                roster_suite_seen[$roster_addr]=1
+                roster_suite_list+=("$roster_addr")
+            fi
+        done
+        roster_suite_joined="$(IFS=,; printf '%s' "${roster_suite_list[*]}")"
+        roster_suite_block="Suite: $roster_suite_value"$'\n'"Suite-Seats: ${roster_suite_joined//,/, }"
+    fi
 fi
 [[ -n "$to" || "$roster_mode" == 1 ]] || { echo "Error: --to is required. See --help." >&2; exit 1; }
 if [[ -n "$hops" && ! "$hops" =~ ^[0-9]+$ ]]; then
@@ -1263,7 +1349,28 @@ fill() {
         padded="${padded%$'\n'\$\{"$name"\}}"
         content_ref="${padded:1}"
     fi
-    content_ref="${content_ref//\$\{$name\}/$value}"
+    # The replacement is quoted: unquoted, bash 5.2+ reads a "&" in the
+    # value as "the matched text", which mangles a suite command like
+    # "make -C t && pytest".
+    content_ref="${content_ref//\$\{$name\}/"$value"}"
+}
+
+# drop_own_line <content-varname> <PLACEHOLDER-NAME> — remove the line
+# that is nothing but ${NAME}, and ONLY that line. fill() with an empty
+# value also eats one following blank line, which is right for a
+# placeholder the template set off with blanks on both sides, and wrong
+# for one that sits flush under its neighbour: ${SUITE} follows the
+# last roster line and must leave the blank before ${SUMMARY} alone.
+drop_own_line() {
+    local -n drop_ref="$1"
+    local padded=$'\n'"$drop_ref"$'\n' prev
+    while :; do
+        prev="$padded"
+        padded="${padded//$'\n'\$\{$2\}$'\n'/$'\n'}"
+        [[ "$padded" == "$prev" ]] && break
+    done
+    padded="${padded#$'\n'}"
+    drop_ref="${padded%$'\n'}"
 }
 
 # shellcheck disable=SC2016  # ${HANDOFF} is the literal placeholder text
@@ -1311,6 +1418,11 @@ fill body AUTHOR "$roster_author_value"
 fill body SECRETARY "$roster_secretary_value"
 fill body VERSION_LIMIT "$roster_version_limit_value"
 fill body FROZEN_HEAD "$review_target_sha"
+if [[ -n "$roster_suite_block" ]]; then
+    fill body SUITE "$roster_suite_block"
+else
+    drop_own_line body SUITE
+fi
 fill body HANDOFF "$handoff"
 
 # fill() above already removes an empty own-line placeholder's line and

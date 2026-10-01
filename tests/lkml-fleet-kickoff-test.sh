@@ -1725,6 +1725,205 @@ done
 kick "${rkick[@]}" --template "$rdir/author-only.md" --to '@x' --send
 refused "\${AUTHOR} in a template with no \${PANEL}" "uses \${AUTHOR} but no \${PANEL}"
 
+printf '\n== roster templates: --suite and --suite-seats ==\n'
+body_of() { cat "$(grep -o -- '--body [^ ]*' <<<"$1" | awk '{print $2}')" 2>/dev/null; }
+pr_flags=(--template pr-review --review-target "$rt_arg" --summary 'Sum text.')
+kick "${rkick[@]}" "${pr_flags[@]}" --suite 'pytest -q'
+check "--suite with the shipped roster's default seats composes" "0" "$k_rc"
+s_body="$(body_of "$k_out")"
+check "the root carries both lines, in place after Frozen-Head, then the blank and the summary" \
+    "Frozen-Head: $rt_tip
+Suite: pytest -q
+Suite-Seats: @tests
+
+Sum text." "$(sed -n '5,9p' <<<"$s_body")"
+check "the suite lines are on the root once each" "1 1" \
+    "$(grep -c '^Suite: ' <<<"$s_body") $(grep -c '^Suite-Seats: ' <<<"$s_body")"
+case "$s_body" in
+    *'${'*) no "a suite body has no leftover placeholders" "$s_body" ;;
+    *) ok "a suite body has no leftover placeholders" ;;
+esac
+kick "${rkick[@]}" "${pr_flags[@]}" --suite 'pytest -q' --suite-seats '@tests,@core, @tests'
+s_body="$(body_of "$k_out")"
+contains "--suite-seats overrides the roster file, de-duplicated, comma-space" "$s_body" "Suite-Seats: @tests, @core"
+kick "${rkick[@]}" "${pr_flags[@]}" --suite 'make -C t && pytest -q & echo \1 $HOME'
+s_body="$(body_of "$k_out")"
+contains "a suite command with & and && reaches the root verbatim" "$s_body" 'Suite: make -C t && pytest -q & echo \1 $HOME'
+kick "${rkick[@]}" "${pr_flags[@]}" --suite '  pytest -q  '
+contains "a suite command is trimmed" "$(body_of "$k_out")" "Suite: pytest -q
+Suite-Seats"
+
+# Flags and a roster file's SUITE / SUITE_SEATS keys.
+printf 'Panel: ${PANEL}\n${SUITE}\n\nSummary: ${SUMMARY}\n' > "$rdir/suite-bare.md"
+printf 'Panel: ${PANEL}\n${SUITE}\n\nSummary: ${SUMMARY}\n' > "$rdir/suite-file.md"
+printf 'PANEL=@rev-a,@rev-b\nSUITE=./run-tests --all\nSUITE_SEATS=@rev-b\n' > "$rdir/suite-file.roster"
+printf 'Panel: ${PANEL}\n${SUITE}\n\nSummary: ${SUMMARY}\n' > "$rdir/suite-noseats.md"
+printf 'PANEL=@rev-a,@rev-b\n' > "$rdir/suite-noseats.roster"
+printf 'Panel: ${PANEL}\n${SUITE}\n\nSummary: ${SUMMARY}\n' > "$rdir/suite-seats-only.md"
+printf 'PANEL=@rev-a,@rev-b\nSUITE_SEATS=@rev-a\n' > "$rdir/suite-seats-only.roster"
+kick "${rkick[@]}" --template "$rdir/suite-file.md" --review-target "$rt_arg" --summary 's'
+check "SUITE and SUITE_SEATS from the roster file compose" "0" "$k_rc"
+contains "the roster file's SUITE and SUITE_SEATS fill the root" "$(body_of "$k_out")" "Panel: @rev-a, @rev-b
+Suite: ./run-tests --all
+Suite-Seats: @rev-b
+
+Summary: s"
+kick "${rkick[@]}" --template "$rdir/suite-file.md" --review-target "$rt_arg" --summary 's' --suite 'other cmd' --suite-seats '@rev-a'
+contains "flags override the roster file's SUITE and SUITE_SEATS" "$(body_of "$k_out")" "Suite: other cmd
+Suite-Seats: @rev-a
+"
+kick "${rkick[@]}" --template "$rdir/suite-seats-only.md" --review-target "$rt_arg" --summary 's'
+check "SUITE_SEATS in the file with no SUITE is fine" "0" "$k_rc"
+check "and does nothing: the placeholder line and no blank is left behind" "Panel: @rev-a, @rev-b
+
+Summary: s" "$(body_of "$k_out" | sed -n '1,3p')"
+check "a SUITE_SEATS with no SUITE leaves no Suite-Seats line" "0" "$(body_of "$k_out" | grep -c '^Suite' || true)"
+kick "${rkick[@]}" --template "$rdir/suite-seats-only.md" --review-target "$rt_arg" --suite 'run it'
+contains "--suite with SUITE_SEATS from the file only" "$(body_of "$k_out")" "Suite: run it
+Suite-Seats: @rev-a"
+
+# Refusals.
+kick "${rkick[@]}" "${pr_flags[@]}" --suite $'pytest\n-q' --send
+refused "a newline in --suite" "single line"
+kick "${rkick[@]}" "${pr_flags[@]}" --suite 'echo ${HOME}' --send
+refused "a \${ in --suite" "contains \${"
+kick "${rkick[@]}" "${pr_flags[@]}" --suite 'pytest' --suite-seats '@ghost' --send
+refused "a suite seat not on the panel" "roster SUITE_SEATS entry '@ghost' is not on the PANEL"
+kick "${rkick[@]}" "${pr_flags[@]}" --suite 'pytest' --panel '@rev-a,@rev-b' --send
+refused "the file's default seat not on an overridden panel" "roster SUITE_SEATS entry '@tests' is not on the PANEL"
+kick "${rkick[@]}" "${pr_flags[@]}" --suite 'pytest' --suite-seats 'tests' --send
+refused "a malformed suite seat address" "roster SUITE_SEATS entry 'tests' is not an address"
+kick "${rkick[@]}" "${pr_flags[@]}" --suite 'pytest' --suite-seats '@tests,,@core' --send
+refused "an empty suite seat entry" "has an empty entry"
+kick "${rkick[@]}" "${pr_flags[@]}" --suite 'a' --suite 'b' --send
+refused "a second --suite" "--suite may only be given once"
+kick "${rkick[@]}" "${pr_flags[@]}" --suite 'a' --suite-seats '@tests' --suite-seats '@core' --send
+refused "a second --suite-seats" "--suite-seats may only be given once"
+kick "${rkick[@]}" "${pr_flags[@]}" --suite '' --send
+refused "an empty --suite" "--suite requires a non-empty value"
+kick "${rkick[@]}" "${pr_flags[@]}" --suite '   ' --send
+refused "a blank --suite" "is blank"
+kick "${rkick[@]}" "${pr_flags[@]}" --suite-seats '@tests' --send
+refused "--suite-seats on the command line with no suite" "--suite-seats given without a suite"
+kick "${rkick[@]}" --template "$rdir/suite-noseats.md" --review-target "$rt_arg" --suite 'pytest' --send
+refused "a suite with no seats anywhere" "no SUITE_SEATS"
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --suite 'pytest' --send
+refused "--suite on a roster template with no \${SUITE}" "has no \${SUITE}"
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --suite-seats '@rev-a' --send
+refused "--suite-seats on a roster template with no \${SUITE}" "has no \${SUITE}"
+kick "${kick_base[@]}" --suite 'pytest' --send
+refused "--suite on a template with no \${PANEL}" "has no \${PANEL}"
+kick "${kick_base[@]}" --suite-seats '@a' --send
+refused "--suite-seats on a template with no \${PANEL}" "has no \${PANEL}"
+printf 'Suite: ${SUITE}\n' > "$rdir/suite-nopanel.md"
+kick "${rkick[@]}" --template "$rdir/suite-nopanel.md" --to '@x' --send
+refused "\${SUITE} in a template with no \${PANEL}" "uses \${SUITE} but no \${PANEL}"
+printf 'Panel: ${PANEL}\n' > "$rdir/bad-suite-key.md"
+printf 'PANEL=@rev-a\nSUITE_SEAT=@rev-a\n' > "$rdir/bad-suite-key.roster"
+kick "${rkick[@]}" --template "$rdir/bad-suite-key.md" --send
+refused "a misspelled suite roster key" "known: AUTHOR, PANEL, SECRETARY, VERSION_LIMIT, SUITE, SUITE_SEATS"
+
+printf '\n== pr-review without --suite: the body is what it was before --suite existed ==\n'
+# Captured from the script as it stood before the ${SUITE} line, with
+# the three explicit roster flags so a change to pr-review.roster does
+# not move it. The "Running the suite" section is new text in every
+# body; it is cut out before comparing, so what is compared is the
+# rest, byte for byte -- in particular that the ${SUITE} line left no
+# stray line or blank behind. @TIP@ stands for the --review-target sha.
+cat > "$work/pr-review-before-suite.txt" <<'BODY'
+Author: @pr-author
+Panel: @architecture, @core, @docs, @newcomer, @security, @tests
+Secretary: @secretary
+Version-Limit: 4
+Frozen-Head: @TIP@
+
+Sum text.
+
+Base: master
+Branch: topic
+Patches: 2
+
+Your checkout is already at the version under review: for v1 that is the
+PR's head. Read the code there, for example:
+
+    git log --oneline master..HEAD
+    git diff master..HEAD
+
+## What's being asked
+
+Every seat on the `Panel:` line above replies once per version, `To:`
+the Author named on the `Author:` line, and ends that reply with exactly
+one verdict line (below) as its last non-empty line. Silence is NOT a
+valid outcome here: the author acts only once every panel seat has
+replied on the current version, and a seat that says nothing is
+indistinguishable from one that crashed. If you have nothing to add,
+say so with `Acked-by:` or `Reviewed-by:`.
+
+## Sign-off convention
+
+End your reply with exactly one of these, as the last non-empty line:
+
+- `Reviewed-by: <persona>` — you'd stand behind this as committed.
+- `Acked-by: <persona>` — the approach is right; you have not verified
+  every line, or you have nothing to add.
+- `Tested-by: <persona>` — you ran it and it behaved (or say what
+  broke).
+- `Changes-requested` — something must change before this merges.
+- `Question` — you need an answer before you can form a view.
+- `NAK` — this must not merge as it stands, with what would change
+  your mind.
+
+The colon after the three `-by` trailers is load-bearing: a trailer
+without it does not register. A trailer must start its own line at the
+left margin, with no leading whitespace. A bare verdict
+(`Changes-requested`, `Question`, `NAK`) registers only on the first or
+last non-empty, non-quoted line of the body; here it goes last.
+
+`Reviewed-by:`, `Acked-by:` and `Tested-by:` are non-blocking.
+`Changes-requested`, `Question` and `NAK` are blocking. The panel has
+converged only when every seat's latest verdict on the current version
+is non-blocking.
+
+## Next version
+
+If any seat blocks, the Author posts the next version as one cover
+reply to this thread: a changelog answering review point by point, a
+`## Since v<N>` range-diff, and a new `Version:`. There are no per-patch
+messages; your checkout moves to the new version's sha. Review that
+version and cast a fresh verdict: a verdict on an old version does not
+carry forward. If the panel is still blocked when the version limit
+above is reached, the Author stops and asks the Secretary to close the
+panel with what still blocks.
+
+A version may instead be the PR's human author's own integration: when
+they push a new head, the Author posts it unchanged as the next version
+and its cover says so, classifying which commits were taken. Review it
+like any other version. A suggestion the human author did not take is
+decided: re-raise it only as a blocking objection saying why the
+decision is wrong; otherwise leave it closed. The frozen head can move to
+the human's push, so the head that counts as the PR's own is the one on
+the newest cover, not only the one at the top of this mail.
+
+The Secretary's summary is the last message on the thread. It goes to
+the operator; do not reply to it.
+BODY
+kick "${rkick[@]}" --template pr-review --review-target "$rt_arg" --summary 'Sum text.' \
+    --author '@pr-author' --panel '@architecture,@core,@docs,@newcomer,@security,@tests' \
+    --secretary '@secretary' --version-limit 4
+check "the no-suite pr-review kickoff composes" "0" "$k_rc"
+body_of "$k_out" | awk '/^## Running the suite$/ { skip = 1; next } /^## / { skip = 0 } !skip' \
+    | sed "s/$rt_tip/@TIP@/g" > "$work/pr-review-after-suite.txt"
+if cmp -s "$work/pr-review-before-suite.txt" "$work/pr-review-after-suite.txt"; then
+    ok "the no-suite body, less the new section, is byte-identical to the pre-change body"
+else
+    no "the no-suite body, less the new section, is byte-identical to the pre-change body" \
+        "$(diff "$work/pr-review-before-suite.txt" "$work/pr-review-after-suite.txt" | head -10)"
+fi
+contains "the new section is in the shipped template's body" "$(body_of "$k_out")" "## Running the suite"
+contains "the section says a stub is the failure it catches" "$(body_of "$k_out")" "Never
+substitute a stub"
+check "a no-suite body has no Suite line at all" "0" "$(body_of "$k_out" | grep -c '^Suite' || true)"
+
 printf '\n== --template <bare name> resolves to fleet/kickoffs/<name>.md ==\n'
 kick "${kick_base[@]}" --template series-review
 bare_body="$(cat "$(grep -o -- '--body [^ ]*' <<<"$k_out" | awk '{print $2}')" 2>/dev/null)"
