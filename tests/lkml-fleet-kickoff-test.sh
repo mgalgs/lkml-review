@@ -1826,8 +1826,9 @@ refused "a misspelled suite roster key" "known: AUTHOR, PANEL, SECRETARY, VERSIO
 printf '\n== pr-review without --suite: the body is what it was before --suite existed ==\n'
 # Captured from the script as it stood before the ${SUITE} line, with
 # the three explicit roster flags so a change to pr-review.roster does
-# not move it. The "Running the suite" section is new text in every
-# body; it is cut out before comparing, so what is compared is the
+# not move it. The "Running the suite" and "Verifying it yourself"
+# sections are new text in every body; they are cut out before
+# comparing, so what is compared is the
 # rest, byte for byte -- in particular that the ${SUITE} line left no
 # stray line or blank behind. @TIP@ stands for the --review-target sha.
 cat > "$work/pr-review-before-suite.txt" <<'BODY'
@@ -1911,7 +1912,7 @@ kick "${rkick[@]}" --template pr-review --review-target "$rt_arg" --summary 'Sum
     --author '@pr-author' --panel '@architecture,@core,@docs,@newcomer,@security,@tests' \
     --secretary '@secretary' --version-limit 4
 check "the no-suite pr-review kickoff composes" "0" "$k_rc"
-body_of "$k_out" | awk '/^## Running the suite$/ { skip = 1; next } /^## / { skip = 0 } !skip' \
+body_of "$k_out" | awk '/^## (Running the suite|Verifying it yourself)$/ { skip = 1; next } /^## / { skip = 0 } !skip' \
     | sed "s/$rt_tip/@TIP@/g" > "$work/pr-review-after-suite.txt"
 if cmp -s "$work/pr-review-before-suite.txt" "$work/pr-review-after-suite.txt"; then
     ok "the no-suite body, less the new section, is byte-identical to the pre-change body"
@@ -1922,6 +1923,8 @@ fi
 contains "the new section is in the shipped template's body" "$(body_of "$k_out")" "## Running the suite"
 contains "the section says a stub is the failure it catches" "$(body_of "$k_out")" "Never
 substitute a stub"
+contains "every seat is invited to verify by running it" "$(body_of "$k_out")" "## Verifying it yourself"
+contains "the stub rule is scoped to the Suite-Run line" "$(body_of "$k_out")" "The rule against a stub or a subset binds the \`Suite-Run:\` line only."
 check "a no-suite body has no Suite line at all" "0" "$(body_of "$k_out" | grep -c '^Suite' || true)"
 
 printf '\n== --template <bare name> resolves to fleet/kickoffs/<name>.md ==\n'

@@ -122,6 +122,30 @@ one, the panel cannot converge and an operator is called. Never
 substitute a stub, a mock harness, or a subset of your own choosing for
 the command: that is the exact failure this line exists to catch.
 
+## Verifying it yourself
+
+Every seat, not only those on `Suite-Seats:`, may check the change the
+way a human reviewer would: by running it. You are encouraged, not
+required, to:
+
+- run tests yourself: the module next to the code you are reading, or
+  the whole suite if you suspect a wider break;
+- exercise the running system, when the attached context names a live
+  environment for this version: call its API, load its pages, try the
+  edge case you suspect;
+- reproduce a bug before you raise it, and put the reproduction in your
+  reply.
+
+Say what you actually ran and what it printed, and keep it apart from
+what you only read or inferred: the author weighs the two differently
+and can only do so if you say which is which. `Tested-by:` is for
+something you ran. Never write to state you did not create: use your
+own test databases and indices, not the environment's live data.
+
+The rule against a stub or a subset binds the `Suite-Run:` line only.
+Ad-hoc runs are welcome alongside it; they never replace it. Keep them
+proportionate: a reply that runs out of time is no reply at all.
+
 ## Next version
 
 If any seat blocks, the Author posts the next version as one cover
