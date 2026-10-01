@@ -19,7 +19,9 @@
 #           misconfigured machine and the loud failure is the feature
 #           (exit 1, naming the path).
 # --check   Write nothing. Exit 0 when both staged files exist, are
-#           executable and are byte-identical to this checkout's copies;
+#           regular files (a symlink is STALE: the postmaster ships only
+#           regular files, so a linked gate would silently never run),
+#           executable and byte-identical to this checkout's copies;
 #           otherwise exit 1, listing each missing or stale file. The
 #           staged lkml-panel-state.py drifts silently whenever the
 #           repo's changes, so run this before a postmaster install.
@@ -70,8 +72,12 @@ do_check() {
     for entry in "${FILES[@]}"; do
         src="$script_dir/${entry%%:*}"
         dest="$hooks_dir/${entry#*:}"
-        if [[ ! -f "$dest" ]]; then
+        if [[ -L "$dest" ]]; then
+            echo "check: STALE    $dest (is a symlink; the postmaster ships only regular files)"; bad=1
+        elif [[ ! -e "$dest" ]]; then
             echo "check: MISSING  $dest"; bad=1
+        elif [[ ! -f "$dest" ]]; then
+            echo "check: STALE    $dest (not a regular file)"; bad=1
         elif [[ ! -x "$dest" ]]; then
             echo "check: STALE    $dest (not executable)"; bad=1
         elif ! cmp -s -- "$src" "$dest"; then
