@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """lkml-wake-gate.py — a wake-when gate for the PR panel's author seat.
 
-Usage: FS_HOOK_AGENT=@pr-author FS_HOOK_MESSAGE=<id> \\
+Usage: FS_HOOK_AGENT=pr-author FS_HOOK_MESSAGE=<id> \\
        FS_HOOK_EXPORT_FILE=<f> FS_HOOK_STATUS_FILE=<f> lkml-wake-gate.py
        lkml-wake-gate.py -h|--help
 
@@ -19,7 +19,8 @@ copy of lkml-panel-state.py. The environment it gets:
 
     FS_HOOK_EVENT         wake-when
     FS_HOOK_THREAD        the thread id
-    FS_HOOK_AGENT         the seat about to be woken
+    FS_HOOK_AGENT         the seat about to be woken, as the bare fleet
+                          name (pr-author); an '@' prefix is accepted too
     FS_HOOK_MESSAGE       id of the message that triggered the wake
     FS_HOOK_EXPORT_FILE   = `fork-sandbox mail export <thread> --json`
     FS_HOOK_STATUS_FILE   = `fork-sandbox postmaster status --thread
@@ -138,7 +139,9 @@ def decide(env):
     for key in REQUIRED:
         if not env.get(key):
             raise fail("%s is missing or empty" % key)
-    agent = env["FS_HOOK_AGENT"]
+    # The postmaster passes the bare fleet name; roster addresses carry
+    # the '@'. Compare in the roster's form, or rule b wakes every time.
+    agent = "@" + env["FS_HOOK_AGENT"].strip().lstrip("@")
 
     state = panel_state(env["FS_HOOK_EXPORT_FILE"], env["FS_HOOK_STATUS_FILE"])
     trigger = find_trigger(env["FS_HOOK_EXPORT_FILE"], env["FS_HOOK_MESSAGE"])

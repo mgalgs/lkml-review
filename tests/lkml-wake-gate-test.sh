@@ -118,12 +118,14 @@ exec(sys.stdin.read())
 # run <case> [VAR=value ...]: the gate with a complete, valid env for the
 # case (author seat, trigger m002), overridden by the extra assignments.
 # GATE picks the script under test; UNSET names one var to remove.
+# FS_HOOK_AGENT defaults to the BARE fleet name, as the postmaster passes
+# it; the roster's addresses carry the '@'.
 GATE="$gate_src"; UNSET=""
 RC=0; ERR=""
 run() {
     local d="$work/case-$1" v; shift
     local -A envs=([FS_HOOK_EVENT]=wake-when [FS_HOOK_THREAD]=t-example
-                   [FS_HOOK_AGENT]=@pr-author [FS_HOOK_MESSAGE]=m002
+                   [FS_HOOK_AGENT]=pr-author [FS_HOOK_MESSAGE]=m002
                    [FS_HOOK_EXPORT_FILE]="$d/export.json"
                    [FS_HOOK_STATUS_FILE]="$d/status.json")
     local args=()
@@ -188,8 +190,10 @@ expect "sibling answers another schema" 2 "" "schema"
 GATE="$gate_src"
 
 printf '\n== rules b-e: always wake ==\n'
-run silent FS_HOOK_AGENT=@secretary
+run silent FS_HOOK_AGENT=secretary
 expect "agent is not the author" 0 "b"
+run silent FS_HOOK_AGENT=@secretary
+expect "agent is not the author, '@' form" 0 "b"
 
 gen upstream <<'PY'
 write(D, export([root(), msg(2, "@core", "Reviewed-by: C", sha=A, ver=1,
@@ -241,6 +245,8 @@ case "$ERR" in
     *@core*) no "the answered reviewer is not named as waited on" "$ERR" ;;
     *) ok "the answered reviewer is not named as waited on" ;;
 esac
+run silent FS_HOOK_AGENT=@pr-author
+expect "author seat given in '@' form also defers" 1 "g" "defer @pr-author"
 
 gen stale <<'PY'
 write(D, export([root(), reviewed(2, "@core"), reviewed(3, "@tests"),
