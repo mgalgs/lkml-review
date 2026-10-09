@@ -889,5 +889,28 @@ for needle in '`X-Lkml-Add-Seats`' '`X-Lkml-Recheck-Seats`' 'A blocking verdict 
     has_flat "$sec" "$needle" "secretary.md pins: $needle"
 done
 
+# Contract header names: exactly five X-Lkml-* names appear in fleet/, so
+# a typo'd header never ships, and push modes / tier focus live only in
+# the personas that own them.
+lkml_headers="$(grep -rhoE 'X-Lkml-[A-Za-z-]+' "$repo_dir/fleet" | sed 's/-$//' | sort -u | tr '\n' ' ')"
+expected_headers='X-Lkml-Add-Seats X-Lkml-Push-Mode X-Lkml-Recheck-Seats X-Lkml-Tier X-Lkml-Tier-Reason '
+if [[ "$lkml_headers" == "$expected_headers" ]]; then
+    ok "fleet/ spells only the five contract X-Lkml-* headers"
+else
+    no "fleet/ spells only the five contract X-Lkml-* headers" "got: $lkml_headers"
+fi
+push_files="$(grep -rlF 'X-Lkml-Push-Mode' "$repo_dir/fleet" | xargs -n1 basename | sort | tr '\n' ' ')"
+if [[ "$push_files" == 'pr-author.md secretary.md ' ]]; then
+    ok "push modes appear only in pr-author.md and secretary.md"
+else
+    no "push modes appear only in pr-author.md and secretary.md" "got: $push_files"
+fi
+focus_files="$(grep -rlF 'tier-focus.md' "$repo_dir/fleet" | xargs -n1 basename | sort | tr '\n' ' ')"
+if [[ "$focus_files" == 'architecture.md core.md docs.md newcomer.md pr-review.md security.md tests.md ' ]]; then
+    ok "tier-focus.md appears only in the six reviewers and the pr-review kickoff"
+else
+    no "tier-focus.md appears only in the six reviewers and the pr-review kickoff" "got: $focus_files"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))
