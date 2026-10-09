@@ -7,7 +7,7 @@
 #            [--focus <text>] [--template <file>] [--hops <n>]
 #            [--ci-first <ci-addr>] [--version <n>]
 #            [--allow-ambiguous-version] [--patches] [--seats <addr-list>]
-#            [--send]
+#            [--remote] [--send-arg <arg>]... [--send]
 #
 # <repo>       path to a local git repository.
 # <range>      a revision range passed straight to `git format-patch`
@@ -169,6 +169,14 @@
 #              or wrong roster. Optional: omitted, nothing changes for
 #              existing callers. Never added to the per-patch replies
 #              --patches posts; those are not review seats.
+# --remote     use `fork-sandbox mail --remote` for the cover and every
+#              patch reply. fork-sandbox reads the URL and token from its
+#              own environment.
+# --send-arg   append one argument verbatim to the cover's `mail send`
+#              command. Repeat for flags and values (for example,
+#              --send-arg --review-target --send-arg owner/repo,
+#              or --send-arg --header --send-arg 'X-Example: value').
+#              Arguments retain their order and never go on patch replies.
 # --send       actually run the composed `fork-sandbox mail send`
 #              command. Without it, the command is printed, shell-quoted,
 #              and nothing is sent.
@@ -209,10 +217,12 @@ version=""
 version_given=0
 allow_ambiguous_version=0
 seats=""
+remote=0
+send_args=()
 
 while (( $# > 0 )); do
     case "$1" in
-        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats)
+        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats|--send-arg)
             (( $# >= 2 )) || { echo "Error: $1 requires a value. See --help." >&2; exit 1; }
             ;;
     esac
@@ -228,6 +238,8 @@ while (( $# > 0 )); do
         --ci-first) ci_first="$2"; shift 2 ;;
         --version) version="$2"; version_given=1; shift 2 ;;
         --seats) seats="$2"; shift 2 ;;
+        --remote) remote=1; shift ;;
+        --send-arg) send_args+=("$2"); shift 2 ;;
         --allow-ambiguous-version) allow_ambiguous_version=1; shift ;;
         --patches) post_patches=1; shift ;;
         --attach) post_patches=1; echo "Warning: --attach is a deprecated alias for --patches; attachments are never posted -- this now posts one mail reply per patch instead. Use --patches." >&2; shift ;;
@@ -808,11 +820,14 @@ print(str(email.header.make_header(email.header.decode_header(raw))))
     fi
 }
 
-cover_cmd=(fork-sandbox mail send --from "$from" --to "$to")
+mail_cmd=(fork-sandbox mail)
+(( remote )) && mail_cmd+=(--remote)
+cover_cmd=("${mail_cmd[@]}" send --from "$from" --to "$to")
 [[ -n "$cc" ]] && cover_cmd+=(--cc "$cc")
 [[ -n "$hops" ]] && cover_cmd+=(--hops "$hops")
 [[ -n "$seats_header" ]] && cover_cmd+=(--header "X-Seats: $seats_header")
 cover_cmd+=(--subject "$subject" --body "$body_file")
+cover_cmd+=("${send_args[@]}")
 
 if (( send )); then
     if (( post_patches )); then
@@ -827,7 +842,7 @@ if (( send )); then
         cover_id="$("${cover_cmd[@]}")"
         [[ -n "$cover_id" ]] || { echo "Error: fork-sandbox mail send printed no message id on stdout; cannot post per-patch replies without one." >&2; exit 1; }
         for f in "${patches[@]}"; do
-            fork-sandbox mail reply --from "$from" --to @operator \
+            "${mail_cmd[@]}" reply --from "$from" --to @operator \
                 --reply-to "$cover_id" --subject "$(patch_subject "$f")" --body "$f"
         done
     else
@@ -852,7 +867,7 @@ else
         printf '%q ' "${cover_cmd[@]}"
         printf ')\n'
         for f in "${patches[@]}"; do
-            printf '%q ' fork-sandbox mail reply --from "$from" --to @operator --reply-to
+            printf '%q ' "${mail_cmd[@]}" reply --from "$from" --to @operator --reply-to
             # shellcheck disable=SC2016
             printf '"$cover_id" '
             printf '%q ' --subject "$(patch_subject "$f")" --body "$f"

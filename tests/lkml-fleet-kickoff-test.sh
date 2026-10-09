@@ -295,10 +295,13 @@ if [[ "${1-}" == "fleet" && "${2-}" == "expand" ]]; then
     esac
     exit 0
 fi
-if [[ "${1-}" == "mail" && ( "${2-}" == "send" || "${2-}" == "reply" ) ]]; then
+mail_action="${2-}"
+[[ "$mail_action" == "--remote" ]] && mail_action="${3-}"
+if [[ "${1-}" == "mail" && ( "$mail_action" == "send" || "$mail_action" == "reply" ) ]]; then
     printf '%s\n' "$*" >> "$STUB_CAPTURE_DIR/argv"
+    printf '%s\n' "$@" >> "$STUB_CAPTURE_DIR/argv-lines"
     id="stub-$(printf '%s' "$*" | cksum | awk '{print $1}')-$$"
-    if [[ "$2" == "send" ]]; then
+    if [[ "$mail_action" == "send" ]]; then
         echo "stub fork-sandbox: sent $id as a new thread" >&2
     else
         echo "stub fork-sandbox: replied $id" >&2
@@ -319,6 +322,10 @@ out="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" \
 rc=$?
 check "print-only mode exits 0" "0" "$rc"
 contains "printed command names fork-sandbox mail send" "$out" "fork-sandbox mail send"
+case "$out" in
+    *"mail --remote"*|*"--review-target"*) no "default print output has no new transport flags" "$out" ;;
+    *) ok "default print output has no new transport flags" ;;
+esac
 contains "printed command carries --from" "$out" "--from @author"
 contains "printed command carries --to" "$out" "--to @lkml-panel"
 case "$out" in
@@ -339,6 +346,10 @@ else
 fi
 
 body_file="$(printf '%s' "$out" | grep -o -- '--body [^ ]*' | awk '{print $2}')"
+default_command="$(printf '%q ' fork-sandbox mail send --from '@author' --to '@lkml-panel' \
+    --subject '[PATCH v1 0/2] a series' --body "$body_file")"
+check "default printed command keeps its exact original argument sequence" \
+    "$default_command" "$(head -n1 <<<"$out")"
 if [[ -f "$body_file" ]]; then
     ok "print-only mode's body file is left in place for the printed command to use"
     body_text="$(cat "$body_file")"
@@ -439,6 +450,47 @@ check "every posted patch reply addresses --to @operator" "2" "$n_send_patches_t
 contains "the posted cover keeps its own recipients" "$send_patches_argv" "mail send --from @author --to @lkml-panel"
 send_patches_reply_to_values="$(grep -oE -- '\-\-reply-to [^ ]+' <<<"$send_patches_argv" | sort -u)"
 check "both posted patch replies use the same --reply-to (the cover's own id)" "1" "$(wc -l <<<"$send_patches_reply_to_values")"
+
+printf '\n== remote mail and cover-only pass-through arguments ==\n'
+out_remote="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --patches --remote \
+    --send-arg --review-target --send-arg 'owner/example' \
+    --send-arg --allow-namespace --send-arg 'review space' \
+    --send-arg --reach-probe --send-arg --header \
+    --send-arg 'X-Example: two words' 2>&1)"
+remote_cover="$(grep -m1 -- '^cover_id=' <<<"$out_remote")"
+remote_replies="$(grep -- '^fork-sandbox mail --remote reply' <<<"$out_remote")"
+contains "remote cover uses mail --remote send" "$remote_cover" 'fork-sandbox mail --remote send'
+check "remote print has two remote patch replies" "2" "$(wc -l <<<"$remote_replies" | tr -d '[:space:]')"
+contains "cover print preserves send-arg order and shell quoting" "$remote_cover" \
+    '--review-target owner/example --allow-namespace review\ space --reach-probe --header X-Example:\ two\ words'
+case "$remote_replies" in
+    *"--review-target"*|*"--allow-namespace"*|*"--reach-probe"*|*"X-Example"*)
+        no "printed patch replies omit cover send-args" "$remote_replies" ;;
+    *) ok "printed patch replies omit cover send-args" ;;
+esac
+
+rm -f -- "$capture_dir/argv" "$capture_dir/argv-lines"
+PATH="$stub_bin:$PATH" STUB_CAPTURE_DIR="$capture_dir" \
+    "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' --patches --remote \
+    --send-arg --review-target --send-arg 'owner/example' \
+    --send-arg --allow-namespace --send-arg 'review space' \
+    --send-arg --reach-probe --send-arg --header \
+    --send-arg 'X-Example: two words' --send >/dev/null 2>&1
+remote_sent="$(cat "$capture_dir/argv")"
+check "remote send dispatches one cover" "1" "$(grep -c -- '^mail --remote send' <<<"$remote_sent")"
+check "remote send dispatches two patch replies" "2" "$(grep -c -- '^mail --remote reply' <<<"$remote_sent")"
+remote_sent_cover="$(head -n1 <<<"$remote_sent")"
+contains "send passes spaced header as one argument" "$remote_sent_cover" '--header X-Example: two words'
+check "sent header value remains one argv element" "1" \
+    "$(grep -Fxc -- 'X-Example: two words' "$capture_dir/argv-lines")"
+remote_sent_replies="$(tail -n +2 <<<"$remote_sent")"
+case "$remote_sent_replies" in
+    *"--review-target"*|*"--allow-namespace"*|*"--reach-probe"*|*"X-Example"*)
+        no "sent patch replies omit cover send-args" "$remote_sent_replies" ;;
+    *) ok "sent patch replies omit cover send-args" ;;
+esac
 
 printf '\n== --send mode ==\n'
 out_send="$(PATH="$stub_bin:$PATH" FORK_SANDBOX_MAIL_ROOT="$mail_root" STUB_CAPTURE_DIR="$capture_dir" \
