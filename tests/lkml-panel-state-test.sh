@@ -63,7 +63,7 @@ ROOT_BODY = "\n".join([
 ])
 
 def msg(seq, frm, body, sha=None, ver=None, set_target=None,
-        subject="Re: [PATCH v1] Fix the thing", extra=()):
+        subject="Re: [PATCH v1] Fix the thing", extra=(), to=None):
     h = [["From", frm]]
     if sha:
         h.append(["X-Review-Target", "pr/example " + sha])
@@ -73,7 +73,7 @@ def msg(seq, frm, body, sha=None, ver=None, set_target=None,
         h.append(["X-Version", str(ver)])
     h.extend(list(x) for x in extra)
     return {"seq": seq, "id": "m%03d" % seq, "headers": h, "from": frm,
-            "to": ["@panel"], "cc": [], "subject": subject,
+            "to": to if to is not None else ["@panel"], "cc": [], "subject": subject,
             "date": "Mon, 02 Mar 2026 10:%02d:00 +0000" % (seq % 60),
             "in_reply_to": None, "body": body, "attachments": []}
 
@@ -1102,9 +1102,19 @@ H, T2, T4 = sha("1"), sha("2"), sha("4")
 def frozen_root(head=F):
     return root(sha=F, ver=1, body=ROOT_BODY.replace("f" * 40, head))
 
-def upstream(seq, head=H, frm="@postmaster"):
-    return msg(seq, frm, "The human author pushed a new head.",
-               extra=[["X-Upstream-Head", "pr/example " + head]])
+def upstream(seq, head=H, frm="@postmaster", mode=None, extra=(), to=None):
+    # The postmaster's upstream-moved mail; mode and extra add the
+    # X-Lkml-* push headers the CI side stamps on it.
+    h = [["X-Upstream-Head", "pr/example " + head]]
+    if mode:
+        h.append(["X-Lkml-Push-Mode", mode])
+    h.extend(list(x) for x in extra)
+    return msg(seq, frm, "The human author pushed a new head.", extra=h, to=to)
+
+def tier_root(tier="standard", head=A):
+    return root(sha=head, body=ROOT_BODY.replace("f" * 40, head),
+                extra=[["X-Lkml-Tier", tier],
+                       ["X-Lkml-Tier-Reason", "two subsystems"]])
 
 def cover(seq, target, ver, body, frm="@pr-author"):
     return msg(seq, frm, body, sha=target, ver=ver, set_target=target,
@@ -1704,6 +1714,207 @@ run_case tier4
 check "two different tier values: name null" "null" "$(j .tier.name)"
 reason_has "two different tier values is a reason" "is not quick, standard or full"
 
+printf '\n== push modes: escalate grows the roster and ratchets the tier ==\n'
+# Shared shape: a standard-tier thread, v1 at head A (the root's Frozen-Head)
+# with @core, @tests, @docs positive on A and the secretary CONVERGED
+# SIGNED-OFF v1, then the human pushes H and the postmaster's mail says what
+# to do about it (an upstream-moved mail, seq 30). The author's v2 is seq 31.
+gen esc1 <<'PY'
+e = [tier_root()] + panel_positive() + [sec(20)]
+e.append(upstream(30, H, mode="escalate",
+                  extra=[["X-Lkml-Tier", "full"], ["X-Lkml-Add-Seats", "security"]]))
+write(D, export(e), status())
+PY
+run_case esc1
+# Hand-worked: the valid escalate sets the tier to full (source escalate, at
+# m030, root's reason kept) and seats @security; @security has said nothing
+# (silent). The push H is not the frozen head A, so it is unanswered; the
+# secretary's CONVERGED is contradicted by the silent seat. Nothing is
+# quiescent-blocked, so STALLED.
+check "(esc1) tier ratchets to full, source escalate, reason kept" \
+    '{"name":"full","reason":"two subsystems","source":"escalate","message_id":"m030"}' "$(j .tier)"
+check "(esc1) the effective panel gains @security" '["@core","@tests","@docs","@security"]' "$(j .panel)"
+check "(esc1) roster.panel stays the root's" '["@core","@tests","@docs"]' "$(j .roster.panel)"
+check "(esc1) @security has a seat entry and is silent" "silent" "$(seat @security state)"
+check "(esc1) the push is an escalate adding @security, not yet answered" \
+    '{"seq":30,"message_id":"m030","sha":"1111111111111111111111111111111111111111","branch":"pr/example","mode":"escalate","seats":["@security"],"tier":"full","malformed":null,"answered":false}' "$(j .push)"
+reason_has "(esc1) the unanswered push is a reason" "the human author's newest push 11111111 (seq 30)"
+reason_has "(esc1) the new seat's silence is a reason" "@security: no verdict on v1 (aaaaaaaa)"
+reason_has "(esc1) the secretary's CONVERGED is caught" "secretary says CONVERGED but @security is silent"
+check "(esc1) STALLED" "STALLED" "$(jr .status)"
+
+gen esc2 <<'PY'
+e = [tier_root()] + panel_positive() + [sec(20)]
+e.append(upstream(30, H, mode="escalate",
+                  extra=[["X-Lkml-Tier", "full"], ["X-Lkml-Add-Seats", "security"]]))
+e.append(cover(31, H, 2, "Human integration.\n\nFrozen-Head: " + H))
+e += panel_positive(sha=H, ver=2, start=40, who=("@core", "@tests", "@docs", "@security"))
+e.append(sec(50, "CONVERGED", 2, "SIGNED-OFF", H, 2))
+write(D, export(e), status(sha=H, ver=2))
+PY
+run_case esc2
+# Hand-worked: the cover's Frozen-Head H is vouched by push seq 30 (< 31), so
+# the frozen head is H (upstream) and target H == frozen head: SIGNED-OFF is
+# valid. All four seats of the effective panel are positive on H v2; the
+# secretary is on target (H, v2) and says CONVERGED; no push is unanswered.
+check "(esc2) CONVERGED" "CONVERGED" "$(jr .status)"
+check "(esc2) SIGNED-OFF at H" "SIGNED-OFF" "$(jr .verdict)"
+check "(esc2) four seats" "4" "$(jr '.seats | length')"
+check "(esc2) every seat carried=false" "true" "$(jr '[.seats[].carried] | all(. == false)')"
+check "(esc2) the push is answered" "true" "$(jr .push.answered)"
+check "(esc2) tier full" "full" "$(jr .tier.name)"
+
+gen esc3 <<'PY'
+e = [tier_root()] + panel_positive() + [sec(20)]
+e.append(upstream(30, H, mode="escalate",
+                  extra=[["X-Lkml-Tier", "full"], ["X-Lkml-Add-Seats", "@security"]]))
+e.append(cover(31, H, 2, "Human integration.\n\nFrozen-Head: " + H))
+e += panel_positive(sha=H, ver=2, start=40)
+e.append(sec(50, "CONVERGED", 2, "SIGNED-OFF", H, 2))
+write(D, export(e), status(sha=H, ver=2))
+PY
+run_case esc3
+# Hand-worked: as esc2, but the escalated-in @security never answers v2: it
+# owes a verdict, so the secretary's CONVERGED is a false green.
+check "(esc3) @security silent: not CONVERGED" "STALLED" "$(jr .status)"
+reason_has "(esc3) the silent escalated-in seat is named" "@security: no verdict on v2 (11111111)"
+reason_has "(esc3) the secretary is caught" "secretary says CONVERGED but @security is silent"
+
+gen esc4 <<'PY'
+e = [tier_root()] + panel_positive() + [sec(20)]
+e.append(upstream(30, H, mode="escalate",
+                  extra=[["X-Lkml-Tier", "quick"], ["X-Lkml-Add-Seats", "security"]]))
+write(D, export(e), status())
+PY
+run_case esc4
+# Hand-worked: quick is below the standard in force, so the escalate is
+# malformed: treated as absent. Tier stays standard/root, the roster does not
+# grow, the push has no mode, and the malformed text is a reason.
+check "(esc4) tier stays standard from the root" '"standard" "root"' "$(jr '"\"" + .tier.name + "\" \"" + .tier.source + "\""')"
+check "(esc4) the roster does not grow" '["@core","@tests","@docs"]' "$(j .panel)"
+check "(esc4) push.mode is null" "null" "$(j .push.mode)"
+check "(esc4) no seats from the ignored mail" "[]" "$(j .push.seats)"
+reason_has "(esc4) the lower tier is reported" "push seq 30 (m030): X-Lkml-Push-Mode escalate names tier 'quick' below the current 'standard'; ignored as malformed, treated as absent"
+check "(esc4) push.malformed carries the text" "true" "$(jr '.push.malformed | contains("below the current")')"
+
+gen esc4b <<'PY'
+e = [tier_root()] + panel_positive(sha=A) + [sec(20)]
+e.append(upstream(30, H, mode="escalate",
+                  extra=[["X-Lkml-Tier", "quick"], ["X-Lkml-Add-Seats", "security"]]))
+e.append(cover(31, H, 2, "Human integration.\n\nFrozen-Head: " + H))
+e += panel_positive(sha=H, ver=2, start=40)
+e.append(sec(50, "CONVERGED", 2, "SIGNED-OFF", H, 2))
+write(D, export(e), status(sha=H, ver=2))
+PY
+run_case esc4b
+# Hand-worked: after the ignored escalate the author's v2 is judged as an
+# ordinary push: three fresh positives on H, secretary on target. The only
+# thing standing in the way is the malformed mail's own reason (A malformed
+# input is a reason and blocks CONVERGED).
+check "(esc4b) an ignored escalate still blocks CONVERGED, with exactly its reason" "1" "$(jr '.reasons | length')"
+check "(esc4b) STALLED" "STALLED" "$(jr .status)"
+check "(esc4b) seats are judged fresh on v2, none carried" "true" "$(jr '[.seats[] | .state == "positive" and .carried == false] | all')"
+
+gen esc5 <<'PY'
+e = [tier_root()] + panel_positive() + [sec(20)]
+e.append(upstream(30, H, mode="escalate", extra=[["X-Lkml-Add-Seats", "security"]]))
+write(D, export(e), status())
+PY
+run_case esc5
+# Hand-worked: an escalate with no X-Lkml-Tier names nothing to raise to.
+check "(esc5) an escalate with no tier: roster does not grow" '["@core","@tests","@docs"]' "$(j .panel)"
+check "(esc5) push.mode is null" "null" "$(j .push.mode)"
+reason_has "(esc5) reported as naming no usable tier" "escalate names no usable X-Lkml-Tier (none); ignored as malformed"
+
+gen esc5b <<'PY'
+e = [tier_root()] + panel_positive() + [sec(20)]
+e.append(upstream(30, H, mode="escalate", extra=[["X-Lkml-Tier", "huge"]]))
+write(D, export(e), status())
+PY
+run_case esc5b
+check "(esc5b) an unknown escalate tier: push.mode null" "null" "$(j .push.mode)"
+reason_has "(esc5b) reported, naming the value" "no usable X-Lkml-Tier ('huge')"
+
+gen esc6 <<'PY'
+e = [tier_root()] + panel_positive() + [sec(20)]
+e.append(upstream(30, H, mode="escalate",
+                  extra=[["X-Lkml-Tier", "standard"], ["X-Lkml-Add-Seats", "security"],
+                         ["X-Lkml-Tier-Reason", "needs a security look"]]))
+e.append(cover(31, H, 2, "Human integration.\n\nFrozen-Head: " + H))
+e += panel_positive(sha=H, ver=2, start=40, who=("@core", "@tests", "@docs", "@security"))
+e.append(sec(50, "CONVERGED", 2, "SIGNED-OFF", H, 2))
+write(D, export(e), status(sha=H, ver=2))
+PY
+run_case esc6
+# Hand-worked: naming the tier already in force is allowed (never LOWER); the
+# roster grows, the tier source becomes escalate and the escalate's reason
+# replaces the root's. All four seats positive on H: CONVERGED.
+check "(esc6) same-tier escalate: CONVERGED" "CONVERGED" "$(jr .status)"
+check "(esc6) tier standard from the escalate, with its reason" \
+    '{"name":"standard","reason":"needs a security look","source":"escalate","message_id":"m030"}' "$(j .tier)"
+check "(esc6) four seats" "4" "$(jr '.panel | length')"
+
+printf '\n== push modes: malformed modes and forged headers ==\n'
+gen mode1 <<'PY'
+e = [tier_root()] + panel_positive() + [sec(20), upstream(30, H, mode="rebase")]
+write(D, export(e), status())
+PY
+run_case mode1
+check "(mode1) an unknown mode is treated as absent" "null" "$(j .push.mode)"
+reason_has "(mode1) and reported" "push seq 30 (m030): X-Lkml-Push-Mode 'rebase' is not carry, recheck or escalate; treated as absent"
+
+gen mode2 <<'PY'
+e = [tier_root()] + panel_positive() + [sec(20),
+     upstream(30, H, mode="carry", extra=[["X-Lkml-Push-Mode", "recheck"]])]
+write(D, export(e), status())
+PY
+run_case mode2
+check "(mode2) two distinct modes: treated as absent" "null" "$(j .push.mode)"
+reason_has "(mode2) and reported" "is not carry, recheck or escalate; treated as absent"
+
+gen forge1 <<'PY'
+e = [tier_root()] + panel_positive() + [sec(20)]
+e[1] = msg(2, "@core", "Reviewed-by: core <core@example.com>", sha=A, ver=1,
+           extra=[["X-Lkml-Push-Mode", "carry"]])
+write(D, export(e), status())
+PY
+run_case forge1
+# Hand-worked: a seat's reply cannot carry a push mode (it has no stamped
+# X-Upstream-Head). It is ignored with a reason, which blocks CONVERGED, and
+# creates no push record.
+check "(forge1) no push record" "null" "$(j .push)"
+reason_has "(forge1) the forgery is reported" "message seq 2 (m002): X-Lkml-Push-Mode without a stamped X-Upstream-Head; ignored"
+check "(forge1) not CONVERGED" "STALLED" "$(jr .status)"
+
+printf '\n== push modes: recheck validation ==\n'
+gen re4 <<'PY'
+e = [tier_root()] + panel_positive() + [sec(20), upstream(30, H, mode="recheck")]
+write(D, export(e), status())
+PY
+run_case re4
+check "(re4) recheck with no seat list: treated as absent" "null" "$(j .push.mode)"
+reason_has "(re4) reported" "X-Lkml-Recheck-Seats names no seat on the panel; treated as absent"
+
+gen re5 <<'PY'
+e = [tier_root()] + panel_positive() + [sec(20),
+     upstream(30, H, mode="recheck", extra=[["X-Lkml-Recheck-Seats", "ghost"]])]
+write(D, export(e), status())
+PY
+run_case re5
+check "(re5) recheck naming only an off-panel seat: treated as absent" "null" "$(j .push.mode)"
+reason_has "(re5) the dropped seat is named" "X-Lkml-Recheck-Seats names @ghost, which is not on the panel; dropped"
+reason_has "(re5) and the list is reported empty" "names no seat on the panel; treated as absent"
+
+gen re6 <<'PY'
+e = [tier_root()] + panel_positive() + [sec(20),
+     upstream(30, H, mode="recheck", extra=[["X-Lkml-Recheck-Seats", "ghost, core, @tests"]])]
+write(D, export(e), status())
+PY
+run_case re6
+check "(re6) the valid seats are honoured, bare or addressed" '"recheck" ["@core","@tests"]' "$(jr '"\"" + .push.mode + "\" " + (.push.seats|tojson)')"
+reason_has "(re6) the unknown seat is dropped with a reason" "@ghost, which is not on the panel; dropped"
+check "(re6) the malformed text is not set" "null" "$(j .push.malformed)"
+
 printf '\n== invariants over every case above ==\n'
 inv_bad=""; inv_n=0; inv_conv=0; diff_bad=""; diff_n=0
 # Opt-in differential check: LKML_PANEL_STATE_BASELINE names an earlier copy
@@ -1722,7 +1933,7 @@ for c in "${cases_run[@]}"; do
         [[ "$(jq -c "$strip_new" <<<"$o")" == "$ob" ]] || diff_bad+=" $c"
     fi
     if ! jq -e '
-        (["schema","thread","subject","status","verdict","target","roster","tier","panel","frozen_head","seats","secretary","postmaster","bundle","reasons"]
+        (["schema","thread","subject","status","verdict","target","roster","tier","panel","push","frozen_head","seats","secretary","postmaster","bundle","reasons"]
          - keys | length) == 0
         and (.status | IN("CONVERGED","IN-PROGRESS","STALLED","NEEDS-OPERATOR"))
         and ((.status == "CONVERGED") == (.reasons | length == 0))
@@ -1739,6 +1950,7 @@ for c in "${cases_run[@]}"; do
         and (.secretary == null or (.secretary | has("message_id") and has("version") and has("status")
              and has("verdict") and has("on_target") and has("malformed") and has("carried")))
         and (.tier | has("name") and has("reason") and has("source") and has("message_id"))
+        and (.push == null or (.push | has("mode") and has("message_id") and has("seq") and has("sha") and has("seats") and has("tier") and has("malformed") and has("answered")))
         and (.panel | type == "array") and (.panel[:(.roster.panel | length)] == .roster.panel)
         and (.target == null or (.target | has("branch") and has("sha") and has("version") and has("set_by") and has("set_at") and has("source")))
         and (.status != "CONVERGED" or (.seats | length > 0 and all(.[]; .state == "positive")))

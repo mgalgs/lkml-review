@@ -52,8 +52,10 @@ one "lkml-wake-gate: ..." line on stderr naming the decision and rule:
        (this gate judges the author seat only)
     c  the trigger has an X-Upstream-Head header  -> exit 0
        (the human author's push always wakes the author)
-    d  the trigger's sender is not in roster.panel -> exit 0
-       (operator, CI, secretary and the root are not reviewer chatter)
+    d  the trigger's sender is not in the panel   -> exit 0
+       (operator, CI, secretary and the root are not reviewer chatter;
+       the panel is panel-state's effective roster, so a seat escalated in
+       by an X-Lkml-Push-Mode: escalate push is a reviewer)
     e  no target, or the target has no sha        -> exit 0
        (nothing to wait for)
     f  every seat is positive, blocking or question -> exit 0
@@ -158,7 +160,8 @@ def decide(env):
                    % env["FS_HOOK_MESSAGE"])
     sender = trigger.get("from")
     sender = sender.strip() if isinstance(sender, str) else sender
-    if sender not in (roster.get("panel") or []):
+    # The effective roster: the root's panel plus any escalated-in seat.
+    if sender not in (state.get("panel") or roster.get("panel") or []):
         raise Done(0, "wake: %s is not a panel reviewer (rule d)" % sender)
     target = state.get("target")
     if not target or not target.get("sha"):

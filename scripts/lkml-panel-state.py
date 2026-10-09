@@ -77,6 +77,50 @@ its own. The tier does not change who must answer: that is the roster
 (`Panel:`), and a smaller tier is a smaller NAMED roster, never "fewer
 seats happened to answer".
 
+Pushes and push modes -- the postmaster's upstream-moved mail (the one
+stamped `X-Upstream-Head`, sent when the human pushes to the PR) may say,
+in `X-Lkml-Push-Mode`, how the CI side wants the push handled:
+
+    carry      every seat's latest verdict carries forward unchanged
+    recheck    `X-Lkml-Recheck-Seats: core, tests` -- the author posts the
+               new version to those seats only; the rest carry forward
+    escalate   `X-Lkml-Tier: <tier>` and `X-Lkml-Add-Seats: security` (may
+               be empty) -- the roster grows by the added seats, the tier
+               ratchets, and every seat needs a fresh verdict
+    (absent)   as always: every seat needs a fresh verdict
+
+A mode is identified by the header alone, never by the mail's recipients:
+a carry mail is addressed to @operator so that it wakes nobody, and being
+addressed to the operator it must not be read as a question to them.
+Seat tokens may be bare (`core`) or addressed (`@core`).
+
+Every upstream-moved mail is a "push" record: {"seq","message_id","sha",
+"branch","mode","seats","tier","malformed","answered"}. mode is null when
+the mail names none, or when what it names is malformed (and malformed
+then holds the text). A malformed push mode is treated as ABSENT -- every
+seat owes a fresh verdict -- and reported as a reason, never honoured:
+
+  * several distinct modes, or one that is not carry, recheck or escalate
+  * recheck with no X-Lkml-Recheck-Seats, or one that leaves no seat on
+    the panel (a token that is not on the panel, or malformed, is dropped
+    with a reason, and the others are honoured)
+  * escalate with no usable X-Lkml-Tier, or one BELOW the tier in force:
+    the tier only ratchets up within a thread (naming the same tier, to
+    add seats, is fine)
+  * a push mode on a message with no parseable X-Upstream-Head: only the
+    postmaster stamps that header, and any seat can set an X-* header, so
+    it is ignored with a reason
+
+A valid escalate sets the tier in force (tier.source "escalate"; its
+X-Lkml-Tier-Reason replaces the root's when it has one) and appends each
+not-yet-seated X-Lkml-Add-Seats token to the effective roster: the
+top-level "panel" is the root's `Panel:` plus every added seat, in order.
+roster.panel stays the root's own. Every seat in "panel" owes a positive
+verdict; a seat nobody listed on the root but escalated in is a seat like
+any other. Top-level "push" is the newest push record, with "answered":
+true when its sha is the current target's frozen head; null when the
+thread has no push.
+
 Frozen head -- the commit the human's PR stood on when a version's review
 began, which decides what a sign-off means. roster.frozen_head is the
 ROOT's value and keeps that meaning. The top-level "frozen_head"
@@ -221,8 +265,12 @@ Output (null, never an omitted key, for what is unknown):
                 "suite","suite_seats"},   # suite: string|null; suite_seats:
                                           # the resolved list, [] w/o Suite
      "tier": {"name","reason","source","message_id"},   # see "Tier"
-     "panel": [...],                    # the effective roster; the root's
-                                        # panel (roster.panel is unchanged)
+     "panel": [...],                    # the effective roster: the root's
+                                        # panel plus escalated-in seats
+                                        # (roster.panel is unchanged)
+     "push": {"seq","message_id","sha","branch","mode","seats","tier",
+              "malformed","answered"},  # newest upstream-moved mail, or
+                                        # null; see "Pushes and push modes"
      "frozen_head": {"sha","source"},   # of the current target; source
                                         # "root" or "upstream"
      "seats": [{"seat","state","verdict","message_id","version","sha",
@@ -279,6 +327,10 @@ TIERS = ("quick", "standard", "full")
 TIER_HEADER = "X-Lkml-Tier"
 TIER_REASON_HEADER = "X-Lkml-Tier-Reason"
 TIER_REASON_MAX = 200
+PUSH_MODE_HEADER = "X-Lkml-Push-Mode"
+RECHECK_HEADER = "X-Lkml-Recheck-Seats"
+ADD_SEATS_HEADER = "X-Lkml-Add-Seats"
+PUSH_MODES = ("carry", "recheck", "escalate")
 
 USAGE = """\
 Usage: lkml-panel-state.py <thread-id> [--remote]
@@ -434,6 +486,115 @@ def parse_tier(root):
         reasons.append(f"root {TIER_HEADER} {shown} is not quick, standard "
                        f"or full")
     return tier, reasons
+
+
+def seat_tokens(msg, name, reasons):
+    """The seats an X-Lkml-*-Seats header lists, as '@name' addresses in
+    header order, without duplicates. Bare names are accepted."""
+    out = []
+    for value in header_values(msg, name):
+        for tok in value.split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            addr = tok if tok.startswith("@") else "@" + tok
+            if not ADDRESS_RE.match(addr):
+                reasons.append(f"malformed {name} address {clip(tok)!r} dropped")
+            elif addr not in out:
+                out.append(addr)
+    return out
+
+
+def upstream_head(msg):
+    """(branch, sha) of the last parseable X-Upstream-Head, or None."""
+    found = None
+    for v in header_values(msg, "X-Upstream-Head"):
+        parsed = parse_target_value(v)
+        if parsed is not None:
+            found = parsed
+    return found
+
+
+def validate_push(msg, panel, tier):
+    """One push's mode -> (mode|None, seats, new_tier|None, malformed|None,
+    reasons). `panel` and `tier` are those in force when the push arrived;
+    new_tier is set only by a valid escalate."""
+    reasons = []
+    modes = set(header_values(msg, PUSH_MODE_HEADER))
+    if not modes:
+        return None, [], None, None, reasons
+    mode = next(iter(modes)) if len(modes) == 1 else None
+    if mode not in PUSH_MODES:
+        shown = " / ".join(repr(clip(v)) for v in sorted(modes))
+        bad = (f"{PUSH_MODE_HEADER} {shown} is not carry, recheck or "
+               f"escalate; treated as absent")
+        return None, [], None, bad, reasons
+    if mode == "carry":
+        return "carry", [], None, None, reasons
+    if mode == "recheck":
+        listed = seat_tokens(msg, RECHECK_HEADER, reasons)
+        kept = [a for a in listed if a in panel]
+        for a in listed:
+            if a not in panel:
+                reasons.append(f"{RECHECK_HEADER} names {a}, which is not "
+                               f"on the panel; dropped")
+        if not kept:
+            bad = f"{RECHECK_HEADER} names no seat on the panel; treated as absent"
+            return None, [], None, bad, reasons
+        return "recheck", kept, None, None, reasons
+    tiers = set(header_values(msg, TIER_HEADER))
+    name = next(iter(tiers)) if len(tiers) == 1 else None
+    if name not in TIERS:
+        shown = " / ".join(repr(clip(v)) for v in sorted(tiers)) or "none"
+        bad = (f"{PUSH_MODE_HEADER} escalate names no usable {TIER_HEADER} "
+               f"({shown}); ignored as malformed, treated as absent")
+        return None, [], None, bad, reasons
+    current = tier["name"]
+    if current is not None and TIERS.index(name) < TIERS.index(current):
+        bad = (f"{PUSH_MODE_HEADER} escalate names tier {name!r} below the "
+               f"current {current!r}; ignored as malformed, treated as absent")
+        return None, [], None, bad, reasons
+    added = [a for a in seat_tokens(msg, ADD_SEATS_HEADER, reasons)
+             if a not in panel]
+    reason = tier["reason"]
+    for v in header_values(msg, TIER_REASON_HEADER):
+        text = first_line(v, TIER_REASON_MAX)
+        if text:
+            reason = text
+            break
+    new_tier = {"name": name, "reason": reason, "source": "escalate",
+                "message_id": msg["id"]}
+    return "escalate", added, new_tier, None, reasons
+
+
+def parse_pushes(msgs, root_panel, tier):
+    """Every upstream-moved mail -> (pushes, effective panel, tier in force,
+    reasons). See the module docstring, "Pushes and push modes"."""
+    pushes, reasons = [], []
+    panel = list(root_panel)
+    for m in msgs[1:]:
+        if not m["ok"]:
+            continue
+        head = upstream_head(m)
+        if head is None:
+            if header_values(m, PUSH_MODE_HEADER):
+                reasons.append(
+                    f"message seq {m['seq']} ({m['id']}): {PUSH_MODE_HEADER} "
+                    f"without a stamped X-Upstream-Head; ignored")
+            continue
+        mode, seats, new_tier, bad, why = validate_push(m, panel, tier)
+        where = f"push seq {m['seq']} ({m['id']}): "
+        reasons += [where + w for w in why]
+        if bad:
+            reasons.append(where + bad)
+        if mode == "escalate":
+            tier = new_tier
+            panel += seats
+        pushes.append({"seq": m["seq"], "message_id": m["id"],
+                       "sha": head[1], "branch": head[0], "mode": mode,
+                       "seats": seats, "tier": tier["name"],
+                       "malformed": bad})
+    return pushes, panel, tier, reasons
 
 
 def parse_roster(root):
@@ -951,6 +1112,8 @@ def build_state(export, status):
     reasons += roster_reasons
     tier, tier_reasons = parse_tier(root)
     reasons += tier_reasons
+    pushes, panel, tier, push_reasons = parse_pushes(msgs, roster["panel"], tier)
+    reasons += push_reasons
 
     bad = [str(m["seq"]) for m in msgs if not m["ok"]]
     if bad:
@@ -965,7 +1128,7 @@ def build_state(export, status):
     reasons += unanswered_push(msgs, frozen_head)
 
     seats = []
-    for seat in roster["panel"]:
+    for seat in panel:
         entry, why = judge_seat(seat, msgs, target, roster["suite_seats"])
         seats.append(entry)
         if why:
@@ -976,6 +1139,11 @@ def build_state(export, status):
 
     pm, pm_reasons = postmaster_facts(status)
     reasons += pm_reasons
+
+    push = None
+    if pushes:
+        push = dict(pushes[-1], answered=(frozen_head is not None
+                                          and frozen_head["sha"] == pushes[-1]["sha"]))
 
     seats_ok = bool(seats) and all(s["state"] == "positive" for s in seats)
     sec_says_converged = (secretary is not None and secretary["on_target"]
@@ -1024,7 +1192,8 @@ def build_state(export, status):
         "target": target,
         "roster": roster,
         "tier": tier,
-        "panel": list(roster["panel"]),
+        "panel": panel,
+        "push": push,
         "frozen_head": frozen_head,
         "seats": seats,
         "secretary": secretary,

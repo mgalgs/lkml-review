@@ -57,7 +57,7 @@ ROOT_BODY = "\n".join([
 ])
 
 def msg(seq, frm, body, sha=None, ver=None, set_target=None,
-        subject="Re: [PATCH v1] Fix the thing", extra=()):
+        subject="Re: [PATCH v1] Fix the thing", extra=(), to=None):
     h = [["From", frm]]
     if sha:
         h.append(["X-Review-Target", "pr/example " + sha])
@@ -67,7 +67,7 @@ def msg(seq, frm, body, sha=None, ver=None, set_target=None,
         h.append(["X-Version", str(ver)])
     h.extend(list(x) for x in extra)
     return {"seq": seq, "id": "m%03d" % seq, "headers": h, "from": frm,
-            "to": ["@panel"], "cc": [], "subject": subject,
+            "to": to if to is not None else ["@panel"], "cc": [], "subject": subject,
             "date": "Mon, 02 Mar 2026 10:%02d:00 +0000" % (seq % 60),
             "in_reply_to": None, "body": body, "attachments": []}
 
@@ -91,6 +91,19 @@ def status(sha=A, ver=1, thread="t-example", target="default", **kw):
         st["review_target"] = target
     st.update(kw)
     return st
+
+def upstream(seq, head, mode=None, extra=(), to=None):
+    # The postmaster's upstream-moved mail, with the X-Lkml-* push headers.
+    h = [["X-Upstream-Head", "pr/example " + head]]
+    if mode:
+        h.append(["X-Lkml-Push-Mode", mode])
+    h.extend(list(x) for x in extra)
+    return msg(seq, "@postmaster", "The human author pushed a new head.",
+               extra=h, to=to)
+
+def cover(seq, target, ver, body):
+    return msg(seq, "@pr-author", body, sha=target, ver=ver, set_target=target,
+               subject="Re: [PATCH v%d 0/0] Fix the thing" % ver)
 
 def reviewed(seq, who, sha=A, ver=1):
     return msg(seq, who, "Reviewed-by: %s <%s@example.com>" % (who, who[1:]),
@@ -270,6 +283,20 @@ run mixed
 expect "all three on target: reviewed, changes-requested, question" 0 "f"
 run mixed FS_HOOK_MESSAGE=m003
 expect "same, triggered by the blocking reviewer" 0 "f"
+
+printf '\n== escalate: the effective roster ==\n'
+gen esc <<'PY'
+# The root's panel is core/tests/docs; the human's push escalated in
+# @security. @security replies (m003) while the other three are silent.
+D1 = sha("1")
+write(D, export([root(), upstream(2, D1, mode="escalate",
+                                  extra=[["X-Lkml-Tier", "full"], ["X-Lkml-Add-Seats", "security"]]),
+                 reviewed(3, "@security")]),
+      status())
+PY
+run esc FS_HOOK_MESSAGE=m003
+expect "an escalated-in seat's reply is reviewer chatter, not rule d" 1 "g" \
+    "@core (silent)" "@tests (silent)" "@docs (silent)"
 
 printf '\n== --help ==\n'
 HELP="$("$gate_src" --help 2>&1)"; HRC=$?
