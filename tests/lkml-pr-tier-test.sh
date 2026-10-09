@@ -350,6 +350,145 @@ LKML_TIERS_FILE="$work/long.yaml" tier "$r" "$EMPTY"
 check "T14: reason capped at 200 chars" true "$(j '.reason|length <= 200')"
 contains "T14: capped reason ends with ..." "$(j .reason)" "..."
 
+printf '\n== push mode ==\n'
+# push_repo <name>: base, then two topic commits (src and a migration-free
+# change); echoes the repo. $prev holds the topic head the panel "saw".
+push_repo() {
+    local r; r="$(new_repo "$1")"
+    add_commit "$r" src/core/a.txt 5 "first"
+    add_commit "$r" src/core/b.txt 5 "second"
+    printf '%s' "$r"
+}
+head_of() { git -C "$1" rev-parse "$2"; }
+PM='{}'
+
+r="$(push_repo rebase)"; prev="$(head_of "$r" topic)"
+git_q -C "$r" checkout -q main
+printf 'moved\n' > "$r/other.txt"; git_q -C "$r" add -A; git_q -C "$r" commit -qm "main moves"
+git_q -C "$r" checkout -q topic
+git_q -C "$r" rebase -q main
+tier "$r" "$PM" --previous-head "$prev" --current-tier standard
+check "T17: pure rebase is carry" carry "$(j .push.mode)"
+check "T17: tier is the current tier" standard "$(j .tier)"
+check "T17: headers" '["X-Lkml-Push-Mode: carry"]' "$(jc .push.headers)"
+check "T17: no new commits, two carried" "0 2" "$(j '(.push.new_commits|length|tostring) + " " + (.push.carried_commits|length|tostring)')"
+check "T17: new head differs from previous (a real rebase)" true "$([[ "$(head_of "$r" topic)" != "$prev" ]] && echo true || echo false)"
+
+r="$(push_repo dropped)"; prev="$(head_of "$r" topic)"
+git_q -C "$r" reset -q --hard HEAD~1
+tier "$r" "$PM" --previous-head "$prev" --current-tier standard
+check "T17b: a dropped commit is not carry" recheck "$(j .push.mode)"
+check "T17b: the whole roster is rechecked" core,tests,architecture "$(j '.push.seats|join(",")')"
+
+r="$(push_repo dropnew)"; prev="$(head_of "$r" topic)"
+git_q -C "$r" reset -q --hard HEAD~1
+add_commit "$r" docs/note.md 2 "docs"
+tier "$r" "$PM" --previous-head "$prev" --current-tier standard
+check "T17d: dropped plus new commit rechecks the whole roster" core,tests,architecture "$(j '.push.seats|join(",")')"
+
+r="$(push_repo forcecarry)"; prev="$(head_of "$r" topic)"
+tier "$r" '{"labels":["lkml-full"]}' --previous-head "$prev" --current-tier standard
+check "T17e: force-full on an otherwise-carry push escalates" escalate "$(j .push.mode)"
+check "T17e: tier is full" full "$(j .tier)"
+tier "$r" '{"labels":["lkml-full"]}' --previous-head "$prev" --current-tier full
+check "T17e: already full stays carry" carry "$(j .push.mode)"
+
+r="$(push_repo badroster)"; prev="$(head_of "$r" topic)"
+python3 "$tier_py" "$r" main..topic --meta "$(meta '{}')" --previous-head "$prev" --current-tier standard --current-roster core,secretary >/dev/null 2>&1; rc=$?
+check "T17f: a reserved seat in --current-roster is refused" 2 "$rc"
+
+r="$(push_repo mergeres)"; prev="$(head_of "$r" topic)"
+git_q -C "$r" checkout -q main
+printf 'moved\n' > "$r/other.txt"; git_q -C "$r" add -A; git_q -C "$r" commit -qm "main moves"
+git_q -C "$r" checkout -q topic
+git_q -C "$r" merge -q --no-ff -m "merge main" main
+tier "$r" "$PM" --previous-head "$prev" --current-tier standard
+check "T17c: a new merge commit is not carry" recheck "$(j .push.mode)"
+
+r="$(push_repo recheck)"; prev="$(head_of "$r" topic)"
+add_commit "$r" docs/note.md 2 "docs"
+tier "$r" "$PM" --previous-head "$prev" --current-tier standard
+check "T18: docs-only new commit -> recheck" recheck "$(j .push.mode)"
+check "T18: tier unchanged" standard "$(j .tier)"
+check "T18: quick roster intersected with the standard roster" "core,tests" "$(j '.push.seats|join(",")')"
+check "T18: recheck header" "X-Lkml-Push-Mode: recheck|X-Lkml-Recheck-Seats: core, tests" "$(j '.push.headers|join("|")')"
+check "T18: only the new commit counts" "1 2" "$(j '(.push.new_commits|length|tostring) + " " + (.push.carried_commits|length|tostring)')"
+check "T18: new_tier reported" quick "$(j .push.new_tier)"
+
+r="$(push_repo escalate)"; prev="$(head_of "$r" topic)"
+add_commit "$r" db/migrations/002.sql 3 "migration"
+tier "$r" "$PM" --previous-head "$prev" --current-tier standard
+check "T19a: migration push escalates" escalate "$(j .push.mode)"
+check "T19a: tier is the higher one" full "$(j .tier)"
+check "T19a: add_seats are what the roster lacked" "docs,newcomer,security" "$(j '.push.add_seats|sort|join(",")')"
+check "T19a: headers" "X-Lkml-Push-Mode: escalate|X-Lkml-Add-Seats: docs, newcomer, security|X-Lkml-Tier: full" "$(j '.push.headers|join("|")')"
+check "T19a: roster is current plus added" 6 "$(j '.roster|length')"
+tier "$r" "$PM" --previous-head "$prev" --current-tier standard --current-roster "architecture,core,docs,newcomer,security,tests"
+check "T19b: nothing to add -> empty add_seats" "escalate []" "$(j .push.mode) $(jc .push.add_seats)"
+case "$(j '.push.headers|join("|")')" in *Add-Seats*) no "T19b: no Add-Seats header when empty";; *) ok "T19b: no Add-Seats header when empty";; esac
+check "T19b: tier header still names the new tier" "X-Lkml-Tier: full" "$(j '.push.headers[-1]')"
+
+r="$(push_repo noratchet)"; prev="$(head_of "$r" topic)"
+add_commit "$r" docs/note.md 2 "docs"
+tier "$r" "$PM" --previous-head "$prev" --current-tier full
+check "T20: docs-only on a full thread stays full" "recheck full" "$(j .push.mode) $(j .tier)"
+check "T20: new_tier shows what the commit alone would be" quick "$(j .push.new_tier)"
+
+r="$(push_repo emptyx)"; prev="$(head_of "$r" topic)"
+add_commit "$r" docs/note.md 2 "docs"
+tier "$r" "$PM" --previous-head "$prev" --current-tier standard --current-roster "security,newcomer"
+check "T21: empty intersection -> whole current roster" "security,newcomer" "$(j '.push.seats|join(",")')"
+tier "$r" "$PM" --previous-head "$prev" --current-tier standard --current-roster "tests,security"
+check "T22a: --current-roster is intersected against" "tests" "$(j '.push.seats|join(",")')"
+check "T22a: source recorded as flag" flag "$(j .push.roster_source)"
+tier "$r" "$PM" --previous-head "$prev" --current-tier standard
+check "T22b: without the flag the config roster stands in" "config core,tests" "$(j .push.roster_source) $(j '.push.seats|join(",")')"
+
+out="$(python3 "$tier_py" "$r" main..topic --meta "$(meta "$PM")" --previous-head "$prev" 2>/dev/null)"; rc=$?
+check "T23a: --previous-head without --current-tier exits 2" 2 "$rc"
+tier "$r" "$PM" --previous-head 0123456789abcdef0123456789abcdef01234567 --current-tier standard
+check "T23b: unresolvable previous head exits 1" 1 "$rc"
+contains "T23b: names the sha" "$err" "0123456789abcdef"
+check "T23b: nothing on stdout" "" "$out"
+tier "$r" "$PM" --current-tier standard
+check "T23c: --current-tier alone exits 2" 2 "$rc"
+
+tier "$r" '{"draft": true}' --previous-head "$prev" --current-tier standard
+check "T24: skip on a push" "skip null" "$(j .decision) $(jc .push)"
+tier "$r" '{"labels": ["lkml-full"]}' --previous-head "$prev" --current-tier standard
+check "T25: force-full label on a standard thread escalates" "escalate full" "$(j .push.mode) $(j .tier)"
+tier "$r" '{"labels": ["lkml-full"]}' --previous-head "$prev" --current-tier full
+check "T25: force-full on a full thread is a recheck of the roster" "recheck full" "$(j .push.mode) $(j .tier)"
+
+printf '\n== corpus ==\n'
+cdir="$work/corpus"; mkdir -p "$cdir/meta"
+printf '{}' > "$cdir/meta/none.json"
+printf '{"draft": true}' > "$cdir/meta/draft.json"
+r1="$(new_repo corp1)"; add_commit "$r1" docs/a.md 2
+r2="$(push_repo corp2)"; cprev="$(head_of "$r2" topic)"; add_commit "$r2" db/migrations/9.sql 2
+ln -s "$r1" "$cdir/repo1"; ln -s "$r2" "$cdir/repo2"
+cat > "$cdir/ok.json" <<JSON
+[{"repo": "repo1", "range": "main..topic", "meta": "meta/none.json", "expected": "quick"},
+ {"repo": "repo1", "range": "main..topic", "meta": "meta/draft.json", "expected": "skip"},
+ {"repo": "repo2", "range": "main..topic", "meta": "meta/none.json", "expected": "full",
+  "previous-head": "$cprev", "current-tier": "standard", "expected-mode": "escalate"}]
+JSON
+out="$(cd / && python3 "$tier_py" --corpus "$cdir/ok.json" 2>&1)"; rc=$?
+check "T26a: every case matches -> exit 0" 0 "$rc"
+check "T26a: summary line" "3 cases, 0 mismatches" "$(tail -1 <<<"$out")"
+sed 's/"expected": "quick"/"expected": "full"/' "$cdir/ok.json" > "$cdir/bad.json"
+out="$(python3 "$tier_py" --corpus "$cdir/bad.json" 2>&1)"; rc=$?
+check "T26b: a wrong expectation exits 1" 1 "$rc"
+contains "T26b: the mismatch is named" "$out" "case 0 (repo1 main..topic): expected full, got quick"
+check "T26b: summary line" "3 cases, 1 mismatches" "$(tail -1 <<<"$out")"
+sed 's/"expected-mode": "escalate"/"expected-mode": "carry"/' "$cdir/ok.json" > "$cdir/mode.json"
+out="$(python3 "$tier_py" --corpus "$cdir/mode.json" 2>&1)"; rc=$?
+check "T26c: a wrong push mode is a mismatch" "1" "$rc"
+contains "T26c: names the mode" "$out" "expected mode carry, got escalate"
+printf '[{"repo": "repo1"}]' > "$cdir/short.json"
+out="$(python3 "$tier_py" --corpus "$cdir/short.json" 2>&1)"; rc=$?
+check "T26: a case missing a key is an input error" 1 "$rc"
+
 printf '\n== help and install ==\n'
 help_out="$(python3 "$tier_py" --help)"; rc=$?
 check "T15: --help exits 0" 0 "$rc"

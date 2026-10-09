@@ -3,6 +3,9 @@
 tier / roster / needs-env / budget from a git range plus a little metadata.
 
 Usage: lkml-pr-tier.py <repo> <range> --meta <file>
+           [--previous-head <sha> --current-tier <tier>
+            [--current-roster <a,b,c>]]
+       lkml-pr-tier.py --corpus <file>
        lkml-pr-tier.py -h|--help
 
   <repo>        path to a git checkout holding the PR's commits
@@ -33,6 +36,40 @@ Order of evaluation:
      `extra-seats` seats picked by matching `add-seat` rules. Author and
      secretary are never in a roster.
 
+Push re-tiering. A push to a PR that already has a panel is classified,
+not re-tiered from scratch: pass the head the panel last saw
+(--previous-head, which must resolve in <repo>) and the thread's current
+tier (--current-tier). --current-roster names the thread's real roster
+(a tier's seats plus any add-seat extras picked at kickoff); without it
+the current tier's configured roster stands in, and the output records
+which one was used (push.roster_source). Skip conditions still apply.
+The output gains a `push` object with these modes (the shared contract
+with the CI side and with panel-state; headers are in push.headers):
+
+  carry     every non-merge commit of the new range is patch-identical
+            (git patch-id --stable) to one in the previous range, and
+            none is new: a pure rebase. Nobody is woken; verdicts carry.
+  recheck   the NEW commits alone tier at or below the current tier:
+            the seats are that tier's roster intersected with the
+            current roster (the whole current roster if that is empty --
+            an empty list would be `carry` by another name). The
+            top-level tier stays the current tier.
+  escalate  the new commits alone tier above the current tier: the tier
+            rises, push.add_seats are the seats the higher tier has
+            that the current roster lacks, and the top-level roster is
+            the current roster plus those.
+
+The tier never decreases: the top-level tier is never below
+--current-tier. Merge commits are ignored for patch-ids and for "new".
+
+--corpus <file> runs a list of cases instead: a JSON array of
+{"repo", "range", "meta", "expected": <tier>|"skip"} objects, each with
+optional "previous-head", "current-tier", "current-roster" and
+"expected-mode" (a push mode). Relative repo/meta paths resolve against
+the corpus file's directory. One line per mismatch is printed, then
+"<N> cases, <M> mismatches"; exit 1 if any case mismatched. It is the
+harness for a site-local corpus of real PRs with hand-checked tiers.
+
 PR text (title, labels) is attacker-controlled. It is data: it is never
 interpolated into a shell, and anything echoed back is reduced to one
 line with control characters stripped and a length cap. The reason string
@@ -44,8 +81,10 @@ fails with the path it wanted. fleet/tiers.yaml in this repo is a fully
 commented example. Globs match a whole repo-relative path: `**` spans
 directories, `*` and `?` do not cross `/`, `[...]` is a character class.
 
-Exit status: 0 an object was produced; 1 an input or config error (one
-"Error:" line on stderr, nothing on stdout); 2 a usage error.
+Exit status: 0 an object was produced (or a corpus had no mismatch);
+1 an input or config error (one
+"Error:" line on stderr, nothing on stdout) or a corpus mismatch; 2 a
+usage error.
 
 Python 3 with PyYAML (for the tiers file); everything else is stdlib.
 """
@@ -55,6 +94,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import Counter
 
 try:
     import yaml
@@ -68,6 +108,9 @@ except ImportError:
 
 USAGE = """\
 Usage: lkml-pr-tier.py <repo> <range> --meta <file>
+           [--previous-head <sha> --current-tier <tier>
+            [--current-roster <a,b,c>]]
+       lkml-pr-tier.py --corpus <file>
        lkml-pr-tier.py -h|--help"""
 
 TIERS = ("quick", "standard", "full")
@@ -378,7 +421,7 @@ def read_meta(path):
 
 # -- git --------------------------------------------------------------
 
-def git(repo, *args):
+def git(repo, *args, raw=False):
     try:
         proc = subprocess.run(["git", "-C", repo, *args],
                               capture_output=True, check=False)
@@ -388,7 +431,7 @@ def git(repo, *args):
         err = proc.stderr.decode("utf-8", "replace").strip().splitlines()
         raise InputError(f"git {args[0]} failed in '{repo}': "
                          f"{err[-1] if err else 'exit ' + str(proc.returncode)}")
-    return proc.stdout.decode("utf-8", "replace")
+    return proc.stdout if raw else proc.stdout.decode("utf-8", "replace")
 
 
 def split_range(rng):
@@ -408,6 +451,10 @@ def commits_of(repo, base, right):
     return out.split()
 
 
+def merges_of(repo, base, right):
+    return git(repo, "rev-list", "--merges", f"{base}..{right}", "--").split()
+
+
 def parse_numstat(text):
     diff = {}
     for rec in text.split("\0"):
@@ -425,6 +472,28 @@ def parse_numstat(text):
 def diff_of(repo, base, right):
     return parse_numstat(git(repo, "diff", "--numstat", "-z",
                              "--no-renames", base, right, "--"))
+
+
+def patch_id(repo, sha):
+    patch = git(repo, "diff-tree", "-p", "--binary", "--root",
+                "--no-commit-id", sha, raw=True)
+    try:
+        proc = subprocess.run(["git", "patch-id", "--stable"], input=patch,
+                              capture_output=True, check=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise InputError(f"git patch-id failed for {sha}: {exc}")
+    out = proc.stdout.decode("ascii", "replace").split()
+    return out[0] if out else "empty"
+
+
+def diff_of_commits(repo, shas):
+    diff = {}
+    for sha in shas:
+        for path, n in parse_numstat(git(
+                repo, "diff-tree", "--no-commit-id", "--numstat", "-z", "-r",
+                "--no-renames", "--root", sha, "--")).items():
+            diff[path] = diff.get(path, 0) + n
+    return diff
 
 
 # -- rules ------------------------------------------------------------
@@ -545,7 +614,103 @@ def skip_of(cfg, meta):
     return None
 
 
-def classify(cfg, repo, rng, meta):
+def push_headers(mode, seats, add_seats, tier):
+    if mode == "carry":
+        return ["X-Lkml-Push-Mode: carry"]
+    if mode == "recheck":
+        return ["X-Lkml-Push-Mode: recheck",
+                "X-Lkml-Recheck-Seats: " + ", ".join(seats)]
+    hdrs = ["X-Lkml-Push-Mode: escalate"]
+    if add_seats:
+        hdrs.append("X-Lkml-Add-Seats: " + ", ".join(add_seats))
+    return hdrs + ["X-Lkml-Tier: " + tier]
+
+
+def push_of(cfg, repo, left, right, base, commits, labels, push):
+    """Classify a push (decision 5). Returns (tier, roster, reason, push
+    object, signals)."""
+    prev = push["previous_head"]
+    try:
+        prev_sha = git(repo, "rev-parse", "--verify", "--quiet",
+                       prev + "^{commit}").strip()
+    except InputError:
+        prev_sha = ""
+    if not prev_sha:
+        raise InputError(f"--previous-head '{sanitize_line(prev, 80)}' does "
+                         f"not resolve to a commit in '{repo}'")
+    prev_base = git(repo, "merge-base", left, prev_sha).strip()
+    prev_list = [patch_id(repo, c)
+                 for c in commits_of(repo, prev_base, prev_sha)]
+    prev_ids = set(prev_list)
+    new, carried, new_list = [], [], []
+    for c in commits:
+        pid = patch_id(repo, c)
+        new_list.append(pid)
+        (carried if pid in prev_ids else new).append(c)
+    # carry is only a pure rebase: nothing added, nothing dropped, and no
+    # merge that was not already there (a merge can hide a hand-resolved
+    # conflict, so it is never assumed empty).
+    dropped = sorted((Counter(prev_list) - Counter(new_list)).elements())
+    prev_merges = set(merges_of(repo, prev_base, prev_sha))
+    new_merges = [m for m in merges_of(repo, base, right)
+                  if m not in prev_merges]
+    changed = bool(dropped or new_merges)
+    current = push["current_tier"]
+    roster_source = "flag" if push["current_roster"] else "config"
+    current_roster = push["current_roster"] or list(cfg.tiers[current]["roster"])
+    obj = {"mode": None, "previous_head": prev_sha, "current_tier": current,
+           "current_roster": current_roster, "roster_source": roster_source,
+           "new_commits": new, "carried_commits": carried, "new_tier": None,
+           "seats": [], "add_seats": [], "headers": []}
+    signals = None
+    obj["dropped_commits"] = len(dropped)
+    obj["new_merges"] = new_merges
+    forced = [l for l in labels if l in cfg.full_labels]
+    if not new and forced and current != "full":
+        # force-full beats rules (decision 3), even with nothing new to tier
+        full = list(cfg.tiers["full"]["roster"])
+        add = [s for s in full if s not in current_roster]
+        obj.update(mode="escalate", seats=full, add_seats=add,
+                   new_tier="full")
+        obj["headers"] = push_headers("escalate", [], add, "full")
+        return ("full", current_roster + add,
+                f"push escalate to full: label {forced[0]} forces full",
+                obj, signals)
+    if not new and changed:
+        seats = list(current_roster)
+        obj.update(mode="recheck", seats=seats)
+        obj["headers"] = push_headers("recheck", seats, [], current)
+        why = "a commit was dropped" if dropped else "a merge commit is new"
+        return (current, seats, f"push recheck: {why}", obj, signals)
+    if not new:
+        obj["mode"] = "carry"
+        obj["headers"] = push_headers("carry", [], [], current)
+        return (current, current_roster,
+                "push carry: every commit is patch-identical to the "
+                "previous head", obj, signals)
+    ev = evaluate(cfg, diff_of_commits(repo, new), labels)
+    ev["signals"]["commits"] = len(new)
+    new_tier = ev["tier"]
+    obj["new_tier"] = new_tier
+    signals = ev["signals"]
+    if RANK[new_tier] <= RANK[current]:
+        seats = [s for s in current_roster if s in ev["roster"]] \
+            or list(current_roster)
+        if changed:
+            # a dropped commit removed code nobody re-reviewed: every seat
+            # looks again, not just the ones the new commits touch
+            seats = list(current_roster)
+        obj.update(mode="recheck", seats=seats)
+        obj["headers"] = push_headers("recheck", seats, [], current)
+        return (current, seats, f"push recheck: {ev['reason']}", obj, signals)
+    add = [s for s in ev["roster"] if s not in current_roster]
+    obj.update(mode="escalate", seats=ev["roster"], add_seats=add)
+    obj["headers"] = push_headers("escalate", [], add, new_tier)
+    return (new_tier, current_roster + add,
+            f"push escalate to {new_tier}: {ev['reason']}", obj, signals)
+
+
+def classify(cfg, repo, rng, meta, push=None):
     left, right = split_range(rng)
     skip = skip_of(cfg, meta)
     result = {"decision": "skip" if skip else "review", "skip_reason": skip,
@@ -562,45 +727,140 @@ def classify(cfg, repo, rng, meta):
     commits = commits_of(repo, base, right)
     if not commits:
         raise InputError(f"range '{rng}' holds no commits to review")
-    ev = evaluate(cfg, diff_of(repo, base, right), meta["labels"])
-    ev["signals"]["commits"] = len(commits)
-    tier = cfg.tiers[ev["tier"]]
-    result.update(tier=ev["tier"], roster=ev["roster"],
-                  needs_env=tier["needs_env"], budget=tier["budget"],
-                  reason=sanitize_line(ev["reason"]), signals=ev["signals"])
+    if push:
+        tier, roster, reason, obj, signals = push_of(
+            cfg, repo, left, right, base, commits, meta["labels"], push)
+        result["push"] = obj
+    else:
+        ev = evaluate(cfg, diff_of(repo, base, right), meta["labels"])
+        ev["signals"]["commits"] = len(commits)
+        tier, roster, reason, signals = (ev["tier"], ev["roster"],
+                                         ev["reason"], ev["signals"])
+    result.update(tier=tier, roster=roster,
+                  needs_env=cfg.tiers[tier]["needs_env"],
+                  budget=cfg.tiers[tier]["budget"],
+                  reason=sanitize_line(reason), signals=signals)
     return result
+
+
+def run_corpus(cfg, path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            cases = json.load(fh)
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise InputError(f"corpus file '{path}': {exc}")
+    if not isinstance(cases, list):
+        raise InputError(f"corpus file '{path}': expected a JSON array")
+    base_dir = os.path.dirname(os.path.abspath(path))
+    mismatches = 0
+    for i, case in enumerate(cases):
+        where = f"corpus file '{path}': case {i}"
+        if not isinstance(case, dict):
+            raise InputError(f"{where}: expected an object")
+        for key in ("repo", "range", "meta", "expected"):
+            if not isinstance(case.get(key), str) or not case[key]:
+                raise InputError(f"{where}: needs a string '{key}'")
+        if case["expected"] not in TIERS + ("skip",):
+            raise InputError(f"{where}: 'expected' takes "
+                             + ", ".join(TIERS) + " or skip")
+        push = None
+        if case.get("previous-head"):
+            push = push_args(case["previous-head"], case.get("current-tier"),
+                             case.get("current-roster"), where)
+        repo = os.path.join(base_dir, case["repo"])
+        try:
+            res = classify(cfg, repo, case["range"],
+                           read_meta(os.path.join(base_dir, case["meta"])),
+                           push)
+        except (InputError, UsageError) as exc:
+            raise InputError(f"{where}: {exc}")
+        got = "skip" if res["decision"] == "skip" else res["tier"]
+        problems = []
+        if got != case["expected"]:
+            problems.append(f"expected {case['expected']}, got {got}")
+        want_mode = case.get("expected-mode")
+        if want_mode is not None:
+            got_mode = res["push"]["mode"] if res["push"] else None
+            if got_mode != want_mode:
+                problems.append(f"expected mode {want_mode}, got {got_mode}")
+        if problems:
+            mismatches += 1
+            print(f"case {i} ({case['repo']} {case['range']}): "
+                  + "; ".join(problems))
+    print(f"{len(cases)} cases, {mismatches} mismatches")
+    return 1 if mismatches else 0
 
 
 # -- command line -----------------------------------------------------
 
+def parse_seats(value):
+    seats = [x.strip().lstrip("@") for x in value.split(",") if x.strip()]
+    if not seats or not all(SEAT_RE.match(x) for x in seats):
+        raise UsageError(f"bad seat list '{sanitize_line(value, 80)}'")
+    bad = [x for x in seats if x in FORBIDDEN_SEATS]
+    if bad:
+        raise UsageError(f"seat '{bad[0]}' cannot be on a roster")
+    return seats
+
+
+def push_args(previous_head, current_tier, current_roster, where="flags"):
+    if not isinstance(previous_head, str) or not previous_head \
+            or previous_head.startswith("-"):
+        raise UsageError(f"{where}: bad --previous-head")
+    if current_tier not in TIERS:
+        raise UsageError(f"{where}: a push needs --current-tier, one of "
+                         + ", ".join(TIERS))
+    if isinstance(current_roster, list):
+        current_roster = ",".join(current_roster)
+    return {"previous_head": previous_head, "current_tier": current_tier,
+            "current_roster": parse_seats(current_roster)
+            if current_roster else None}
+
+
 def parse_args(argv):
-    pos, meta = [], None
+    pos, opts = [], {}
     it = iter(argv)
     for a in it:
         if a in ("-h", "--help"):
             print(__doc__.rstrip())
             sys.exit(0)
-        elif a == "--meta":
-            meta = next(it, None)
-            if meta is None:
-                raise UsageError("--meta needs a file")
+        elif a in ("--meta", "--previous-head", "--current-tier",
+                   "--current-roster", "--corpus"):
+            value = next(it, None)
+            if value is None:
+                raise UsageError(f"{a} needs a value")
+            opts[a[2:]] = value
         elif a.startswith("-"):
             raise UsageError(f"unknown option '{a}'")
         else:
             pos.append(a)
+    if "corpus" in opts:
+        if pos or len(opts) > 1:
+            raise UsageError("--corpus takes no other argument")
+        return opts, None
     if len(pos) != 2:
         raise UsageError("expected <repo> <range>")
-    if meta is None:
+    if "meta" not in opts:
         raise UsageError("--meta <file> is required")
-    return pos[0], pos[1], meta
+    push = None
+    if "previous-head" in opts:
+        push = push_args(opts["previous-head"], opts.get("current-tier"),
+                         opts.get("current-roster"))
+    elif "current-tier" in opts or "current-roster" in opts:
+        raise UsageError("--current-tier and --current-roster need "
+                         "--previous-head")
+    return opts, (pos[0], pos[1], push)
 
 
 def main(argv):
     try:
-        repo, rng, meta_path = parse_args(argv)
+        opts, target = parse_args(argv)
+        if target is None:
+            return run_corpus(load_config(), opts["corpus"])
+        repo, rng, push = target
         split_range(rng)
         cfg = load_config()
-        result = classify(cfg, repo, rng, read_meta(meta_path))
+        result = classify(cfg, repo, rng, read_meta(opts["meta"]), push)
     except UsageError as exc:
         sys.stderr.write(f"Error: {exc}\n{USAGE}\n")
         return 2
