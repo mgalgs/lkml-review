@@ -77,10 +77,10 @@ def msg(seq, frm, body, sha=None, ver=None, set_target=None,
             "date": "Mon, 02 Mar 2026 10:%02d:00 +0000" % (seq % 60),
             "in_reply_to": None, "body": body, "attachments": []}
 
-def root(sha=A, ver=1, body=ROOT_BODY, set_target=True):
+def root(sha=A, ver=1, body=ROOT_BODY, set_target=True, extra=()):
     return msg(1, "@pr-author", body, sha=sha, ver=ver,
                set_target=sha if set_target else None,
-               subject="[PATCH v1] Fix the thing")
+               subject="[PATCH v1] Fix the thing", extra=extra)
 
 def export(msgs, thread="t-example"):
     return {"thread": thread, "messages": msgs, "senders": {}, "addressed": []}
@@ -556,6 +556,7 @@ OUT="$("$ps" --help 2>&1)"; RC=$?
 check "--help exits 0" "0" "$RC"
 contains "--help prints the usage" "$OUT" "Usage: lkml-panel-state.py <thread-id> [--remote]"
 contains "--help prints the rationale" "$OUT" "FALSE GREEN"
+contains "--help documents the tier header" "$OUT" "X-Lkml-Tier"
 OUT="$("$ps" -h 2>&1)"; RC=$?
 check "-h exits 0" "0" "$RC"
 
@@ -727,7 +728,7 @@ check "v1: verdict SIGNED-OFF" "SIGNED-OFF" "$(jr .verdict)"
 check "CONVERGED: no reasons" "[]" "$(j .reasons)"
 check "v1 SIGNED-OFF: no bundle" "null" "$(j .bundle)"
 check "secretary object on target, well-formed" \
-    '{"message_id":"m020","version":1,"status":"CONVERGED","verdict":"SIGNED-OFF","on_target":true,"malformed":null}' \
+    '{"message_id":"m020","version":1,"status":"CONVERGED","verdict":"SIGNED-OFF","on_target":true,"malformed":null,"carried":false}' \
     "$(j .secretary)"
 check "postmaster facts of a quiet thread" \
     '{"quiescent":true,"flagged":false,"flag_reason":null,"live_runs":0,"pending_retries":0,"held":0,"unrouted":0}' \
@@ -1646,14 +1647,82 @@ check "and suite_run is missing, not the older message's clean run" "missing" "$
 check "and its counts are null" "null null" "$(seat @tests suite_run.passed) $(seat @tests suite_run.failed)"
 check "and the thread is not CONVERGED" "STALLED" "$(jr .status)"
 
+printf '\n== tier: the root'"'"'s X-Lkml-Tier and X-Lkml-Tier-Reason ==\n'
+# Hand-worked: a v1 green panel at head A (root Frozen-Head A, three
+# positives, secretary CONVERGED SIGNED-OFF v1, postmaster quiet) is
+# CONVERGED regardless of tier headers; the headers only populate "tier".
+gen base_tier <<'PY'
+write(D, export([root()] + panel_positive()), status())
+PY
+run_case base_tier
+check "no tier headers: tier is all null" '{"name":null,"reason":null,"source":null,"message_id":null}' "$(j .tier)"
+check "no tier headers: panel is the root's panel" '["@core","@tests","@docs"]' "$(j .panel)"
+check "no tier headers: every seat is carried=false" "true" "$(jr '[.seats[].carried] | all(. == false)')"
+
+gen tier1 <<'PY'
+e = green()
+e[0] = root(body=ROOT_BODY.replace("f" * 40, A),
+            extra=[["X-Lkml-Tier", "standard"],
+                   ["X-Lkml-Tier-Reason", "touches two subsystems"]])
+write(D, export(e), status())
+PY
+run_case tier1
+check "tier on root: CONVERGED" "CONVERGED" "$(jr .status)"
+check "tier on root: name, reason, source and message" \
+    '{"name":"standard","reason":"touches two subsystems","source":"root","message_id":"m001"}' "$(j .tier)"
+check "tier on root: carried is false on the secretary" "false" "$(jr .secretary.carried)"
+
+gen tier2 <<'PY'
+e = green()
+e[0] = root(body=ROOT_BODY.replace("f" * 40, A),
+            extra=[["X-Lkml-Tier", "full"],
+                   ["X-Lkml-Tier-Reason", "x" * 250 + "\nsecond line"]])
+write(D, export(e), status())
+PY
+run_case tier2
+check "a long multi-line reason is clipped to its first 200 chars" "200" "$(jr '.tier.reason | length')"
+check "a clipped reason is display text, not a reason: CONVERGED" "CONVERGED" "$(jr .status)"
+
+gen tier3 <<'PY'
+e = green()
+e[0] = root(body=ROOT_BODY.replace("f" * 40, A),
+            extra=[["X-Lkml-Tier", "huge"], ["X-Lkml-Tier-Reason", "why"]])
+write(D, export(e), status())
+PY
+run_case tier3
+check "unknown tier value: name null, reason kept" '{"name":null,"reason":"why","source":null,"message_id":null}' "$(j .tier)"
+reason_has "unknown tier value is a reason" "root X-Lkml-Tier 'huge' is not quick, standard or full"
+check "unknown tier value blocks CONVERGED" "STALLED" "$(jr .status)"
+
+gen tier4 <<'PY'
+e = green()
+e[0] = root(body=ROOT_BODY.replace("f" * 40, A),
+            extra=[["X-Lkml-Tier", "quick"], ["X-Lkml-Tier", "full"]])
+write(D, export(e), status())
+PY
+run_case tier4
+check "two different tier values: name null" "null" "$(j .tier.name)"
+reason_has "two different tier values is a reason" "is not quick, standard or full"
+
 printf '\n== invariants over every case above ==\n'
-inv_bad=""; inv_n=0; inv_conv=0
+inv_bad=""; inv_n=0; inv_conv=0; diff_bad=""; diff_n=0
+# Opt-in differential check: LKML_PANEL_STATE_BASELINE names an earlier copy
+# of the script. For every case whose export carries no X-Lkml-* header the
+# new output, minus the keys this change added, must equal the old output
+# byte for byte. Unset, it did not run, and reports nothing.
+baseline="${LKML_PANEL_STATE_BASELINE:-}"
+strip_new='del(.tier, .panel, .push) | .seats |= map(del(.carried)) | if .secretary then .secretary |= del(.carried) else . end'
 for c in "${cases_run[@]}"; do
     d="$work/case-$c"
     o="$("$ps" --export-file "$d/export.json" --status-file "$d/status.json" 2>/dev/null)" || { inv_bad+=" $c(exit)"; continue; }
     inv_n=$(( inv_n + 1 ))
+    if [[ -n "$baseline" ]] && ! grep -q 'X-Lkml-' "$d/export.json"; then
+        ob="$(python3 "$baseline" --export-file "$d/export.json" --status-file "$d/status.json" 2>/dev/null)"
+        diff_n=$(( diff_n + 1 ))
+        [[ "$(jq -c "$strip_new" <<<"$o")" == "$ob" ]] || diff_bad+=" $c"
+    fi
     if ! jq -e '
-        (["schema","thread","subject","status","verdict","target","roster","frozen_head","seats","secretary","postmaster","bundle","reasons"]
+        (["schema","thread","subject","status","verdict","target","roster","tier","panel","frozen_head","seats","secretary","postmaster","bundle","reasons"]
          - keys | length) == 0
         and (.status | IN("CONVERGED","IN-PROGRESS","STALLED","NEEDS-OPERATOR"))
         and ((.status == "CONVERGED") == (.reasons | length == 0))
@@ -1663,12 +1732,14 @@ for c in "${cases_run[@]}"; do
              and has("pending_retries") and has("held") and has("unrouted"))
         and (.roster | has("author") and has("panel") and has("secretary") and has("version_limit") and has("frozen_head")
              and has("suite") and has("suite_seats"))
-        and all(.seats[]; has("seat") and has("state") and has("verdict") and has("message_id") and has("version") and has("sha") and has("suite_run"))
+        and all(.seats[]; has("seat") and has("state") and has("verdict") and has("message_id") and has("version") and has("sha") and has("suite_run") and has("carried"))
         and all(.seats[]; (.suite_run == null) or (.suite_run | has("status") and has("passed") and has("failed") and has("detail")))
         and (.status != "CONVERGED" or all(.seats[]; .suite_run == null or .suite_run.status == "clean"))
         and (.roster.suite != null or .roster.suite_seats == [])
         and (.secretary == null or (.secretary | has("message_id") and has("version") and has("status")
-             and has("verdict") and has("on_target") and has("malformed")))
+             and has("verdict") and has("on_target") and has("malformed") and has("carried")))
+        and (.tier | has("name") and has("reason") and has("source") and has("message_id"))
+        and (.panel | type == "array") and (.panel[:(.roster.panel | length)] == .roster.panel)
         and (.target == null or (.target | has("branch") and has("sha") and has("version") and has("set_by") and has("set_at") and has("source")))
         and (.status != "CONVERGED" or (.seats | length > 0 and all(.[]; .state == "positive")))
         and (.status != "CONVERGED" or (.secretary.on_target == true and .secretary.status == "CONVERGED"))
@@ -1680,6 +1751,9 @@ check "every case obeys the output invariants (keys present; reasons empty iff C
 if [[ "$inv_n" -ge 60 ]]; then ok "the invariants ran over $inv_n cases"; else no "the invariants ran over too few cases" "$inv_n"; fi
 if [[ "$inv_conv" -ge 5 ]]; then ok "and $inv_conv of them were CONVERGED (the check is not vacuous)"
 else no "too few CONVERGED cases for the invariants to bite" "$inv_conv"; fi
+if [[ -n "$baseline" ]]; then
+    check "differential: $diff_n header-free cases match the baseline apart from the new keys" "" "$diff_bad"
+fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

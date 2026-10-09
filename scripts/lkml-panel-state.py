@@ -66,6 +66,17 @@ run is a gap, not a pass. A Suite-Seats entry not on the panel is a
 reason and is dropped, and so is a Suite-Seats line that leaves no seat.
 roster.suite_seats is the RESOLVED list ([] with no Suite).
 
+Tier -- the root's `X-Lkml-Tier: quick|standard|full` header says how big
+a panel the CI side chose for this thread, and `X-Lkml-Tier-Reason` (one
+line) why. The top-level "tier" is {"name","reason","source","message_id"},
+all null when the root carries neither. Exactly one distinct tier value,
+spelled exactly; anything else leaves name null and is a reason (a tier
+nobody can read is not a smaller panel, it is no claim at all). The reason
+is display text: its first line, at most 200 characters, never a reason of
+its own. The tier does not change who must answer: that is the roster
+(`Panel:`), and a smaller tier is a smaller NAMED roster, never "fewer
+seats happened to answer".
+
 Frozen head -- the commit the human's PR stood on when a version's review
 began, which decides what a sign-off means. roster.frozen_head is the
 ROOT's value and keeps that meaning. The top-level "frozen_head"
@@ -209,13 +220,18 @@ Output (null, never an omitted key, for what is unknown):
      "roster": {"author","panel","secretary","version_limit","frozen_head",
                 "suite","suite_seats"},   # suite: string|null; suite_seats:
                                           # the resolved list, [] w/o Suite
+     "tier": {"name","reason","source","message_id"},   # see "Tier"
+     "panel": [...],                    # the effective roster; the root's
+                                        # panel (roster.panel is unchanged)
      "frozen_head": {"sha","source"},   # of the current target; source
                                         # "root" or "upstream"
      "seats": [{"seat","state","verdict","message_id","version","sha",
-                "suite_run"}],   # null, or {"status","passed","failed",
-                                 # "detail"}; see "Suite run"
+                "suite_run","carried"}],   # suite_run: null, or {"status",
+                                 # "passed","failed","detail"}; see "Suite
+                                 # run". carried: false = the verdict was
+                                 # given on this version
      "secretary": {"message_id","version","status","verdict",
-                   "on_target","malformed"},
+                   "on_target","malformed","carried"},
      "postmaster": {"quiescent","flagged","flag_reason","live_runs",
                     "pending_retries","held","unrouted"},
      "bundle": {"base","tip","branch"},   # RESPIN + a frozen head only;
@@ -259,6 +275,10 @@ SUITE_RUN_COUNTS_RE = re.compile(
     r"Suite-Run: ([0-9]{1,18}) passed, ([0-9]{1,18}) failed[ \t]*")
 SUITE_RUN_COULD_NOT_RE = re.compile(r"Suite-Run: could-not-run( .*)?")
 SECRETARY_KEYS = ("Panel-Version", "Panel-Status", "Panel-Verdict")
+TIERS = ("quick", "standard", "full")
+TIER_HEADER = "X-Lkml-Tier"
+TIER_REASON_HEADER = "X-Lkml-Tier-Reason"
+TIER_REASON_MAX = 200
 
 USAGE = """\
 Usage: lkml-panel-state.py <thread-id> [--remote]
@@ -384,6 +404,36 @@ def address(value, what, reasons):
         return value
     reasons.append(f"roster: malformed {what} address {value!r} dropped")
     return None
+
+
+def first_line(text, limit):
+    lines = text.strip().splitlines()
+    return lines[0].strip()[:limit] if lines else ""
+
+
+def parse_tier(root):
+    """The root's tier headers -> (tier, reasons). See the module
+    docstring, "Tier"."""
+    tier = {"name": None, "reason": None, "source": None, "message_id": None}
+    if root is None or not root["ok"]:
+        return tier, []
+    reasons = []
+    for v in header_values(root, TIER_REASON_HEADER):
+        text = first_line(v, TIER_REASON_MAX)
+        if text:
+            tier["reason"] = text
+            break
+    vals = set(header_values(root, TIER_HEADER))
+    if not vals:
+        return tier, reasons
+    if len(vals) == 1 and next(iter(vals)) in TIERS:
+        tier.update(name=next(iter(vals)), source="root",
+                    message_id=root["id"])
+    else:
+        shown = " / ".join(repr(clip(v)) for v in sorted(vals))
+        reasons.append(f"root {TIER_HEADER} {shown} is not quick, standard "
+                       f"or full")
+    return tier, reasons
 
 
 def parse_roster(root):
@@ -613,7 +663,8 @@ def judge_seat(seat, msgs, target, suite_seats=()):
     on = [m for m in tagged if tsha is not None and m["sha"] == tsha]
     entry = {"seat": seat, "state": "silent", "verdict": None,
              "message_id": None, "version": None, "sha": None,
-             "suite_run": suite_run("missing") if seat in suite_seats else None}
+             "suite_run": suite_run("missing") if seat in suite_seats else None,
+             "carried": False}
     if on:
         m = on[-1]
         tag = pick_tag(m["tags"])
@@ -804,7 +855,8 @@ def judge_secretary(msgs, roster, target):
     m = cands[-1]
     fields, bad = parse_trailer(m["body"])
     entry = {"message_id": m["id"], "version": None, "status": None,
-             "verdict": None, "on_target": False, "malformed": bad}
+             "verdict": None, "on_target": False, "malformed": bad,
+             "carried": False}
     if bad:
         return entry, [f"secretary {sec} message {m['id']}: malformed trailer: {bad}"]
     entry.update(fields)
@@ -897,6 +949,8 @@ def build_state(export, status):
         reasons.append("the thread has no messages")
     roster, roster_reasons = parse_roster(root)
     reasons += roster_reasons
+    tier, tier_reasons = parse_tier(root)
+    reasons += tier_reasons
 
     bad = [str(m["seq"]) for m in msgs if not m["ok"]]
     if bad:
@@ -969,6 +1023,8 @@ def build_state(export, status):
         "verdict": verdict,
         "target": target,
         "roster": roster,
+        "tier": tier,
+        "panel": list(roster["panel"]),
         "frozen_head": frozen_head,
         "seats": seats,
         "secretary": secretary,
