@@ -607,8 +607,16 @@ has "$pra" '`X-Upstream-Head: <branch> <sha>` header is UNANSWERED unless a late
     "pr-author.md reads the newest X-Upstream-Head as unanswered until a later cover answers it"
 has "$pra" 'carries `Frozen-Head: <that sha>`' \
     "pr-author.md ties an answered push to a cover's Frozen-Head line"
-has "$pra" 'Only the newest counts;' \
-    "pr-author.md counts only the newest X-Upstream-Head"
+has_flat "$pra" 'Only the newest is the head you post; older ones are superseded as heads,' \
+    "pr-author.md posts only the newest X-Upstream-Head"
+has_flat "$pra" 'but not as obligations' \
+    "pr-author.md keeps a superseded push's review obligations"
+has_flat "$pra" 'every unanswered non-carry push mail since the last version you posted' \
+    "pr-author.md unions the obligations of coalesced pushes"
+has_flat "$pra" 'the union of their `X-Lkml-Recheck-Seats`' \
+    "pr-author.md sends a coalesced recheck to the union of listed seats"
+has_flat "$pra" 'seats those pushes listed, together' \
+    "pr-author.md owes the union of recheck seats at step 4"
 has "$pra" 'header shows as an `Upstream-Head: <branch> <sha>` line directly after' \
     "pr-author.md names the render's unquoted Upstream-Head line"
 has "$pra" 'A push never aborts a round.' \

@@ -71,7 +71,9 @@ re-read the tree or re-run anything until step 4 says you must.
    cover of yours carries `Frozen-Head: <that sha>`. In the thread render the
    header shows as an `Upstream-Head: <branch> <sha>` line directly after
    `Hops:`, never `> `-quoted; a quoted one is body text, not a push.
-   Only the newest counts; older ones are superseded. A push mail carrying
+   Only the newest is the head you post; older ones are superseded as heads,
+   but not as obligations: their recheck seats and escalations are still owed
+   (Push modes, below). A push mail carrying
    `X-Lkml-Push-Mode: carry` owes no version: skip it when finding the newest
    push, and never treat it as unanswered. If one is unanswered:
    when every Panel seat has replied on N (step 4's test), or you have already
@@ -80,8 +82,8 @@ re-read the tree or re-run anything until step 4 says you must.
    reviewing N, end the wake with no reply as step 4 says; you will be woken
    again when they reply, and you integrate then. A push never aborts a round.
 4. **Has every Panel seat replied on N?** For each of the seats owed on
-   N (every roster seat, unless N answers a recheck push: then only the seats
-   that push listed), look for a reply from that seat carrying `X-Version: N`. If any seat has
+   N (every roster seat, unless N answers recheck pushes only: then only the
+   seats those pushes listed, together), look for a reply from that seat carrying `X-Version: N`. If any seat has
    none, the panel is still reviewing: **write no reply file and end the
    wake.** A missing reply is never read as agreement.
 5. **Have you already asked for the verdict?** If the thread already holds a
@@ -260,6 +262,17 @@ of the version it belongs to. Cases:
   or an unknown mode, is malformed and treated as absent; say so in one line
   in the cover.
 - absent: the whole roster, as written below.
+
+Pushes can coalesce: the human pushes H1, then H2 on top of it, before you
+have answered H1 (a version is still under review). Your one version is H2,
+but every unanswered non-carry push mail since the last version you posted
+still owes its review. Take the union: if any of them is an escalate (valid
+or not as to tier, as above), or is absent-mode, the version goes to the whole
+roster; otherwise it goes to the union of their `X-Lkml-Recheck-Seats`. Name
+the range from the previous version's frozen head to H2, so H1's commits are in
+scope, and say in the cover which pushes it answers and what each owed. A
+seat an escalate added stays on the roster, so it is owed in that version even
+if a later push was only a recheck of other seats.
 
 Steps:
 
