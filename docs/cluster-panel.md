@@ -101,6 +101,87 @@ quiet, so an operator fixes the environment. The seat's `state` stays
 `positive`, since it has answered. The command comes from the repository under
 review, never from this repo, so the caller passes it on each kickoff.
 
+### Sizing the panel
+
+Not every PR needs six reviewers. `lkml-pr-tier.py` reads a PR (a git range
+plus a metadata file) and decides skip, tier, roster and per-seat focus
+before the kickoff; CI passes its output straight through. The vocabulary is
+a **tier**: `quick`, `standard` or `full`, each a named roster in
+`~/.config/lkml/tiers.yaml` (`fleet/tiers.yaml` is the commented example).
+Rules over the diff (paths, size, dependency manifests, docs-only,
+tests-only) pick the tier; the highest tier any matching rule names wins,
+and the configured default applies when none does. Draft PRs, bot authors
+and a skip label are skipped; a force-full label gives `full` regardless of
+rules. An optional LLM tie-break may raise an ambiguous result, never lower
+it, and falls back to the rules on any failure.
+
+```bash
+dir=$(mktemp -d)
+args=$(lkml-pr-tier.py "$WORKSPACE" "$BASE_SHA..$HEAD_SHA" --meta "$META" \
+  --kickoff-args --focus-file "$dir/tier-focus.md") || exit   # 3 means skip
+eval "lkml-fleet-kickoff.sh \"$WORKSPACE\" \"$BASE_SHA..$HEAD_SHA\" \
+  --template pr-review ... $args"
+```
+
+`$META` is JSON with `title`, `draft`, `author-is-bot` and `labels`. PR text
+is attacker-controlled and is only ever data: the printed headers are one
+line, length-capped and stripped of control characters. Without
+`--kickoff-args` the script prints a JSON object instead (decision, tier,
+roster, needs-env, budget, reason, the signals that fired, and the LLM
+status). `--corpus <file>` runs a list of `{repo, range, meta, expected}`
+cases and prints mismatches, for checking a site's rules against real PRs.
+
+The shared contract between the tier script, the CI side and the panel
+state follows.
+
+**On the root (kickoff) message**, set through `--header` and `--attach-file`:
+
+| Header | Value | Meaning |
+|---|---|---|
+| `X-Lkml-Tier` | `quick`, `standard` or `full` | the tier the tier script chose |
+| `X-Lkml-Tier-Reason` | one line, at most 200 chars | why, for the dashboard |
+
+The roster is still the root's `X-Seats` (stamped from `--panel`).
+Convergence still requires a positive verdict from every seat in the roster:
+a smaller tier is a smaller *named* roster, never "fewer seats happened to
+answer". Per-seat focus text travels as the attached file `tier-focus.md`,
+one `## @<seat>` section per seat.
+
+**On an upstream-moved mail**, one extra header says how a push is handled.
+`lkml-pr-tier.py <repo> <range> --meta <file> --previous-head <sha>
+--current-tier <tier> [--current-roster <a,b,c>]` computes it and prints the
+headers in `push.headers`; pass `--current-roster` when the thread's real
+roster differs from the tier's configured one (an `add-seat` rule fired at
+kickoff).
+
+| `X-Lkml-Push-Mode` | Extra header | Who is woken | Verdicts on the new version |
+|---|---|---|---|
+| `carry` | none | nobody (the mail has no `To:`) | every seat's latest verdict carries forward unchanged |
+| `recheck` | `X-Lkml-Recheck-Seats: core, tests` | `@pr-author`, who posts the version to those seats only, scoped to the new commits | seats NOT listed carry forward; listed seats need a fresh verdict on the new version |
+| `escalate` | `X-Lkml-Add-Seats: security` (may be empty) and `X-Lkml-Tier: <new tier>` | `@pr-author`, who posts the version to the whole new roster | the roster becomes root `X-Seats` plus every `X-Lkml-Add-Seats` so far; every seat needs a fresh verdict |
+| absent | none | as today | as today: every seat needs a fresh verdict |
+
+Rules that hold across all modes:
+
+- The tier only ratchets up within a thread. `escalate` never names a lower
+  tier than the current one; a mail that does is ignored as malformed
+  (treated as absent), and that is reported, not silent.
+- A carried verdict is only ever a verdict that seat actually gave on an
+  earlier version of the same thread. A seat with no earlier verdict has
+  nothing to carry, so it still owes one.
+- A blocking verdict carries forward as blocking. Carry never turns a
+  blocker into a pass.
+- `carry` is only correct when every commit on the new head is
+  patch-identical to the previous head's (a pure rebase). Deciding that is
+  the tier script's job, CI-side, from `git patch-id --stable`; panel-state
+  trusts the header and does not recompute it.
+- Human pushes count toward `Version-Limit`, whatever the mode.
+
+Not yet implemented: `lkml-panel-state.py`, the wake gate and the personas
+do not read the `X-Lkml-*` headers or `tier-focus.md` today. This section is
+the spec for that later change; until then the headers are inert and the
+behavior described under "One round" and "The human author pushes" stands.
+
 ### One round
 
 1. **Reviewers reply to the author.** Each panel seat replies once per

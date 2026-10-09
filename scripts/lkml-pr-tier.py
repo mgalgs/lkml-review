@@ -5,6 +5,9 @@ tier / roster / needs-env / budget from a git range plus a little metadata.
 Usage: lkml-pr-tier.py <repo> <range> --meta <file>
            [--previous-head <sha> --current-tier <tier>
             [--current-roster <a,b,c>]] [--no-llm]
+           [--focus-file <dir>/tier-focus.md]
+       lkml-pr-tier.py <repo> <range> --meta <file> --kickoff-args
+           --focus-file <dir>/tier-focus.md [--no-llm]
        lkml-pr-tier.py --corpus <file> [--no-llm]
        lkml-pr-tier.py -h|--help
 
@@ -82,6 +85,35 @@ script. The PR title and file list go to the endpoint only as JSON data.
 --no-llm skips the call for one invocation. Output: llm.configured,
 llm.used, llm.fallback, llm.raised_to, llm.focus (per-seat text).
 
+Handing the result to the kickoff. --kickoff-args prints ONE line of
+shell-quoted words for lkml-fleet-kickoff.sh instead of JSON:
+
+  --panel @a,@b --header 'X-Lkml-Tier: <tier>'
+  --header 'X-Lkml-Tier-Reason: <one line, <= 200 chars>'
+  --attach-file <absolute path>/tier-focus.md
+
+and writes that file, which --focus-file names (its basename must be
+tier-focus.md: the contract names the attachment, and the store keys
+attachments by basename). The file has a `## @<seat>` section per roster
+seat: the LLM's focus text when it gave some, otherwise why the seat
+sits and the touched paths. It is written atomically. Giving --focus-file
+also makes the LLM call (if configured) even when the result is not
+ambiguous, since it is the source of the focus text. The root headers:
+
+  X-Lkml-Tier         quick, standard or full
+  X-Lkml-Tier-Reason  one line, <= 200 chars, why (for the dashboard)
+
+On a skip, --kickoff-args prints nothing on stdout, "Skipped: <reason>"
+on stderr, writes no file and exits 3, so under `set -e`
+
+  args=$(lkml-pr-tier.py "$repo" "$range" --meta "$meta" --kickoff-args \
+         --focus-file "$dir/tier-focus.md") || exit
+  eval "lkml-fleet-kickoff.sh ... $args"
+
+never kicks off a default panel for a PR that should be skipped.
+--kickoff-args is for a kickoff, not a push: it is refused with
+--previous-head and --corpus, and so is --focus-file with those.
+
 PR text (title, labels) is attacker-controlled. It is data: it is never
 interpolated into a shell, and anything echoed back is reduced to one
 line with control characters stripped and a length cap. The reason string
@@ -94,7 +126,7 @@ commented example. Globs match a whole repo-relative path: `**` spans
 directories, `*` and `?` do not cross `/`, `[...]` is a character class.
 
 Exit status: 0 an object was produced (or a corpus had no mismatch);
-1 an input or config error (one
+3 a skip under --kickoff-args; 1 an input or config error (one
 "Error:" line on stderr, nothing on stdout) or a corpus mismatch; 2 a
 usage error.
 
@@ -105,9 +137,11 @@ import http.client
 import json
 import os
 import re
+import shlex
 import socket
 import subprocess
 import sys
+import tempfile
 from collections import Counter
 import urllib.error
 import urllib.request
@@ -126,6 +160,9 @@ USAGE = """\
 Usage: lkml-pr-tier.py <repo> <range> --meta <file>
            [--previous-head <sha> --current-tier <tier>
             [--current-roster <a,b,c>]] [--no-llm]
+           [--focus-file <dir>/tier-focus.md]
+       lkml-pr-tier.py <repo> <range> --meta <file> --kickoff-args
+           --focus-file <dir>/tier-focus.md [--no-llm]
        lkml-pr-tier.py --corpus <file> [--no-llm]
        lkml-pr-tier.py -h|--help"""
 
@@ -909,11 +946,65 @@ def classify(cfg, repo, rng, meta, push=None, opts=None):
         result["llm"] = consult_llm(cfg, ev, meta, opts)
         tier, roster, reason, signals = (ev["tier"], ev["roster"],
                                          ev["reason"], ev["signals"])
+        result["_paths"] = ev["paths"]
     result.update(tier=tier, roster=roster,
                   needs_env=cfg.tiers[tier]["needs_env"],
                   budget=cfg.tiers[tier]["budget"],
                   reason=sanitize_line(reason), signals=signals)
     return result
+
+
+def focus_text(result, llm_focus):
+    lines = ["# Review focus", "", f"PR: {result['title']}",
+             f"Tier: {result['tier']} ({result['reason']})", ""]
+    sig = result["signals"]
+    paths = result["_paths"]
+    shown = [f"- {sanitize_line(p, 200)}" for p in paths[:20]]
+    if len(paths) > 20:
+        shown.append(f"- ... and {len(paths) - 20} more")
+    for seat in result["roster"]:
+        lines += [f"## @{seat}", ""]
+        if seat in llm_focus:
+            # one line, and never one that could open a section of its own
+            lines += [llm_focus[seat].lstrip("#").lstrip() or "-", ""]
+            continue
+        adder = next((r["name"] for r in sig["rules_matched"]
+                      if r["add_seat"] == seat), None)
+        if seat in sig["extra_seats"] and adder:
+            lines.append(f"Seated by rule '{adder}'.")
+        else:
+            lines.append(f"Sits on the {result['tier']} tier's roster.")
+        lines += [f"{sig['files']} files, {sig['lines']} lines changed:"]
+        lines += shown + [""]
+    return "\n".join(lines)
+
+
+def write_focus_file(path, text):
+    """Atomic: a crash or a failed rename never leaves a partial file for
+    --attach-file to pick up."""
+    parent = os.path.dirname(os.path.abspath(path))
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=".tier-focus.", suffix=".tmp",
+                                   dir=parent)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+        tmp = None
+    except OSError as exc:
+        raise InputError(f"cannot write focus file '{path}': "
+                         f"{exc.strerror or exc}")
+    finally:
+        if tmp and os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def kickoff_args(result, focus_path):
+    return shlex.join([
+        "--panel", ",".join("@" + s for s in result["roster"]),
+        "--header", f"X-Lkml-Tier: {result['tier']}",
+        "--header", f"X-Lkml-Tier-Reason: {result['reason']}",
+        "--attach-file", os.path.abspath(focus_path)])
 
 
 def run_corpus(cfg, path, opts):
@@ -999,8 +1090,10 @@ def parse_args(argv):
             sys.exit(0)
         elif a == "--no-llm":
             opts["no-llm"] = True
+        elif a == "--kickoff-args":
+            opts["kickoff-args"] = True
         elif a in ("--meta", "--previous-head", "--current-tier",
-                   "--current-roster", "--corpus"):
+                   "--current-roster", "--corpus", "--focus-file"):
             value = next(it, None)
             if value is None:
                 raise UsageError(f"{a} needs a value")
@@ -1010,11 +1103,22 @@ def parse_args(argv):
         else:
             pos.append(a)
     if "corpus" in opts:
-        if pos or set(opts) - {"corpus", "no-llm"}:
+        if pos or set(opts) - {"corpus", "no-llm"}:  # incl. --kickoff-args
             raise UsageError("--corpus takes no other argument but --no-llm")
         return opts, None
     if len(pos) != 2:
         raise UsageError("expected <repo> <range>")
+    if "focus-file" in opts:
+        if os.path.basename(opts["focus-file"]) != "tier-focus.md":
+            raise UsageError("--focus-file must end in tier-focus.md, the "
+                             "attachment name the panel expects")
+        if "previous-head" in opts:
+            raise UsageError("--focus-file is for a kickoff, not a push")
+    if "kickoff-args" in opts:
+        if "previous-head" in opts:
+            raise UsageError("--kickoff-args is for a kickoff, not a push")
+        if "focus-file" not in opts:
+            raise UsageError("--kickoff-args needs --focus-file")
     if "meta" not in opts:
         raise UsageError("--meta <file> is required")
     push = None
@@ -1037,7 +1141,20 @@ def main(argv):
         split_range(rng)
         cfg = load_config()
         result = classify(cfg, repo, rng, read_meta(opts["meta"]), push,
-                          {"no_llm": opts.get("no-llm")})
+                          {"no_llm": opts.get("no-llm"),
+                           "want_focus": "focus-file" in opts})
+        paths = result.pop("_paths", None)
+        if result["decision"] == "skip" and "kickoff-args" in opts:
+            sys.stderr.write(f"Skipped: {result['skip_reason']}\n")
+            return 3
+        if result["decision"] == "review" and "focus-file" in opts:
+            result["_paths"] = paths
+            write_focus_file(opts["focus-file"],
+                             focus_text(result, result["llm"]["focus"]))
+            del result["_paths"]
+        if "kickoff-args" in opts:
+            sys.stdout.write(kickoff_args(result, opts["focus-file"]) + "\n")
+            return 0
     except UsageError as exc:
         sys.stderr.write(f"Error: {exc}\n{USAGE}\n")
         return 2

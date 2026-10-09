@@ -149,6 +149,7 @@ scheduling and reading are different jobs held by different sessions.
 | `lkml-forklift.sh` | moves a series between repos |
 | `lkml-seats-parse.py`, `lkml-seats-resolve` | plumbing: read and resolve `seats.yaml` |
 | `lkml-fleet.sh` | fleet transport wrapper: selects lkml's personas and isolated optional fleet file, then passes its arguments to `fork-sandbox` |
+| `lkml-pr-tier.py` | sizes the panel to a PR: reads a git range plus metadata and decides skip / tier (`quick`, `standard`, `full`) / roster / budget from the rules in `tiers.yaml`; `--kickoff-args` prints the flags to hand `lkml-fleet-kickoff.sh` and writes `tier-focus.md`; `--previous-head` classifies a push as carry, recheck or escalate; `--corpus` checks rules against hand-labelled PRs |
 | `lkml-fleet-kickoff.sh` | Dogfood harness: formats a series and composes a kickoff mail for the fleet transport above; prints the `fork-sandbox mail send` command, or runs it with `--send`. `--ci-first <ci-addr>` addresses the kickoff to the CI seat alone so its reply is what wakes the panel — see `docs/ci-first-ordering.md`. `--seats <addr-list>` expands every address (seats and/or lists like `@panel`) and stamps the result as `X-Seats` on the cover — the panel `lkml-render.py` trusts for convergence |
 
 ## Converging
