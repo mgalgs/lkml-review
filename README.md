@@ -106,10 +106,11 @@ Two required files and one optional file, in `~/.config/lkml/`:
 | `seats.yaml` | the reviewer panel — which personas sit, on which harness and model |
 | `summarize.env` | tuning for the summarize leg, including its input-size cap |
 | `fleet.yaml` (optional) | fleet lists, triage settings, and site-specific fleet overrides |
+| `tiers.yaml` (optional) | the PR tier rules: skip labels, three rosters, path and size rules, optional LLM tie-break |
 
 Override either per invocation with `LKML_SEATS_FILE` or
 `LKML_SUMMARIZE_ENV_FILE`; override the optional fleet file with
-`LKML_FLEET_FILE`.
+`LKML_FLEET_FILE`; override the optional tiers file with `LKML_TIERS_FILE`.
 
 There is **no fallback to any other location, deliberately.** A missing
 file fails at launch and names the path it wanted, rather than silently

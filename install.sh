@@ -62,6 +62,7 @@ PORCELAIN=(
     lkml-forklift.sh
     lkml-mailbox.sh
     lkml-panel-state.py
+    lkml-pr-tier.py
     lkml-render.py
     lkml-revise.sh
     lkml-round.sh
