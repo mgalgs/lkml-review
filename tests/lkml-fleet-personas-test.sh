@@ -669,6 +669,10 @@ has_flat "$pra" 'A human-integration version counts toward Version-Limit.' \
     "pr-author.md counts human-integration versions against Version-Limit"
 has_flat "$pra" 'The version count is N, the highest `X-Version` on the thread' \
     "pr-author.md counts every version, human pushes included, against Version-Limit"
+has_flat "$pra" 'plus one for each push mail carrying `X-Lkml-Push-Mode: carry`' \
+    "pr-author.md counts carry pushes toward Version-Limit"
+has_flat "$pra" 'A seat'"'"'s own reply carrying `X-Version: N` always wins' \
+    "pr-author.md prefers a seat's own reply on N over a carried verdict"
 for stale in 'The version count is 1 plus the number of' 'does not count toward Version-Limit'; do
     if tr '\n' ' ' < "$pra" | sed 's/  */ /g' | grep -qF -- "$stale"; then
         no "pr-author.md dropped the old Version-Limit rule: $stale" "still present"
@@ -885,7 +889,8 @@ else
 fi
 # shellcheck disable=SC2016  # literal backticks in the needles
 for needle in '`X-Lkml-Add-Seats`' '`X-Lkml-Recheck-Seats`' 'A blocking verdict carries as blocking' \
-              'earlier version, carried forward'; do
+              'earlier version, carried forward' 'its own reply on vN when it has one' \
+              'or the one carried forward under step 2' 'or its carried one under step 2'; do
     has_flat "$sec" "$needle" "secretary.md pins: $needle"
 done
 

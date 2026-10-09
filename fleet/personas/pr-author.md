@@ -85,7 +85,8 @@ re-read the tree or re-run anything until step 4 says you must.
    message from you addressed to the Secretary and written after version N
    was posted, end the wake with no reply. A second request buys a second
    summary.
-6. **Read each seat's latest verdict on N.** A seat not owed on N has its
+6. **Read each seat's latest verdict on N.** A seat's own reply carrying
+   `X-Version: N` always wins; a seat not owed on N with no such reply has its
    latest verdict on an earlier version carried forward; a seat with none owes
    one, so step 4 waits for it. A blocking verdict carries as blocking. A verdict is the tag on the last
    non-empty, non-quoted line of that seat's latest reply carrying
@@ -101,8 +102,10 @@ re-read the tree or re-run anything until step 4 says you must.
    - Otherwise, if the version count is at or above Version-Limit: the same
      reply to the Secretary, saying the limit is reached and naming each seat
      that still blocks and on what. The version count is N, the highest
-     `X-Version` on the thread: your re-rolls and the human author's pushes
-     count alike, whatever the push mode.
+     `X-Version` on the thread, plus one for each push mail carrying
+     `X-Lkml-Push-Mode: carry` (a carry posts no version, but it is still a
+     human push): your re-rolls and the human author's pushes count alike,
+     whatever the push mode.
    - Otherwise: re-roll (below) and post version N+1.
 
 A reply to the Secretary is one short body: which version, that the Panel

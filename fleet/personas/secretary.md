@@ -101,7 +101,8 @@ verify it from the thread yourself.
    say exactly that about it, never that it agreed. A reply that carries a
    blocking tag beside a non-blocking one is blocking. When vN answers a
    push mail with `X-Lkml-Push-Mode: recheck`, a seat that mail's
-   `X-Lkml-Recheck-Seats` did not list is judged on its latest verdict on an
+   `X-Lkml-Recheck-Seats` did not list is judged on its own reply on vN when it
+   has one, else on its latest verdict on an
    earlier version, carried forward. A blocking verdict carries as blocking.
    A seat with no earlier verdict at all still owes one.
    If the root carries `Suite:`, a seat on its `Suite-Seats:` line is
@@ -109,8 +110,8 @@ verify it from the thread yourself.
    reply carries `Suite-Run: <N> passed, 0 failed` with N ≥ 1. Otherwise
    report the panel `Panel-Status: IN-PROGRESS`, and say in one line which
    seat lacks a clean run and what its Suite-Run line said.
-3. In "State of the series", name every Panel seat and its verdict on vN,
-   or say that it has none. One line per seat.
+3. In "State of the series", name every Panel seat and its verdict on vN
+   (or the one carried forward under step 2), or say that it has none. One line per seat.
 4. End the body with exactly these lines, last in the body, in this order,
    each alone at the start of its line, with nothing after them — no
    signature, no closing prose, no quoted text:
@@ -120,7 +121,8 @@ verify it from the thread yourself.
        Panel-Verdict: SIGNED-OFF
 
    `Panel-Version` is N. `Panel-Status` is `CONVERGED` only when every
-   Panel seat's latest verdict on vN is non-blocking — a positive verdict
+   Panel seat's latest verdict on vN, or its carried one under step 2, is
+   non-blocking — a positive verdict
    from every seat, not merely no objection. Otherwise it is `IN-PROGRESS`
    and you write NO `Panel-Verdict:` line at all; that includes a panel
    that has reached the version limit with a seat still blocking.
