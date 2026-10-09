@@ -1915,6 +1915,274 @@ check "(re6) the valid seats are honoured, bare or addressed" '"recheck" ["@core
 reason_has "(re6) the unknown seat is dropped with a reason" "@ghost, which is not on the panel; dropped"
 check "(re6) the malformed text is not set" "null" "$(j .push.malformed)"
 
+printf '\n== push modes: carry ==\n'
+# Shared shape: v1 at head F (the root's Frozen-Head), @core/@tests/@docs
+# positive on F, the secretary CONVERGED SIGNED-OFF v1 (seq 20); then the
+# postmaster's upstream-moved mail (seq 30) says carry, addressed To:
+# @operator so that it wakes nobody. A carry does not move the postmaster's
+# review target: status() still names F v1.
+gen carry1 <<'PY'
+e = [frozen_root()] + panel_positive(sha=F) + [sec(20, "CONVERGED", 1, "SIGNED-OFF", F, 1)]
+e.append(upstream(30, H, mode="carry", to=["@operator"]))
+write(D, export(e), status(sha=F, ver=1))
+PY
+run_case carry1
+# Hand-worked: the carry makes a synthetic v2 whose target AND frozen head
+# are H (upstream). Each seat's latest verdict is on F v1 and carries; the
+# secretary's CONVERGED SIGNED-OFF v1 on F carries too. Target == frozen
+# head, so SIGNED-OFF is valid. No push is unanswered. CONVERGED at H.
+check "(carry1) CONVERGED" "CONVERGED" "$(jr .status)"
+check "(carry1) SIGNED-OFF at the new head" "SIGNED-OFF" "$(jr .verdict)"
+check "(carry1) target is the pushed head as version 2, source carry, set by the push's sender" \
+    '{"branch":"pr/example","sha":"1111111111111111111111111111111111111111","version":2,"set_by":"@postmaster","set_at":"Mon, 02 Mar 2026 10:30:00 +0000","source":"carry"}' "$(j .target)"
+check "(carry1) frozen head is the pushed head, upstream" '{"sha":"1111111111111111111111111111111111111111","source":"upstream"}' "$(j .frozen_head)"
+check "(carry1) every seat carried, positive, from v1 at F" "true" \
+    "$(jr '[.seats[] | .carried == true and .version == 1 and .state == "positive" and (.sha | startswith("ffff"))] | all')"
+check "(carry1) the secretary carried" "true" "$(jr .secretary.carried)"
+check "(carry1) the push is answered" "true" "$(jr .push.answered)"
+check "(carry1) no reasons" "[]" "$(j .reasons)"
+check "(carry1) no bundle" "null" "$(j .bundle)"
+# A mail addressed To: @operator and carrying a push mode is not a question
+# to the operator and flags nothing: the carry is identified by its header.
+check "(carry1) not NEEDS-OPERATOR" "false" "$(jr '.status == "NEEDS-OPERATOR"')"
+reason_lacks "(carry1) no reason mentions the operator" "operator"
+check "(carry1) the postmaster is not a seat" "false" "$(jr '[.seats[].seat] | index("@postmaster") != null')"
+check "(carry1) the roster is the same three seats" '["@core","@tests","@docs"]' "$(j .panel)"
+
+gen carry2 <<'PY'
+e = [frozen_root()] + panel_positive(sha=F) + [sec(20, "CONVERGED", 1, "SIGNED-OFF", F, 1)]
+e[1] = msg(2, "@core", "Changes-requested: the loop leaks.", sha=F, ver=1)
+e.append(upstream(30, H, mode="carry", to=["@operator"]))
+write(D, export(e), status(sha=F, ver=1))
+PY
+run_case carry2
+# Hand-worked: @core's blocker is its latest verdict and carries as
+# blocking. Carry never turns a blocker into a pass. Quiescent: STALLED.
+check "(carry2) @core is blocking, carried" "blocking true" "$(seat @core state) $(seat @core carried)"
+reason_has "(carry2) the carried blocker is named" "@core: Changes-requested on v2 (carried from v1)"
+check "(carry2) STALLED" "STALLED" "$(jr .status)"
+reason_has "(carry2) the secretary's carried CONVERGED is caught" "secretary says CONVERGED but @core is blocking"
+
+gen carry3 <<'PY'
+e = [frozen_root()] + panel_positive(sha=F) + [sec(20, "CONVERGED", 1, "SIGNED-OFF", F, 1)]
+e = [x for x in e if x["from"] != "@docs"]
+e.append(upstream(30, H, mode="carry", to=["@operator"]))
+write(D, export(e), status(sha=F, ver=1))
+PY
+run_case carry3
+# Hand-worked: @docs never gave a verdict on v1, so it has nothing to carry
+# and still owes one on v2.
+check "(carry3) @docs is silent and not carried" "silent false" "$(seat @docs state) $(seat @docs carried)"
+reason_has "(carry3) it owes a verdict" "@docs: no verdict on v2 and nothing to carry from v1"
+check "(carry3) not CONVERGED" "STALLED" "$(jr .status)"
+
+gen carry4 <<'PY'
+e = [frozen_root()] + panel_positive(sha=F) + [sec(20, "CONVERGED", 1, "SIGNED-OFF", F, 1)]
+e[3] = msg(4, "@docs", "Reviewed-by: D", sha=B, ver=1)
+e.append(upstream(30, H, mode="carry", to=["@operator"]))
+write(D, export(e), status(sha=F, ver=1))
+PY
+run_case carry4
+# Hand-worked: @docs' only verdict is on B, a head that is not v1's: stale on
+# v1, so nothing to carry from v1.
+check "(carry4) @docs is stale, not carried" "stale false" "$(seat @docs state) $(seat @docs carried)"
+reason_has "(carry4) it owes a verdict" "@docs: no verdict on v2 and nothing to carry from v1"
+
+gen carry5 <<'PY'
+e = [frozen_root(), cover(2, T2, 2, "Re-roll after review.")]
+e += panel_positive(sha=T2, ver=2, start=10) + [sec(20, "CONVERGED", 2, "RESPIN", T2, 2)]
+e.append(upstream(30, H, mode="carry", to=["@operator"]))
+write(D, export(e), status(sha=T2, ver=2))
+PY
+run_case carry5
+# Hand-worked: v2 is the author's re-roll T2, CONVERGED RESPIN. A carry to H
+# makes v3 with target H == frozen head H: a RESPIN there has nothing to
+# respin. Carry never rewrites a verdict, so it is a contradiction and blocks.
+check "(carry5) not CONVERGED" "STALLED" "$(jr .status)"
+reason_has "(carry5) RESPIN contradicts the carry version" "secretary verdict RESPIN contradicts target v3 (11111111)"
+
+gen ver1 <<'PY'
+e = [frozen_root()] + panel_positive(sha=F) + [sec(20, "CONVERGED", 1, "SIGNED-OFF", F, 1)]
+e.append(upstream(30, H, mode="carry", to=["@operator"]))
+write(D, export(e), status(sha=F, ver=1))
+PY
+run_case ver1
+check "(ver1) one human push counts as a version: v2" "2" "$(jr .target.version)"
+
+gen ver2 <<'PY'
+e = [frozen_root()] + panel_positive(sha=F) + [sec(20, "CONVERGED", 1, "SIGNED-OFF", F, 1)]
+e.append(upstream(30, H, mode="carry", to=["@operator"]))
+e.append(upstream(31, T4, mode="carry", to=["@operator"]))
+write(D, export(e), status(sha=F, ver=1))
+PY
+run_case ver2
+# Hand-worked: two carry pushes since v1 -> v3, at the newest head.
+check "(ver2) two pushes: v3 at the newest head" "3 $(printf '4%.0s' $(seq 40))" "$(jr '"\(.target.version) \(.target.sha)"')"
+check "(ver2) still CONVERGED" "CONVERGED" "$(jr .status)"
+
+gen ver3 <<'PY'
+e = [frozen_root()] + panel_positive(sha=F) + [sec(20, "CONVERGED", 1, "SIGNED-OFF", F, 1)]
+e.append(upstream(30, H, mode="carry", to=["@operator"]))
+e.append(upstream(31, T4, mode="recheck", extra=[["X-Lkml-Recheck-Seats", "core"]]))
+write(D, export(e), status(sha=F, ver=1))
+PY
+run_case ver3
+# Hand-worked: a recheck push after a carry push is unanswered: the author
+# has not posted, so there is no carry version (carry applies only when every
+# push since the posted version is a carry) and the unanswered push blocks.
+check "(ver3) not a carry version: target stays the posted one" "postmaster 1" "$(jr '"\(.target.source) \(.target.version)"')"
+reason_has "(ver3) the unanswered push is named" "the human author's newest push 44444444 (seq 31)"
+
+gen carry6 <<'PY'
+e = [frozen_root()] + panel_positive(sha=F) + [sec(20, "CONVERGED", 1, "SIGNED-OFF", F, 1)]
+e.append(upstream(30, H, mode="carry", to=["@operator"]))
+e.append(msg(31, "@core", "Changes-requested: this rebase broke the loop.", sha=F, ver=1))
+write(D, export(e), status(sha=F, ver=1))
+PY
+run_case carry6
+# Hand-worked: a seat's later reply on the (still-F) review target is its
+# latest verdict and carries as such: @core now blocks the carry version.
+check "(carry6) @core's later blocker wins over its earlier positive" "blocking true" "$(seat @core state) $(seat @core carried)"
+check "(carry6) STALLED" "STALLED" "$(jr .status)"
+
+printf '\n== push modes: recheck ==\n'
+gen re1 <<'PY'
+e = [frozen_root()] + panel_positive(sha=F) + [sec(20, "CONVERGED", 1, "SIGNED-OFF", F, 1)]
+e.append(upstream(30, H, mode="recheck", extra=[["X-Lkml-Recheck-Seats", "core"]]))
+e.append(cover(31, H, 2, "Small delta; core please look.\n\nFrozen-Head: " + H))
+e.append(msg(40, "@core", "Reviewed-by: core <core@example.com>", sha=H, ver=2))
+e.append(sec(50, "CONVERGED", 2, "SIGNED-OFF", H, 2))
+write(D, export(e), status(sha=H, ver=2))
+PY
+run_case re1
+# Hand-worked: the author's v2 (X-Version 2, target H) answers the recheck
+# push (its Frozen-Head H is the push's stamped head). @core is listed: its
+# fresh Reviewed-by on H counts. @tests/@docs are not listed: their v1
+# verdicts on F carry. The secretary posted a fresh CONVERGED SIGNED-OFF v2
+# on H. The target comes from the author's post (postmaster), not a carry.
+check "(re1) CONVERGED" "CONVERGED" "$(jr .status)"
+check "(re1) SIGNED-OFF at H" "SIGNED-OFF" "$(jr .verdict)"
+check "(re1) target is the author's post, version 2" "postmaster 2" "$(jr '"\(.target.source) \(.target.version)"')"
+check "(re1) @core fresh" "positive false" "$(seat @core state) $(seat @core carried)"
+check "(re1) @tests carried from v1" "positive true 1" "$(seat @tests state) $(seat @tests carried) $(seat @tests version)"
+check "(re1) @docs carried from v1" "positive true 1" "$(seat @docs state) $(seat @docs carried) $(seat @docs version)"
+check "(re1) the secretary is fresh, not carried" "false" "$(jr .secretary.carried)"
+check "(re1) the push is answered" "true" "$(jr .push.answered)"
+
+gen re2 <<'PY'
+e = [frozen_root()] + panel_positive(sha=F) + [sec(20, "CONVERGED", 1, "SIGNED-OFF", F, 1)]
+e.append(upstream(30, H, mode="recheck", extra=[["X-Lkml-Recheck-Seats", "core"]]))
+e.append(cover(31, H, 2, "Small delta; core please look.\n\nFrozen-Head: " + H))
+e.append(sec(50, "CONVERGED", 2, "SIGNED-OFF", H, 2))
+write(D, export(e), status(sha=H, ver=2))
+PY
+run_case re2
+# Hand-worked: @core is listed and has said nothing on H. Its v1 positive
+# does NOT carry. The others carry.
+check "(re2) @core has no fresh verdict: stale, not carried" "stale false" "$(seat @core state) $(seat @core carried)"
+reason_has "(re2) the recheck seat owes a verdict" "@core: no verdict on v2 (recheck seat; nothing carries)"
+check "(re2) @tests still carried" "positive true" "$(seat @tests state) $(seat @tests carried)"
+check "(re2) not CONVERGED" "STALLED" "$(jr .status)"
+reason_has "(re2) the secretary's CONVERGED is caught" "secretary says CONVERGED but @core is stale"
+
+gen re3 <<'PY'
+e = [frozen_root()] + panel_positive(sha=F) + [sec(20, "CONVERGED", 1, "SIGNED-OFF", F, 1)]
+e.append(upstream(30, H, mode="recheck", extra=[["X-Lkml-Recheck-Seats", "@core,tests"]]))
+e.append(cover(31, H, 2, "Small delta.\n\nFrozen-Head: " + H))
+e.append(msg(40, "@core", "Reviewed-by: C", sha=H, ver=2))
+e.append(sec(50, "CONVERGED", 2, "SIGNED-OFF", H, 2))
+write(D, export(e), status(sha=H, ver=2))
+PY
+run_case re3
+# Hand-worked: '@core,tests' lists both spellings. @core is fresh; @tests is
+# listed and silent on H: it owes a verdict; @docs carries.
+reason_has "(re3) the bare spelling lists @tests" "@tests: no verdict on v2 (recheck seat; nothing carries)"
+check "(re3) @docs carried" "true" "$(seat @docs carried)"
+check "(re3) @core fresh" "false" "$(seat @core carried)"
+
+gen re8 <<'PY'
+e = [frozen_root()] + panel_positive(sha=F) + [sec(20, "CONVERGED", 1, "SIGNED-OFF", F, 1)]
+e.append(upstream(30, H, mode="recheck", extra=[["X-Lkml-Recheck-Seats", "core"]]))
+e.append(cover(31, H, 2, "Small delta.\n\nFrozen-Head: " + H))
+e.append(msg(40, "@core", "Reviewed-by: C", sha=H, ver=2))
+e.append(sec(50, "CONVERGED", 2, "SIGNED-OFF", H, 2))
+e.append(cover(60, T4, 3, "Re-roll after review.\n\nFrozen-Head: " + H))
+e += panel_positive(sha=T4, ver=3, start=70)
+e.append(sec(80, "CONVERGED", 3, "RESPIN", T4, 3))
+write(D, export(e), status(sha=T4, ver=3))
+PY
+run_case re8
+# Hand-worked: v3 is the author's re-roll after review. The recheck push was
+# answered by v2 (the first post after it), not by v3, so v3 carries nothing;
+# all three seats have fresh verdicts on T4 and it converges RESPIN by itself.
+check "(re8) a re-roll after the push's own version carries nothing" "true" "$(jr '[.seats[].carried] | all(. == false)')"
+check "(re8) CONVERGED RESPIN" "CONVERGED RESPIN" "$(jr '"\(.status) \(.verdict)"')"
+
+printf '\n== push modes: absent and escalate withhold the carry ==\n'
+gen abs1 <<'PY'
+e = [frozen_root()] + panel_positive(sha=F) + [sec(20, "CONVERGED", 1, "SIGNED-OFF", F, 1)]
+e.append(upstream(30, H))
+e.append(cover(31, H, 2, "Human integration.\n\nFrozen-Head: " + H))
+write(D, export(e), status(sha=H, ver=2))
+PY
+run_case abs1
+# Hand-worked: a push with no mode: nothing carries; the old verdicts are on
+# F, not H, and are stale.
+check "(abs1) no mode: no seat carried, all stale" "true" "$(jr '[.seats[] | .state == "stale" and .carried == false] | all')"
+reason_has "(abs1) the usual reason" "@core: verdict is on v1 (ffffffff), none on v2 (11111111)"
+
+gen abs2 <<'PY'
+e = [frozen_root()] + panel_positive(sha=F) + [sec(20, "CONVERGED", 1, "SIGNED-OFF", F, 1)]
+e.append(upstream(30, H, mode="escalate", extra=[["X-Lkml-Tier", "full"]]))
+e.append(cover(31, H, 2, "Human integration.\n\nFrozen-Head: " + H))
+write(D, export(e), status(sha=H, ver=2))
+PY
+run_case abs2
+check "(abs2) escalate: no seat carried" "true" "$(jr '[.seats[].carried] | all(. == false)')"
+
+gen chain1 <<'PY'
+e = [frozen_root()] + panel_positive(sha=F) + [sec(20, "CONVERGED", 1, "SIGNED-OFF", F, 1)]
+e.append(upstream(30, H, mode="recheck", extra=[["X-Lkml-Recheck-Seats", "core"]]))
+e.append(cover(31, H, 2, "Small delta.\n\nFrozen-Head: " + H))
+e.append(msg(40, "@core", "Reviewed-by: C", sha=H, ver=2))
+e.append(sec(50, "CONVERGED", 2, "SIGNED-OFF", H, 2))
+e.append(upstream(60, T4, mode="carry", to=["@operator"]))
+write(D, export(e), status(sha=H, ver=2))
+PY
+run_case chain1
+# Hand-worked: v2 (recheck) carried @tests/@docs from v1; a later carry push
+# makes v3 at T4. @core's verdict is on H (v2); @tests' and @docs' latest are
+# on F (v1) and reach v3 through v2's own carry link. The secretary's trailer
+# is on v2 and carries. CONVERGED SIGNED-OFF at T4.
+check "(chain1) carry after a recheck version: CONVERGED" "CONVERGED" "$(jr .status)"
+check "(chain1) target v3 at T4" "3 $(printf '4%.0s' $(seq 40))" "$(jr '"\(.target.version) \(.target.sha)"')"
+check "(chain1) @tests carried from v1 through v2" "true 1" "$(seat @tests carried) $(seat @tests version)"
+check "(chain1) @core carried from v2" "true 2" "$(seat @core carried) $(seat @core version)"
+
+printf '\n== push modes: suite runs carry with the verdict ==\n'
+gen sc1 <<'PY'
+m = suite_case("Suite-Run: 4 passed, 0 failed\nReviewed-by: T")
+m.append(upstream(30, H, mode="carry", to=["@operator"]))
+write(D, export(m), status(sha=A, ver=1))
+PY
+run_case sc1
+# Hand-worked: @tests' clean Suite-Run is read off the verdict message that
+# carries, so the carry version has a clean suite run and CONVERGES.
+check "(sc1) the suite run carries" "clean" "$(seat @tests suite_run.status)"
+check "(sc1) CONVERGED" "CONVERGED" "$(jr .status)"
+
+gen sc2 <<'PY'
+m = suite_case("Suite-Run: could-not-run no network\nReviewed-by: T")
+m.append(upstream(30, H, mode="carry", to=["@operator"]))
+write(D, export(m), status(sha=A, ver=1))
+PY
+run_case sc2
+# Hand-worked: a could-not-run suite never counted on v1 and does not become
+# clean by carrying.
+check "(sc2) could-not-run carries as such" "could-not-run" "$(seat @tests suite_run.status)"
+reason_has "(sc2) the usual suite reason, on the carry version" "@tests signed off without a clean suite run (could-not-run"
+check "(sc2) not CONVERGED" "STALLED" "$(jr .status)"
+
 printf '\n== invariants over every case above ==\n'
 inv_bad=""; inv_n=0; inv_conv=0; diff_bad=""; diff_n=0
 # Opt-in differential check: LKML_PANEL_STATE_BASELINE names an earlier copy

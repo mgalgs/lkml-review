@@ -298,10 +298,56 @@ run esc FS_HOOK_MESSAGE=m003
 expect "an escalated-in seat's reply is reviewer chatter, not rule d" 1 "g" \
     "@core (silent)" "@tests (silent)" "@docs (silent)"
 
+printf '\n== carry and recheck versions ==\n'
+gen re <<'PY'
+# v1 converged at F with all three seats positive; the human's push H asks
+# for a recheck of @core only; the author posted v2 on H. @core has only a
+# stale v1 verdict (nothing carries); @tests and @docs carry from v1.
+F, D1 = sha("f"), sha("1")
+e = [root(sha=F, body=ROOT_BODY.replace("f" * 40, F)),
+     reviewed(2, "@core", sha=F), reviewed(3, "@tests", sha=F), reviewed(4, "@docs", sha=F),
+     upstream(30, D1, mode="recheck", extra=[["X-Lkml-Recheck-Seats", "core"]]),
+     cover(31, D1, 2, "Small delta.\n\nFrozen-Head: " + D1),
+     reviewed(40, "@docs", sha=D1, ver=2)]
+write(D, export(e), status(sha=D1, ver=2))
+PY
+run re FS_HOOK_MESSAGE=m040
+expect "recheck version: only the listed seat is waited on" 1 "g" "@core (stale)"
+case "$ERR" in
+    *@tests*|*@docs*) no "carried seats are not named as waited on" "$ERR" ;;
+    *) ok "carried seats are not named as waited on" ;;
+esac
+
+gen re2 <<'PY'
+F, D1 = sha("f"), sha("1")
+e = [root(sha=F, body=ROOT_BODY.replace("f" * 40, F)),
+     reviewed(2, "@core", sha=F), reviewed(3, "@tests", sha=F), reviewed(4, "@docs", sha=F),
+     upstream(30, D1, mode="recheck", extra=[["X-Lkml-Recheck-Seats", "core"]]),
+     cover(31, D1, 2, "Small delta.\n\nFrozen-Head: " + D1),
+     reviewed(40, "@core", sha=D1, ver=2)]
+write(D, export(e), status(sha=D1, ver=2))
+PY
+run re2 FS_HOOK_MESSAGE=m040
+expect "recheck version: the listed seat answered, carried seats count" 0 "f"
+
+gen carry <<'PY'
+# A carry version: every seat carries, so nobody is outstanding when a late
+# panel reply arrives.
+F, D1 = sha("f"), sha("1")
+e = [root(sha=F, body=ROOT_BODY.replace("f" * 40, F)),
+     reviewed(2, "@core", sha=F), reviewed(3, "@tests", sha=F), reviewed(4, "@docs", sha=F),
+     upstream(30, D1, mode="carry", to=["@operator"]),
+     reviewed(31, "@core", sha=F)]
+write(D, export(e), status(sha=F, ver=1))
+PY
+run carry FS_HOOK_MESSAGE=m031
+expect "carry version: every seat carried, a late reply wakes the author" 0 "f"
+
 printf '\n== --help ==\n'
 HELP="$("$gate_src" --help 2>&1)"; HRC=$?
 check "--help exits 0" "0" "$HRC"
 contains "--help mentions wake-when" "$HELP" "wake-when"
+contains "--help says a carried verdict counts as answered" "$HELP" "carried"
 check "-h prints the same text" "$HELP" "$("$gate_src" -h 2>&1)"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

@@ -59,7 +59,10 @@ one "lkml-wake-gate: ..." line on stderr naming the decision and rule:
     e  no target, or the target has no sha        -> exit 0
        (nothing to wait for)
     f  every seat is positive, blocking or question -> exit 0
-       (every reviewer has answered the current version)
+       (every reviewer has answered the current version; a verdict
+       panel-state reports as carried forward is a verdict, so a recheck
+       version waits only on the seats it listed and a carry version on
+       nobody)
     g  otherwise                                  -> exit 1
        (some seat is still stale or silent)
 

@@ -121,6 +121,40 @@ any other. Top-level "push" is the newest push record, with "answered":
 true when its sha is the current target's frozen head; null when the
 thread has no push.
 
+Carry -- a verdict is only ever CARRIED from a verdict the seat actually
+gave, on an earlier version of the same thread; a carried blocker is still
+a blocker, and a seat with nothing to carry still owes a verdict. Carry
+never rewrites anything. Two shapes:
+
+  * A carry version. When every push since the current posted version is a
+    carry and the newest is not already that version's frozen head, the PR
+    is on a synthetic version: a carry does NOT move the postmaster's
+    review target (only the author's post does), so target and frozen head
+    are both taken from the newest push's X-Upstream-Head. target.source is
+    "carry", target.version is the posted version plus one per push since
+    (every human push counts toward Version-Limit, whatever its mode; this
+    script only numbers them), set_by/set_at are the push's. The frozen
+    head is {sha, "upstream"}, so a panel that carries to convergence is
+    SIGNED-OFF at the new head. No push is unanswered on it. Every seat's
+    latest verdict, and the secretary's trailer (nobody is woken, so no
+    fresh one can exist), carry from the posted version. A carried RESPIN
+    therefore contradicts a carry version (target == frozen head) and
+    blocks CONVERGED, like any other RESPIN on a frozen head.
+  * A posted version that answers a push. The author's version answers a
+    push when it is the first post after it and its resolved frozen head
+    is the push's stamped head; every push since the previous version then
+    counts. A seat carries forward from the previous version unless some
+    push in that interval withholds it: recheck withholds the seats it
+    lists, escalate and a push with no (or a malformed) mode withhold
+    every seat. The secretary's trailer is NOT carried here: a posted
+    version needs a fresh one.
+
+Carrying chains: a seat that carried onto a recheck version carries through
+a later carry push the same way, because its verdict on the earlier version
+is what the recheck said still stands. The push modes are decided CI-side
+(`carry` is only correct for a pure rebase, which CI checks from
+patch-ids); this script trusts the header and does not recompute it.
+
 Frozen head -- the commit the human's PR stood on when a version's review
 began, which decides what a sign-off means. roster.frozen_head is the
 ROOT's value and keeps that meaning. The top-level "frozen_head"
@@ -154,7 +188,8 @@ human author's newest push has no version posted for it (the author has
 not run yet, failed to post, or answered with a mismatch report to the
 operator), and a sign-off on an older head says nothing about the PR as
 it now stands. That is a reason, so the thread is not CONVERGED; it is
-not a status of its own.
+not a status of its own. A carry push has no version posted for it by
+design: see Carry, which moves the target and frozen head to the push.
 
 Current target -- the postmaster's review_target is authoritative. The
 newest message carrying X-Review-Target-Set is the mail-side witness: it
@@ -180,6 +215,17 @@ Changes-requested, Question, then the -by trailers). state is:
                X-Review-Target is NEWER than the on-target positive (it
                may retract it, so the positive is not trusted)
     silent     no tagged message from the seat at all
+
+A seat with no on-target tagged message may, under Carry above, take its
+verdict from the nearest earlier version it gave one on. The entry then has
+carried true and version/sha/message_id of the giving message, so a display
+can say "carried from v3". Everything else about the verdict (the
+stale-retraction rule, the Suite-Run read off the giving message) is
+unchanged; a carried blocking verdict is reported "@core: Changes-requested
+on v2 (carried from v1)". A seat that may carry but has nothing to carry
+owes a verdict ("no verdict on v2 and nothing to carry from v1"), and a
+seat a recheck push listed owes one ("recheck seat; nothing carries").
+carried is false for every verdict given on the version it is judged on.
 
 Suite run -- every seat in roster.suite_seats must state, on the SAME
 message that supplied its verdict, that it ran the Suite command. On a
@@ -252,6 +298,9 @@ Status -- precedence top to bottom, first match wins:
                     operator must look
     IN-PROGRESS     otherwise
 
+On a carry version the secretary's trailer for the posted version carries
+forward (entry.carried true, on_target judged against the posted version).
+
 A secretary saying CONVERGED while the facts disagree is a named reason
 ("secretary says CONVERGED but @tests is blocking"): that is the false
 green this script exists to catch.
@@ -261,6 +310,7 @@ Output (null, never an omitted key, for what is unknown):
     {"schema": "lkml-panel-state/1", "thread", "subject",
      "status", "verdict",          # verdict only when CONVERGED
      "target": {"branch","sha","version","set_by","set_at","source"},
+                                        # source: postmaster, mail or carry
      "roster": {"author","panel","secretary","version_limit","frozen_head",
                 "suite","suite_seats"},   # suite: string|null; suite_seats:
                                           # the resolved list, [] w/o Suite
@@ -816,8 +866,95 @@ def suite_run_reason(seat, run):
     return f"{seat} signed off without a clean suite run ({what})"
 
 
-def judge_seat(seat, msgs, target, suite_seats=()):
-    """-> (seat entry, reason|None) for one panel seat."""
+def posted_versions(msgs):
+    """The versions the author posted, oldest first: one per run of
+    X-Review-Target-Set messages naming the same sha, at the seq of the
+    first. A carry push is not a posted version."""
+    out = []
+    for m in msgs:
+        if not m["ok"]:
+            continue
+        tgt = single_target_header(m, "X-Review-Target-Set")
+        if tgt is None or (out and out[-1]["sha"] == tgt[1]):
+            continue
+        out.append({"seq": m["seq"], "branch": tgt[0], "sha": tgt[1],
+                    "version": int_header(m, "X-Version")})
+    return out
+
+
+def push_permits(push, seat):
+    """Does this push let `seat` carry its verdict forward?"""
+    if push["mode"] == "carry":
+        return True
+    return push["mode"] == "recheck" and seat not in push["seats"]
+
+
+def link_pushes(msgs, roster, pushes, versions, i):
+    """The pushes version i of `versions` answers, or None when it answers
+    none and so nothing carries into it. A version answers a push when its
+    resolved frozen head is that push's stamped head and the push arrived
+    between the previous version and it. Every push in the interval counts,
+    not only the answered one: a push whose mode withholds a seat's carry
+    withholds it however the author later posts."""
+    if i <= 0:
+        return None
+    v, prev = versions[i], versions[i - 1]
+    fh, _ = resolve_frozen_head(msgs, roster, v)
+    if fh is None or fh["source"] != "upstream":
+        return None
+    q = [p for p in pushes if prev["seq"] < p["seq"] < v["seq"]]
+    return q if any(p["sha"] == fh["sha"] for p in q) else None
+
+
+def ver_label(target):
+    """'v3', or '(a1b2c3d4)' when the version is unknown."""
+    if target["version"] is not None:
+        return f"v{target['version']}"
+    return f"({target['sha'][:8]})"
+
+
+def judge_on(entry, seat, m, tagged, target, suite_seats, source=None):
+    """Fill `entry` from `m`, the seat's latest tagged message on `target`
+    -> (entry, reason|None). `source` is the target the verdict was GIVEN on
+    when it is being carried forward, else None; `target` is always the
+    version being judged."""
+    tag = pick_tag(m["tags"])
+    entry.update(state=seat_state_of(tag), verdict=tag, message_id=m["id"],
+                 version=m["version"], sha=m["sha"], carried=source is not None)
+    if seat in suite_seats:
+        entry["suite_run"] = parse_suite_run(m["body"])
+    if entry["state"] == "positive":
+        newer = [x for x in tagged if x["seq"] > m["seq"] and x["sha"] is None]
+        if newer:
+            # A later tagged message about no readable target may be
+            # a retraction; "silently vanishes" would be a false green.
+            u = newer[-1]
+            utag = pick_tag(u["tags"])
+            entry.update(state="stale", verdict=utag, message_id=u["id"],
+                         version=u["version"], sha=None, carried=False)
+            if entry["suite_run"] is not None:
+                # The Suite-Run was read off the older message; the
+                # entry now names a message that made no such claim.
+                entry["suite_run"] = suite_run("missing")
+            return entry, (f"{seat}: newer message {u['id']} carries "
+                           f"{utag} with no usable X-Review-Target; "
+                           f"{tag} on {target_label(source or target)} not trusted")
+        if entry["suite_run"] is not None:
+            return entry, suite_run_reason(seat, entry["suite_run"])
+        return entry, None
+    where = ver_label(target)
+    what = "unanswered Question" if tag == "Question" else tag
+    carried = f" (carried from {ver_label(source)})" if source else ""
+    return entry, f"{seat}: {what} on {where}{carried}"
+
+
+def judge_seat(seat, msgs, target, suite_seats=(), carry_chain=(),
+               recheck=False):
+    """-> (seat entry, reason|None) for one panel seat. `carry_chain` is
+    the targets, nearest first, whose verdicts this seat may carry forward
+    onto `target` (see "Pushes and push modes"); empty means the seat owes
+    a fresh verdict, and `recheck` says that is because a recheck push
+    listed it."""
     tsha = target["sha"] if target else None
     mine = [m for m in msgs if m["ok"] and m["from"] == seat]
     tagged = [m for m in mine if m["tags"]]
@@ -827,44 +964,30 @@ def judge_seat(seat, msgs, target, suite_seats=()):
              "suite_run": suite_run("missing") if seat in suite_seats else None,
              "carried": False}
     if on:
-        m = on[-1]
-        tag = pick_tag(m["tags"])
-        entry.update(state=seat_state_of(tag), verdict=tag,
-                     message_id=m["id"], version=m["version"], sha=m["sha"])
-        if seat in suite_seats:
-            entry["suite_run"] = parse_suite_run(m["body"])
-        if entry["state"] == "positive":
-            newer = [x for x in tagged if x["seq"] > m["seq"] and x["sha"] is None]
-            if newer:
-                # A later tagged message about no readable target may be
-                # a retraction; "silently vanishes" would be a false green.
-                u = newer[-1]
-                utag = pick_tag(u["tags"])
-                entry.update(state="stale", verdict=utag, message_id=u["id"],
-                             version=u["version"], sha=None)
-                if entry["suite_run"] is not None:
-                    # The Suite-Run was read off the older message; the
-                    # entry now names a message that made no such claim.
-                    entry["suite_run"] = suite_run("missing")
-                return entry, (f"{seat}: newer message {u['id']} carries "
-                               f"{utag} with no usable X-Review-Target; "
-                               f"{tag} on {target_label(target)} not trusted")
-            if entry["suite_run"] is not None:
-                return entry, suite_run_reason(seat, entry["suite_run"])
-            return entry, None
-        where = f"v{target['version']}" if target["version"] is not None \
-            else f"({target['sha'][:8]})"
-        what = "unanswered Question" if tag == "Question" else tag
-        return entry, f"{seat}: {what} on {where}"
+        return judge_on(entry, seat, on[-1], tagged, target, suite_seats)
+    fallback = dict(entry)
     if tagged:
         m = tagged[-1]
-        entry.update(state="stale", verdict=pick_tag(m["tags"]),
-                     message_id=m["id"], version=m["version"], sha=m["sha"])
+        fallback.update(state="stale", verdict=pick_tag(m["tags"]),
+                        message_id=m["id"], version=m["version"], sha=m["sha"])
+    for prev in carry_chain:
+        given = [m for m in tagged if m["sha"] == prev["sha"]]
+        if given:
+            return judge_on(entry, seat, given[-1], tagged, target,
+                            suite_seats, source=prev)
+    if carry_chain:
+        return fallback, (f"{seat}: no verdict on {ver_label(target)} and "
+                          f"nothing to carry from {ver_label(carry_chain[0])}")
+    if recheck:
+        return fallback, (f"{seat}: no verdict on {ver_label(target)} "
+                          f"(recheck seat; nothing carries)")
+    if tagged:
+        m = tagged[-1]
         seen = target_label({"sha": m["sha"], "version": m["version"]}) \
             if m["sha"] else "a message with no usable X-Review-Target"
-        return entry, (f"{seat}: verdict is on {seen}, none on "
-                       f"{target_label(target)}")
-    return entry, f"{seat}: no verdict on {target_label(target)}"
+        return fallback, (f"{seat}: verdict is on {seen}, none on "
+                          f"{target_label(target)}")
+    return fallback, f"{seat}: no verdict on {target_label(target)}"
 
 
 SEAT_PHRASE = {"blocking": "is blocking", "question": "has an open Question",
@@ -981,6 +1104,53 @@ def resolve_frozen_head(msgs, roster, target):
                       f"X-Upstream-Head on this thread"]
 
 
+def carry_chain(seat, msgs, roster, pushes, versions, cur, synthetic):
+    """-> (targets, rechecked): the earlier versions, nearest first, whose
+    verdicts `seat` may carry forward onto version `cur`. A link in the
+    chain exists while the version answers pushes that all let the seat
+    carry; a synthetic carry version is all carry pushes by construction.
+    rechecked says the walk stopped at the current version because a
+    recheck push listed the seat."""
+    chain, rechecked, i = [], False, cur
+    while i is not None and i > 0:
+        q = [] if (synthetic and i == cur) \
+            else link_pushes(msgs, roster, pushes, versions, i)
+        if q is None:
+            break
+        if not all(push_permits(p, seat) for p in q):
+            rechecked = i == cur and any(
+                p["mode"] == "recheck" and seat in p["seats"] for p in q)
+            break
+        chain.append(versions[i - 1])
+        i -= 1
+    return chain, rechecked
+
+
+def carry_overlay(msgs, pushes, versions, cur, target, frozen_head):
+    """-> (target, frozen_head, carry_from). When every push since the
+    current posted version was a carry (so nobody was asked to look at
+    anything) and the newest is not already that version's frozen head,
+    the PR is on a synthetic carry version: its target AND frozen head are
+    the newest push's stamped head (a carry does not move the postmaster's
+    review target; only the author's post does), numbered one past the
+    posted version per push (every human push counts). carry_from is the
+    posted target the verdicts carry from, None when no overlay applies."""
+    q = [p for p in pushes if p["seq"] > versions[cur]["seq"]]
+    if not q or any(p["mode"] != "carry" for p in q):
+        return target, frozen_head, None
+    newest = q[-1]
+    if frozen_head is not None and frozen_head["sha"] == newest["sha"]:
+        return target, frozen_head, None
+    mail = next(m for m in msgs if m["seq"] == newest["seq"])
+    version = target["version"]
+    synthetic = {"branch": newest["branch"], "sha": newest["sha"],
+                 "version": None if version is None else version + len(q),
+                 "set_by": mail["from"] or None,
+                 "set_at": opt_str(mail["date"]), "source": "carry"}
+    return (synthetic, {"sha": newest["sha"], "source": "upstream"},
+            {"sha": target["sha"], "version": target["version"]})
+
+
 def unanswered_push(msgs, frozen_head):
     """-> reasons. The newest X-Upstream-Head on the thread is the PR's
     current head; when it is not the resolved frozen head, the human
@@ -1004,8 +1174,10 @@ def unanswered_push(msgs, frozen_head):
             f"no version has been posted for it"]
 
 
-def judge_secretary(msgs, roster, target):
-    """-> (secretary entry|None, reasons)."""
+def judge_secretary(msgs, roster, target, carry_from=None):
+    """-> (secretary entry|None, reasons). `carry_from` is the version a
+    carry push moved on from: a secretary trailer that is on THAT version
+    carries forward (nobody is woken to write a fresh one)."""
     sec = roster["secretary"]
     if sec is None:
         return None, ["roster has no usable Secretary"]
@@ -1022,10 +1194,14 @@ def judge_secretary(msgs, roster, target):
         return entry, [f"secretary {sec} message {m['id']}: malformed trailer: {bad}"]
     entry.update(fields)
     reasons = []
-    tsha = target["sha"] if target else None
-    tver = target["version"] if target else None
-    entry["on_target"] = (tsha is not None and m["sha"] == tsha
-                          and tver is not None and fields["version"] == tver)
+
+    def on(t):
+        return (t is not None and m["sha"] == t["sha"]
+                and t["version"] is not None and fields["version"] == t["version"])
+
+    entry["on_target"] = on(target)
+    if not entry["on_target"] and on(carry_from):
+        entry.update(on_target=True, carried=True)
     if not entry["on_target"]:
         said = f"v{fields['version']}" + (f" ({m['sha'][:8]})" if m["sha"] else "")
         reasons.append(f"secretary's Panel-Status is for {said}, "
@@ -1125,16 +1301,32 @@ def build_state(export, status):
 
     frozen_head, fh_reasons = resolve_frozen_head(msgs, roster, target)
     reasons += fh_reasons
+
+    versions = posted_versions(msgs)
+    cur = next((i for i in range(len(versions) - 1, -1, -1)
+                if target is not None and versions[i]["sha"] == target["sha"]),
+               None)
+    carry_from = None
+    if cur is not None:
+        target, frozen_head, carry_from = carry_overlay(
+            msgs, pushes, versions, cur, target, frozen_head)
+        if carry_from is not None:
+            versions.append(dict(sha=target["sha"], version=target["version"],
+                                 seq=pushes[-1]["seq"], branch=target["branch"]))
+            cur = len(versions) - 1
     reasons += unanswered_push(msgs, frozen_head)
 
     seats = []
     for seat in panel:
-        entry, why = judge_seat(seat, msgs, target, roster["suite_seats"])
+        chain, rechecked = carry_chain(seat, msgs, roster, pushes, versions,
+                                       cur, carry_from is not None)
+        entry, why = judge_seat(seat, msgs, target, roster["suite_seats"],
+                                chain, rechecked)
         seats.append(entry)
         if why:
             reasons.append(why)
 
-    secretary, sec_reasons = judge_secretary(msgs, roster, target)
+    secretary, sec_reasons = judge_secretary(msgs, roster, target, carry_from)
     reasons += sec_reasons
 
     pm, pm_reasons = postmaster_facts(status)
