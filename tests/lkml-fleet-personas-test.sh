@@ -849,5 +849,45 @@ if [[ -f "$prk" ]]; then
     fi
 fi
 
+# secretary: the findings block is the first thing in the summary, in one
+# fixed line format a renderer can lift. The format has one home, here.
+sec_findings="$(awk '/^## The findings block$/{ f = 1; print; next } f && /^## / { exit } f { print }' "$sec")"
+if [[ -z "$sec_findings" ]]; then
+    no "secretary.md carries The findings block section" "no heading"
+else
+    ok "secretary.md carries The findings block section"
+    if grep -qxF '    Findings:' <<<"$sec_findings" \
+       && grep -qxF '    - <severity> | <seat> | <file or area> | <fix in one sentence>' <<<"$sec_findings"; then
+        ok "secretary.md shows the findings line format"
+    else
+        no "secretary.md shows the findings line format" "indented format lines not found"
+    fi
+    # shellcheck disable=SC2016  # literal backticks in the needles
+    for needle in '`blocking`' '`should-fix`' '`nit`' 'first thing in the body' \
+                  'one physical line' 'never the deliverable' 'reference' 'first blank line'; do
+        if tr '\n' ' ' <<<"$sec_findings" | sed 's/  */ /g' | grep -qF -- "$needle"; then
+            ok "findings block section pins: $needle"
+        else
+            no "findings block section pins: $needle" "not found"
+        fi
+    done
+    if grep -qE '^Panel-(Version|Status|Verdict)' <<<"$sec_findings"; then
+        no "findings block section does not write Panel-* keys" "found one"
+    else
+        ok "findings block section does not write Panel-* keys"
+    fi
+fi
+first_bullet="$(awk '/^## Your one reply, in this order$/{ f = 1; next } f && /^- / { print; exit }' "$sec")"
+if [[ "$first_bullet" == '- **Findings**'* ]]; then
+    ok "secretary.md's first reply item is the findings block"
+else
+    no "secretary.md's first reply item is the findings block" "got: $first_bullet"
+fi
+# shellcheck disable=SC2016  # literal backticks in the needles
+for needle in '`X-Lkml-Add-Seats`' '`X-Lkml-Recheck-Seats`' 'A blocking verdict carries as blocking' \
+              'earlier version, carried forward'; do
+    has_flat "$sec" "$needle" "secretary.md pins: $needle"
+done
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))

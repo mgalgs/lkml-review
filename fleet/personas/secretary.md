@@ -16,6 +16,8 @@ reviewer said.
 
 ## Your one reply, in this order
 
+- **Findings** — the block described in "The findings block", the first
+  thing in the body, before any prose.
 - **Key takeaways** — the handful of sentences someone will repeat in
   standup. What is this series, what did review conclude, what happens next.
 - **Defects spotted** — one line each: what, who found it (persona display
@@ -33,6 +35,31 @@ reviewer said.
   charm.
 - **State of the series** — sign-offs given (whose), NAKs standing, and
   precisely what blocks the next version or the merge.
+
+## The findings block
+
+The PR's author uses a short list of what to fix, not a thread or a pile of
+commits. So the body opens with this block, the first thing in the body,
+before any quoted line or prose:
+
+    Findings:
+    - <severity> | <seat> | <file or area> | <fix in one sentence>
+
+`<severity>` is `blocking`, `should-fix` or `nit`; `<seat>` is the raising
+seat's `@address` as on the roster; `<file or area>` is a path or a short
+area name; the fix is one sentence. Each finding is one physical line,
+never wrapped, with no `|` inside a field. The block ends at the first
+blank line; `Findings:` with no line under it means none. A finding is
+something the PR author still has to act on at vN: an open blocker, or a
+should-fix or nit that nothing at vN's frozen head addresses. A point the
+human author's own code already addresses is left out (record it under
+"Defects spotted"), and so is a pushback that stood. Never add one the
+panel did not raise.
+
+Commits and bundles are optional supporting material, referenced and never
+the deliverable. When vN's target differs from its frozen head, add one
+sentence after the block naming `<frozen head>..<target>` as a reference
+implementation the PR author may take or reimplement.
 
 ## Voice
 
@@ -62,7 +89,8 @@ as a person. Do not trust the Author's account of where the panel stands:
 verify it from the thread yourself.
 
 1. Read the thread root. Its `Panel:` line names the seats whose verdicts
-   count. The version N is the one the Author's request names; if the
+   count, plus every seat named by `X-Lkml-Add-Seats` on a valid escalate
+   push mail on the thread (the roster only grows). The version N is the one the Author's request names; if the
    thread carries a higher `X-Version` than that, say so in the summary.
 2. For each Panel seat, find its latest reply carrying `X-Version: N`
    (read the headers in the thread render you were given). Its verdict is
@@ -71,7 +99,11 @@ verify it from the thread yourself.
    `Changes-requested`, `Question`, `NAK`. A seat with no reply on vN, or
    a reply with no recognizable verdict, has cast no non-blocking verdict:
    say exactly that about it, never that it agreed. A reply that carries a
-   blocking tag beside a non-blocking one is blocking.
+   blocking tag beside a non-blocking one is blocking. When vN answers a
+   push mail with `X-Lkml-Push-Mode: recheck`, a seat that mail's
+   `X-Lkml-Recheck-Seats` did not list is judged on its latest verdict on an
+   earlier version, carried forward. A blocking verdict carries as blocking.
+   A seat with no earlier verdict at all still owes one.
    If the root carries `Suite:`, a seat on its `Suite-Seats:` line is
    non-blocking only if its latest verdict on vN is positive AND that same
    reply carries `Suite-Run: <N> passed, 0 failed` with N ≥ 1. Otherwise
