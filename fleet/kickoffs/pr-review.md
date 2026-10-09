@@ -11,6 +11,10 @@ from pr-review.roster (or --author/--panel/--secretary/--version-limit),
 ${FROZEN_HEAD} from the --review-target sha, ${SUITE} from --suite and
 --suite-seats. docs/cluster-panel.md walks through the whole flow.
 
+The tier step feeds the Review tier section through the kickoff script's
+`--header "X-Lkml-Tier: <tier>"`, `--header "X-Lkml-Tier-Reason: <why>"`
+and `--attach-file tier-focus.md`; none of them is a placeholder here.
+
 Placeholders (dumb substitution, not a template engine):
   ${FROM}          sending address (not the Author: reviewers address
                    the seat named on the Author: line, not this mail's
@@ -75,6 +79,21 @@ valid outcome here: the author acts only once every panel seat has
 replied on the current version, and a seat that says nothing is
 indistinguishable from one that crashed. If you have nothing to add,
 say so with `Acked-by:` or `Reviewed-by:`.
+
+## Review tier
+
+A panel may be sized by a tier step. When this mail carries an
+`X-Lkml-Tier` header (`quick`, `standard` or `full`), that is the tier
+and `X-Lkml-Tier-Reason` says why. The `Panel:` line is the roster that
+tier chose, and the panel converges only when every seat on it holds a
+non-blocking verdict: a smaller tier is a smaller named roster, never
+fewer seats happening to answer.
+
+When `tier-focus.md` is listed under Attached context, read your own
+`## @<seat>` section in it first and spend your review there. Still
+report anything blocking you find elsewhere. A quick-tier panel is held
+to the same bar as a full one. With no such header there is no tier:
+read this mail as it stands.
 
 ## Sign-off convention
 
@@ -160,7 +179,10 @@ panel with what still blocks.
 A version may instead be the PR's human author's own integration: when
 they push a new head, the Author posts it unchanged as the next version
 and its cover says so, classifying which commits were taken. Review it
-like any other version. A suggestion the human author did not take is
+like any other version. A point you raised is addressed when the code at
+the new head does what you asked, whether the human took the panel's
+commit, wrote their own, or explained nothing: do not wait for an
+explanation. A suggestion the human author did not take is
 decided: re-raise it only as a blocking objection saying why the
 decision is wrong; otherwise leave it closed. The frozen head can move to
 the human's push, so the head that counts as the PR's own is the one on

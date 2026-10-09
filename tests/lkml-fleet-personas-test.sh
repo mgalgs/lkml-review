@@ -471,7 +471,8 @@ if [[ -n "$verdict_baseline" ]]; then
         '`Question`' \
         '`NAK`' \
         'Having nothing to add is' \
-        'does not carry forward'
+        'does not carry forward' \
+        'against the code at the new version'
     do
         if grep -qF -- "$needle" <<<"$flat"; then
             ok "verdict section pins: $needle"
@@ -727,6 +728,99 @@ for f in skills/lkml-mode/personas/author.md skills/lkml-mode/personas/pr-author
         no "$f lets the author decline a nit, and bounds it" "rule or its bound missing"
     fi
 done
+
+# Tier focus and recheck scope: the same byte-identical section in the
+# six reviewers, right before the verdict section, and in no one else.
+# Needles are matched on the flattened section so they may span a wrap.
+extract_tier_scope() {
+    awk '/^## Tier focus and recheck scope$/{ f = 1; print; next }
+         f && /^## / { exit }
+         f { print }' "$1"
+}
+tier_baseline=""
+for name in $reviewers; do
+    f="$personas_dir/$name.md"
+    section="$(extract_tier_scope "$f")"
+    if [[ -z "$section" ]]; then
+        no "$name carries the tier focus section" "no '## Tier focus and recheck scope' heading"
+        continue
+    fi
+    if [[ -z "$tier_baseline" ]]; then
+        tier_baseline="$section"
+        ok "$name carries the tier focus section (comparison baseline)"
+    elif [[ "$section" == "$tier_baseline" ]]; then
+        ok "$name's tier focus section matches the baseline"
+    else
+        no "$name's tier focus section matches the baseline" "section text diverges"
+    fi
+    next_heading="$(awk '/^## Tier focus and recheck scope$/{ f = 1; next }
+                         f && /^## / { print; exit }' "$f")"
+    if [[ "$next_heading" == "## Who hears your review, and your verdict" ]]; then
+        ok "$name's tier focus section sits right before the verdict section"
+    else
+        no "$name's tier focus section sits right before the verdict section" "next heading: '$next_heading'"
+    fi
+done
+for name in ci author distiller secretary pr-author; do
+    if [[ -z "$(extract_tier_scope "$personas_dir/$name.md")" ]]; then
+        ok "$name.md does not carry the tier focus section"
+    else
+        no "$name.md does not carry the tier focus section" "found the heading"
+    fi
+done
+if [[ -n "$tier_baseline" ]]; then
+    flat="$(tr '\n' ' ' <<<"$tier_baseline" | sed 's/  */ /g')"
+    # shellcheck disable=SC2016  # literal backticks in the needles
+    for needle in \
+        'tier-focus.md' \
+        '## @<your seat>' \
+        'still report anything blocking' \
+        'A quick-tier panel is a real review' \
+        '`git range-diff`' \
+        '`head-<12 hex>`' \
+        '`review-v<N>`' \
+        'falls back to the commit range' \
+        'never block on a missing branch'
+    do
+        if grep -qF -- "$needle" <<<"$flat"; then
+            ok "tier focus section pins: $needle"
+        else
+            no "tier focus section pins: $needle" "not found"
+        fi
+    done
+fi
+
+# The kickoff names the tier, reads exactly as before when it is absent.
+if [[ -f "$prk" ]]; then
+    prk_tier="$(awk '/^## Review tier$/{ f = 1; print; next } f && /^## / { exit } f { print }' <<<"$prk_body")"
+    if [[ -z "$prk_tier" ]]; then
+        no "pr-review.md carries a Review tier section" "no heading"
+    else
+        ok "pr-review.md carries a Review tier section"
+        tier_flat="$(tr '\n' ' ' <<<"$prk_tier" | sed 's/  */ /g')"
+        for needle in 'X-Lkml-Tier' 'X-Lkml-Tier-Reason' 'tier-focus.md' '## @<seat>' \
+                      'a smaller tier is a smaller named roster' \
+                      'same bar' 'With no such header'
+        do
+            if grep -qF -- "$needle" <<<"$tier_flat"; then
+                ok "Review tier section pins: $needle"
+            else
+                no "Review tier section pins: $needle" "not found"
+            fi
+        done
+        # shellcheck disable=SC2016  # literal placeholder text
+        if grep -qF '${' <<<"$prk_tier"; then
+            no "Review tier section has no placeholder" "found a \${...}"
+        else
+            ok "Review tier section has no placeholder"
+        fi
+    fi
+    if grep -qF 'is addressed when the code at' <<<"$(tr '\n' ' ' <<<"$prk_body" | sed 's/  */ /g')"; then
+        ok "pr-review.md judges a point on the code at the new head, not an explanation"
+    else
+        no "pr-review.md judges a point on the code at the new head, not an explanation"
+    fi
+fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))

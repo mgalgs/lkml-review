@@ -1827,8 +1827,8 @@ printf '\n== pr-review without --suite: the body is what it was before --suite e
 # Captured from the script as it stood before the ${SUITE} line, with
 # the three explicit roster flags so a change to pr-review.roster does
 # not move it. The "Running the suite" and "Verifying it yourself"
-# sections are new text in every body; they are cut out before
-# comparing, so what is compared is the
+# sections and the "Review tier" section are new text in every body;
+# they are cut out before comparing, so what is compared is the
 # rest, byte for byte -- in particular that the ${SUITE} line left no
 # stray line or blank behind. @TIP@ stands for the --review-target sha.
 cat > "$work/pr-review-before-suite.txt" <<'BODY'
@@ -1899,7 +1899,10 @@ panel with what still blocks.
 A version may instead be the PR's human author's own integration: when
 they push a new head, the Author posts it unchanged as the next version
 and its cover says so, classifying which commits were taken. Review it
-like any other version. A suggestion the human author did not take is
+like any other version. A point you raised is addressed when the code at
+the new head does what you asked, whether the human took the panel's
+commit, wrote their own, or explained nothing: do not wait for an
+explanation. A suggestion the human author did not take is
 decided: re-raise it only as a blocking objection saying why the
 decision is wrong; otherwise leave it closed. The frozen head can move to
 the human's push, so the head that counts as the PR's own is the one on
@@ -1912,7 +1915,7 @@ kick "${rkick[@]}" --template pr-review --review-target "$rt_arg" --summary 'Sum
     --author '@pr-author' --panel '@architecture,@core,@docs,@newcomer,@security,@tests' \
     --secretary '@secretary' --version-limit 4
 check "the no-suite pr-review kickoff composes" "0" "$k_rc"
-body_of "$k_out" | awk '/^## (Running the suite|Verifying it yourself)$/ { skip = 1; next } /^## / { skip = 0 } !skip' \
+body_of "$k_out" | awk '/^## (Running the suite|Verifying it yourself|Review tier)$/ { skip = 1; next } /^## / { skip = 0 } !skip' \
     | sed "s/$rt_tip/@TIP@/g" > "$work/pr-review-after-suite.txt"
 if cmp -s "$work/pr-review-before-suite.txt" "$work/pr-review-after-suite.txt"; then
     ok "the no-suite body, less the new section, is byte-identical to the pre-change body"
@@ -1920,6 +1923,9 @@ else
     no "the no-suite body, less the new section, is byte-identical to the pre-change body" \
         "$(diff "$work/pr-review-before-suite.txt" "$work/pr-review-after-suite.txt" | head -10)"
 fi
+contains "the tier section is in the shipped template's body" "$(body_of "$k_out")" "## Review tier"
+contains "the tier section names the reason header" "$(body_of "$k_out")" "X-Lkml-Tier-Reason"
+contains "the tier section names the focus file" "$(body_of "$k_out")" "tier-focus.md"
 contains "the new section is in the shipped template's body" "$(body_of "$k_out")" "## Running the suite"
 contains "the section says a stub is the failure it catches" "$(body_of "$k_out")" "Never
 substitute a stub"

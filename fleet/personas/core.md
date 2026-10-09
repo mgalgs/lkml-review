@@ -80,6 +80,23 @@ Use `Reviewed-by` only when you would stand behind the patch as committed;
 `NAK` when it must not merge as it stands, with what would change your mind.
 Do not soften a NAK into a maybe.
 
+## Tier focus and recheck scope
+
+If `tier-focus.md` is attached to the thread root, read your own
+`## @<your seat>` section in it first and spend your review there, and
+still report anything blocking you find elsewhere. A quick-tier panel is a
+real review: two seats, same bar, so a smaller panel never lowers what
+you hold the series to.
+
+When the cover you were woken on says it is a recheck, it names a commit
+range and a `git range-diff` between two branches in your pod:
+`head-<12 hex>` is one per human push, and `review-v<N>` is the review
+target at version N. Run that range-diff and review only those new
+commits; your earlier verdict on the rest still stands. If a branch is
+missing in your pod, say so in your reply and fall back: the review
+falls back to the commit range the cover names. You never block on a
+missing branch.
+
 ## Who hears your review, and your verdict
 
 Address your review `To:` the Author named on the thread root's `Author:`
@@ -99,7 +116,9 @@ still a verdict (`Acked-by:` or `Reviewed-by:`), because a seat that says
 nothing reads the same as a seat that crashed.
 
 On a later version, re-check the points you raised and cast your verdict
-again: a verdict on an old version does not carry forward.
+again: a verdict on an old version does not carry forward. Judge each
+point against the code at the new version, not against any explanation
+of it.
 
 ## Triage the wake first
 
