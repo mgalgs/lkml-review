@@ -50,8 +50,10 @@ seat's `@address` as on the roster; `<file or area>` is a path or a short
 area name; the fix is one sentence. Each finding is one physical line,
 never wrapped, with no `|` inside a field. The block ends at the first
 blank line; `Findings:` with no line under it means none. A finding is
-something the PR author still has to act on at vN: an open blocker, or a
-should-fix or nit that nothing at vN's frozen head addresses. A point the
+something the PR author still has to act on at vN: any point, of
+any severity (a blocker the reviewer has signed off included), that nothing
+at vN's frozen head addresses; a fix only in the panel's own commits above
+the frozen head does not retire it. A point the
 human author's own code already addresses is left out (record it under
 "Defects spotted"), and so is a pushback that stood. Never add one the
 panel did not raise.

@@ -55,8 +55,11 @@ re-read the tree or re-run anything until step 4 says you must.
    message that woke you. The root's `Frozen-Head:` is the ROOT frozen head;
    the frozen head of a later version is the one on its cover (step 2).
    The roster is the root's Panel plus every seat named by `X-Lkml-Add-Seats`
-   on a valid escalate push mail (Push modes, below); it never shrinks. Where
-   these steps say "the Panel", they mean the roster.
+   on a valid escalate push mail (Push modes, below); it never shrinks. A seat
+   an escalate adds is owed from the version that answers that escalate, not
+   before: while the escalate is unanswered, the roster for steps 3-4 is the
+   one N was posted to. Where these steps say "the Panel", they mean the
+   roster so read.
 2. **Find the current version N.** It is the highest `X-Version` header on
    any message on the thread, your own covers included. A reply is "on
    version n" when it carries `X-Version: n`; read the headers in the thread
@@ -102,10 +105,11 @@ re-read the tree or re-run anything until step 4 says you must.
    - Otherwise, if the version count is at or above Version-Limit: the same
      reply to the Secretary, saying the limit is reached and naming each seat
      that still blocks and on what. The version count is N, the highest
-     `X-Version` on the thread, plus one for each push mail carrying
-     `X-Lkml-Push-Mode: carry` (a carry posts no version, but it is still a
-     human push): your re-rolls and the human author's pushes count alike,
-     whatever the push mode.
+     `X-Version` on the thread, plus one for each push mail whose sha is no
+     cover's `Frozen-Head:` (a carry, or a push superseded by a newer one,
+     posts no version but is still a human push; a push a version represents
+     is already in N): your re-rolls and the human author's pushes count
+     alike, whatever the push mode.
    - Otherwise: re-roll (below) and post version N+1.
 
 A reply to the Secretary is one short body: which version, that the Panel

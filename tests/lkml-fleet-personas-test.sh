@@ -669,8 +669,14 @@ has_flat "$pra" 'A human-integration version counts toward Version-Limit.' \
     "pr-author.md counts human-integration versions against Version-Limit"
 has_flat "$pra" 'The version count is N, the highest `X-Version` on the thread' \
     "pr-author.md counts every version, human pushes included, against Version-Limit"
-has_flat "$pra" 'plus one for each push mail carrying `X-Lkml-Push-Mode: carry`' \
+has_flat "$pra" 'plus one for each push mail whose sha is no cover'"'"'s `Frozen-Head:`' \
     "pr-author.md counts carry pushes toward Version-Limit"
+has_flat "$pra" 'is owed from the version that answers that escalate' \
+    "pr-author.md owes an escalate's added seats only from the answering version"
+has_flat "$pra" 'a push superseded by a newer one' \
+    "pr-author.md counts superseded pushes toward Version-Limit"
+has_flat "$sec" 'a fix only in the panel'"'"'s own commits above the frozen head does not retire it' \
+    "secretary.md keeps a finding until the frozen head addresses it"
 has_flat "$pra" 'A seat'"'"'s own reply carrying `X-Version: N` always wins' \
     "pr-author.md prefers a seat's own reply on N over a carried verdict"
 for stale in 'The version count is 1 plus the number of' 'does not count toward Version-Limit'; do
