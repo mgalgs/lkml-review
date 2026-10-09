@@ -2640,6 +2640,239 @@ python3 "$renderer" "$quietfull" -o "$quietfull_html"
 contains "quiet-full panel: converged once every X-Seats-named seat has replied non-blocking" \
     "$(<"$quietfull_html")" '<div class="fact"><span class="eyebrow">state</span><b><span class="chip reviewed">converged</span></b></div>'
 
+printf '\n== fleet-store thread: tier line and carried verdicts ==\n'
+# v1: @core, @tests, @docs all answer (root X-Seats names them). The push
+# mail (seq 5) says recheck @core; the author posts v2 (seq 6); only @core
+# answers on v2. @tests and @docs are carried from v1.
+tier_thread() { # tier_thread <dir> <tests-v1-body> <push headers...>
+    local dir="$1" tests_body="$2"; shift 2
+    local ids i
+    mkdir -p "$dir"
+    for i in 1 2 3 4 5 6 7; do ids[i]="$(python3 -c 'import uuid; print(uuid.uuid4())')"; done
+    mk() { # mk <n> <parent-n|0> <from> <to> <subject> <body> [extra header lines...]
+        local n="$1" par="$2" from="$3" to="$4" subj="$5" body="$6"; shift 6
+        {
+            printf 'Message-ID: %s\n' "${ids[n]}"
+            [[ "$par" != 0 ]] && printf 'In-Reply-To: %s\n' "${ids[par]}"
+            printf 'From: %s\nTo: %s\nDate: Wed, 17 Sep 2025 0%d:00:00 +0000\nSubject: %s\n' "$from" "$to" "$n" "$subj"
+            (( $# )) && printf '%s\n' "$@"
+            printf '\n%s\n' "$body"
+        } > "$dir/00$n-${ids[n]}.msg"
+    }
+    mk 1 0 @author @core '[PATCH v1 0/1] tier demo' kickoff \
+        'X-Seats: @core, @tests, @docs' 'X-Lkml-Tier: standard' 'X-Lkml-Tier-Reason: two subsystems touched'
+    mk 2 1 @core @author 'Re: [PATCH v1 0/1] tier demo' 'Reviewed-by: core'
+    mk 3 1 @tests @author 'Re: [PATCH v1 0/1] tier demo' "$tests_body"
+    mk 4 1 @docs @author 'Re: [PATCH v1 0/1] tier demo' 'Reviewed-by: docs'
+    mk 5 1 @postmaster @operator 'Re: [PATCH v1 0/1] tier demo' 'The human pushed.' \
+        'X-Upstream-Head: pr/example 1111111111111111111111111111111111111111' "$@"
+    mk 6 5 @author @core '[PATCH v2 0/1] tier demo' 'v2 on the new head.'
+    mk 7 6 @core @author 'Re: [PATCH v2 0/1] tier demo' 'Reviewed-by: core'
+}
+
+re_dir="$work/fleet-mail/threads/tier-recheck"
+tier_thread "$re_dir" 'Reviewed-by: tests' 'X-Lkml-Push-Mode: recheck' 'X-Lkml-Recheck-Seats: core'
+re_html="$work/tier-recheck.html"
+python3 "$renderer" "$re_dir" -o "$re_html"
+rehtml="$(<"$re_html")"
+# Hand-worked: current version is v2; only @core posted in it. The recheck
+# lists @core, so @tests and @docs (whose latest tagged messages, seq 3 and
+# 4, predate the push at seq 5) are carried, from v1 (the push mail's
+# Subject). All three verdicts are positive: converged.
+contains "(R-tier1) the masthead shows the tier, push and reason" "$rehtml" \
+    'tier standard · push recheck 11111111 · two subsystems touched'
+check "(R-carried1) two carried reviewers, each marked from v1" "2" "$(grep -c '<small>carried from v1</small>' <<<"$rehtml")"
+contains "(R-carried1) a carried reviewer keeps its verdict chip" "$rehtml" \
+    '<span class="chip reviewed">reviewed-by</span><small>carried from v1</small>'
+contains "(R-carried1) @tests, with no message in v2, is still listed" "$rehtml" '<span class="who">tests<small>tests</small></span>'
+contains "(R-state1) carried seats are not silent: converged" "$rehtml" \
+    '<div class="fact"><span class="eyebrow">state</span><b><span class="chip reviewed">converged</span></b></div>'
+re_text="$(python3 "$renderer" --text "$re_dir")"
+contains "(R-text1) --text: the current version's tier line" "$re_text" 'tier standard · push recheck 11111111 · two subsystems touched'
+contains "(R-text1) --text: a carried reviewer is marked and has no messages in v2" "$re_text" $'    0 messages\n    carried from v1'
+check "(R-text1) --text: the tier line is printed once (current version only)" "1" "$(grep -c '^tier standard' <<<"$re_text")"
+re_v1="$(python3 "$renderer" --text --version 1 "$re_dir")"
+case "$re_v1" in *"tier standard"*|*carried*) no "(R-text1) --version 1 shows no tier line or carried mark" "$re_v1" ;; *) ok "(R-text1) --version 1 shows no tier line or carried mark" ;; esac
+
+blk_dir="$work/fleet-mail/threads/tier-blocker"
+tier_thread "$blk_dir" 'Changes-requested: the loop leaks.' 'X-Lkml-Push-Mode: recheck' 'X-Lkml-Recheck-Seats: core'
+blk_html="$work/tier-blocker.html"
+python3 "$renderer" "$blk_dir" -o "$blk_html"
+blkhtml="$(<"$blk_html")"
+# Hand-worked: @tests' carried verdict is Changes-requested. Carry never
+# turns a blocker into a pass: the page must NOT read converged.
+contains "(R-state1) a carried blocker still shows as changes requested" "$blkhtml" \
+    '<span class="chip changes">changes requested</span></b>'
+case "$blkhtml" in *'<b><span class="chip reviewed">converged</span></b>'*) no "(R-state1) a carried blocker is not converged" ;; *) ok "(R-state1) a carried blocker is not converged" ;; esac
+contains "(R-carried1) the carried blocker is marked" "$blkhtml" '<span class="chip changes">changes</span><small>carried from v1</small>'
+
+esc_dir="$work/fleet-mail/threads/tier-escalate"
+tier_thread "$esc_dir" 'Reviewed-by: tests' 'X-Lkml-Push-Mode: escalate' 'X-Lkml-Tier: full' 'X-Lkml-Add-Seats: security'
+esc_html="$work/tier-escalate.html"
+python3 "$renderer" "$esc_dir" -o "$esc_html"
+esc_out="$(<"$esc_html")"
+contains "(R-tier1) an escalate raises the displayed tier" "$esc_out" 'tier full · push escalate 11111111'
+case "$esc_out" in *carried*) no "(R-carried1) escalate carries nothing" ;; *) ok "(R-carried1) escalate carries nothing" ;; esac
+
+low_dir="$work/fleet-mail/threads/tier-lower"
+tier_thread "$low_dir" 'Reviewed-by: tests' 'X-Lkml-Push-Mode: escalate' 'X-Lkml-Tier: quick'
+low_html="$work/tier-lower.html"
+python3 "$renderer" "$low_dir" -o "$low_html"
+contains "(R-tier1) an escalate naming a lower tier does not lower the displayed tier" "$(<"$low_html")" 'tier standard · push escalate'
+
+# A recheck naming only a seat that is not on the panel is malformed:
+# panel-state treats it as absent, so every seat owes a fresh verdict on
+# v2. Hand-worked: only @core answered v2, @tests and @docs are silent, so
+# the page must read pending with nothing carried.
+gh_dir="$work/fleet-mail/threads/tier-ghost"
+tier_thread "$gh_dir" 'Reviewed-by: tests' 'X-Lkml-Push-Mode: recheck' 'X-Lkml-Recheck-Seats: ghost'
+python3 "$renderer" "$gh_dir" -o "$work/tier-ghost.html"
+ghhtml="$(<"$work/tier-ghost.html")"
+case "$ghhtml" in *carried*) no "(R-state2) a malformed recheck carries nothing" ;; *) ok "(R-state2) a malformed recheck carries nothing" ;; esac
+case "$ghhtml" in *'<span class="chip reviewed">converged</span>'*) no "(R-state2) a malformed recheck is not converged" ;; *) ok "(R-state2) a malformed recheck is not converged" ;; esac
+
+# A mode-less push, v2, then a carry mail AFTER v2: a carry moves no
+# version, so @core's verdict on v2 (seq 7) carries "from v2"; @tests and
+# @docs gave nothing on v2 (their verdicts are on v1, before the v2
+# cover), so nothing carries for them and the page is not converged.
+nm_dir="$work/fleet-mail/threads/tier-modeless-then-carry"
+tier_thread "$nm_dir" 'Reviewed-by: tests'
+{
+    printf 'Message-ID: %s\nIn-Reply-To: %s\n' "$(python3 -c 'import uuid; print(uuid.uuid4())')" "$(sed -n 's/^Message-ID: //p' "$nm_dir"/006-*.msg)"
+    printf 'From: @postmaster\nTo: @operator\nDate: Wed, 17 Sep 2025 08:00:00 +0000\nSubject: Re: [PATCH v2 0/1] tier demo\n'
+    printf 'X-Upstream-Head: pr/example 2222222222222222222222222222222222222222\nX-Lkml-Push-Mode: carry\n\nThe human pushed.\n'
+} > "$nm_dir/008-carry.msg"
+python3 "$renderer" "$nm_dir" -o "$work/tier-nm.html"
+nmhtml="$(<"$work/tier-nm.html")"
+check "(R-state2) a carry after v2 marks only the v2 verdict" "1" "$(grep -c '<small>carried from v' <<<"$nmhtml")"
+contains "(R-state2) the one carried mark names v2" "$nmhtml" '<small>carried from v2</small>'
+case "$nmhtml" in *'<span class="chip reviewed">converged</span>'*) no "(R-state2) a carry after v2 is not converged" ;; *) ok "(R-state2) a carry after v2 is not converged" ;; esac
+
+
+# Carry display, hand-worked against lkml-panel-state.py's rules.
+fm() { # fm <dir> <n> <parent-n|0> <from> <to> <subject> <body> [extra header lines...]
+    local dir="$1" n="$2" par="$3" from="$4" to="$5" subj="$6" body="$7"; shift 7
+    mkdir -p "$dir"
+    {
+        printf 'Message-ID: m%s@example.com\n' "$n"
+        [[ "$par" != 0 ]] && printf 'In-Reply-To: m%s@example.com\n' "$par"
+        printf 'From: %s\nTo: %s\nDate: Wed, 17 Sep 2025 %02d:00:00 +0000\nSubject: %s\n' "$from" "$to" "$n" "$subj"
+        (( $# )) && printf '%s\n' "$@"
+        printf '\n%s\n' "$body"
+    } > "$dir/$(printf '%03d' "$n")-m$n.msg"
+}
+SEATS3='X-Seats: @core, @tests, @docs'
+v1_panel() { # v1_panel <dir> <tests-body>: kickoff and three v1 answers
+    fm "$1" 1 0 @author @core '[PATCH v1 0/1] chain demo' kickoff "$SEATS3"
+    fm "$1" 2 1 @core @author 'Re: [PATCH v1 0/1] chain demo' 'Reviewed-by: core'
+    fm "$1" 3 1 @tests @author 'Re: [PATCH v1 0/1] chain demo' "$2"
+    fm "$1" 4 1 @docs @author 'Re: [PATCH v1 0/1] chain demo' 'Reviewed-by: docs'
+}
+UP1='X-Upstream-Head: pr/example 1111111111111111111111111111111111111111'
+UP2='X-Upstream-Head: pr/example 2222222222222222222222222222222222222222'
+
+# A carried blocker must block even when its seat also posted an
+# untagged comment on the new version. Hand-worked: @tests' latest tagged
+# message is v1's Changes-requested; the recheck lists only @core; so it
+# carries as a blocker whatever else @tests wrote on v2.
+d="$work/fleet-mail/threads/chain-untagged"
+v1_panel "$d" 'Changes-requested: leak.'
+fm "$d" 5 1 @postmaster @operator 'Re: [PATCH v1 0/1] chain demo' pushed "$UP1" 'X-Lkml-Push-Mode: recheck' 'X-Lkml-Recheck-Seats: core'
+fm "$d" 6 5 @author @core '[PATCH v2 0/1] chain demo' 'v2.'
+fm "$d" 7 6 @core @author 'Re: [PATCH v2 0/1] chain demo' 'Reviewed-by: core'
+fm "$d" 8 6 @tests @author 'Re: [PATCH v2 0/1] chain demo' 'Just a question in passing, no tag.'
+python3 "$renderer" "$d" -o "$work/chain-untagged.html"
+h="$(<"$work/chain-untagged.html")"
+case "$h" in *'<span class="chip reviewed">converged</span>'*) no "(R-carried2) a carried blocker with an untagged v2 comment is not converged" ;; *) ok "(R-carried2) a carried blocker with an untagged v2 comment is not converged" ;; esac
+contains "(R-carried2) the page reads changes requested" "$h" '<span class="chip changes">changes requested</span>'
+
+# A version posted between the verdict and the push breaks the chain.
+# Hand-worked: v1 verdicts (seq 2-4), v2 plain reroll (seq 5, no push, no
+# verdicts), recheck push (seq 6) listing @core, v3 (seq 7), @core on v3.
+# @tests and @docs gave nothing on v2, so nothing carries: pending.
+d="$work/fleet-mail/threads/chain-skipped"
+v1_panel "$d" 'Reviewed-by: tests'
+fm "$d" 5 1 @author @core '[PATCH v2 0/1] chain demo' 'v2 reroll.'
+fm "$d" 6 5 @postmaster @operator 'Re: [PATCH v2 0/1] chain demo' pushed "$UP1" 'X-Lkml-Push-Mode: recheck' 'X-Lkml-Recheck-Seats: core'
+fm "$d" 7 6 @author @core '[PATCH v3 0/1] chain demo' 'v3.'
+fm "$d" 8 7 @core @author 'Re: [PATCH v3 0/1] chain demo' 'Reviewed-by: core'
+python3 "$renderer" "$d" -o "$work/chain-skipped.html"
+h="$(<"$work/chain-skipped.html")"
+check "(R-carried3) verdicts a skipped version invalidated are not carried" "0" "$(grep -c 'carried' <<<"$h")"
+case "$h" in *'<span class="chip reviewed">converged</span>'*) no "(R-carried3) not converged" ;; *) ok "(R-carried3) not converged" ;; esac
+
+# An escalate's added seat is on the panel the page waits on.
+# Hand-worked: roster core, tests, docs + security; v2 has fresh positives
+# from the first three only; @security is silent: pending.
+d="$work/fleet-mail/threads/chain-escalate"
+v1_panel "$d" 'Reviewed-by: tests'
+fm "$d" 5 1 @postmaster @author 'Re: [PATCH v1 0/1] chain demo' pushed "$UP1" 'X-Lkml-Push-Mode: escalate' 'X-Lkml-Tier: full' 'X-Lkml-Add-Seats: security'
+fm "$d" 6 5 @author @core '[PATCH v2 0/1] chain demo' 'v2.'
+fm "$d" 7 6 @core @author 'Re: [PATCH v2 0/1] chain demo' 'Reviewed-by: core'
+fm "$d" 8 6 @tests @author 'Re: [PATCH v2 0/1] chain demo' 'Reviewed-by: tests'
+fm "$d" 9 6 @docs @author 'Re: [PATCH v2 0/1] chain demo' 'Reviewed-by: docs'
+python3 "$renderer" "$d" -o "$work/chain-escalate.html"
+h="$(<"$work/chain-escalate.html")"
+case "$h" in *'<span class="chip reviewed">converged</span>'*) no "(R-state3) an escalated-in silent seat keeps the page pending" ;; *) ok "(R-state3) an escalated-in silent seat keeps the page pending" ;; esac
+fm "$d" 10 6 @security @author 'Re: [PATCH v2 0/1] chain demo' 'Reviewed-by: security'
+python3 "$renderer" "$d" -o "$work/chain-escalate.html"
+contains "(R-state3) once the added seat answers, converged" "$(<"$work/chain-escalate.html")" '<span class="chip reviewed">converged</span>'
+
+# A carry no author post answers still marks the verdicts carried.
+# Hand-worked: v1 all positive, one carry mail, no v2: all three carried
+# from v1 and the page reads converged; same in --text.
+d="$work/fleet-mail/threads/chain-carry"
+v1_panel "$d" 'Reviewed-by: tests'
+fm "$d" 5 1 @postmaster @operator 'Re: [PATCH v1 0/1] chain demo' pushed "$UP1" 'X-Lkml-Push-Mode: carry'
+python3 "$renderer" "$d" -o "$work/chain-carry.html"
+h="$(<"$work/chain-carry.html")"
+check "(R-carried4) a lone carry marks all three seats, from v1" "3" "$(grep -c '<small>carried from v1</small>' <<<"$h")"
+contains "(R-carried4) and reads converged" "$h" '<span class="chip reviewed">converged</span>'
+check "(R-carried4) --text marks all three" "3" "$(python3 "$renderer" --text "$d" | grep -c 'carried from v1')"
+
+# Stacked carries keep the chain. Hand-worked: a second carry mail
+# (seq 6) leaves the three verdicts, none re-given, carried from v1.
+fm "$d" 6 5 @postmaster @operator 'Re: [PATCH v1 0/1] chain demo' pushed "$UP2" 'X-Lkml-Push-Mode: carry'
+python3 "$renderer" "$d" -o "$work/chain-carry.html"
+check "(R-carried5) a second carry keeps all three marks" "3" "$(grep -c '<small>carried from v1</small>' "$work/chain-carry.html")"
+
+# Recheck, then a pure rebase. Hand-worked: v1 all positive; the recheck
+# lists @core; v2 is posted and @core re-gives on it (seq 7); a carry mail
+# follows (seq 8). @tests and @docs carry v1's verdicts through BOTH pushes
+# (recheck did not list them, carry lists nobody): "carried from v1";
+# @core's verdict is v2's: "carried from v2". Three marks, converged.
+d="$work/fleet-mail/threads/chain-recheck-carry"
+v1_panel "$d" 'Reviewed-by: tests'
+fm "$d" 5 1 @postmaster @operator 'Re: [PATCH v1 0/1] chain demo' pushed "$UP1" 'X-Lkml-Push-Mode: recheck' 'X-Lkml-Recheck-Seats: core'
+fm "$d" 6 5 @author @core '[PATCH v2 0/1] chain demo' 'v2.'
+fm "$d" 7 6 @core @author 'Re: [PATCH v2 0/1] chain demo' 'Reviewed-by: core'
+fm "$d" 8 7 @postmaster @operator 'Re: [PATCH v2 0/1] chain demo' pushed "$UP2" 'X-Lkml-Push-Mode: carry'
+python3 "$renderer" "$d" -o "$work/chain-rc.html"
+h="$(<"$work/chain-rc.html")"
+check "(R-chain1) recheck then carry: @tests and @docs carried from v1" "2" "$(grep -c '<small>carried from v1</small>' <<<"$h")"
+check "(R-chain1) @core's v2 verdict carried from v2" "1" "$(grep -c '<small>carried from v2</small>' <<<"$h")"
+contains "(R-chain1) and the page reads converged" "$h" '<span class="chip reviewed">converged</span>'
+check "(R-chain1) --text marks the same three" "3" "$(python3 "$renderer" --text "$d" | grep -c 'carried from v')"
+
+# Recheck, then recheck. Hand-worked: pushes at seq 5 and 7 both list @core;
+# v2 at 6, v3 at 8. @tests and @docs carry v1 through both (never listed),
+# from v1; @core owes a fresh verdict on v3, so is not carried.
+d="$work/fleet-mail/threads/chain-recheck-recheck"
+v1_panel "$d" 'Reviewed-by: tests'
+fm "$d" 5 1 @postmaster @operator 'Re: [PATCH v1 0/1] chain demo' pushed "$UP1" 'X-Lkml-Push-Mode: recheck' 'X-Lkml-Recheck-Seats: core'
+fm "$d" 6 5 @author @core '[PATCH v2 0/1] chain demo' 'v2.'
+fm "$d" 7 6 @postmaster @operator 'Re: [PATCH v2 0/1] chain demo' pushed "$UP2" 'X-Lkml-Push-Mode: recheck' 'X-Lkml-Recheck-Seats: core'
+fm "$d" 8 7 @author @core '[PATCH v3 0/1] chain demo' 'v3.'
+python3 "$renderer" "$d" -o "$work/chain-rr.html"
+check "(R-chain2) recheck then recheck: the unlisted seats carry from v1" "2" "$(grep -c '<small>carried from v1</small>' "$work/chain-rr.html")"
+check "(R-chain2) the twice-listed seat is not carried" "2" "$(python3 "$renderer" --text "$d" | grep -c 'carried from v1')"
+
+# R-none: a thread with none of the new headers renders with neither.
+case "$fhtml$(python3 "$renderer" --text "$fleet")" in
+    *"tier "*|*"carried from"*|*'>carried'*) no "(R-none) the existing fleet thread shows no tier line and no carried mark" ;;
+    *) ok "(R-none) the existing fleet thread shows no tier line and no carried mark" ;;
+esac
+
 printf '\n== fleet-store thread: convergence still fires once the only seated reviewer has spoken ==\n'
 full="$work/fleet-mail/threads/full-thread"
 mkdir -p "$full"

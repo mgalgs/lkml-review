@@ -199,9 +199,9 @@ behavior described under "One round" and "The human author pushes" stands.
      secretary for the panel verdict (`To: @secretary` only);
    - if some seat still blocks and the version count has reached
      `Version-Limit`, it asks the secretary to close the panel as it stands,
-     naming what still blocks. The count is 1 plus the author seat's own
-     re-rolls; a version that is the human author's integration (below) does
-     not count;
+     naming what still blocks. The count is the version number: every
+     version counts, and so does every human push, whatever its push mode
+     (below);
    - otherwise it re-rolls. It posts version N+1 as one cover reply, `To:`
      the panel, with a `Version: N+1` key in its reply stanza. The body holds
      a `Frozen-Head:` line, a changelog answering each review point, a
@@ -210,7 +210,7 @@ behavior described under "One round" and "The human author pushes" stands.
    branch and sha the author committed, and moves the thread's review target
    to them. The panel wakes on the cover, each seat checked out at the new
    sha, and the round repeats. A verdict on an old version does not carry
-   forward.
+   forward, except as a human push's push mode says (below).
 
 ### The human author pushes
 
@@ -218,7 +218,9 @@ The panel never pushes to the PR, but its human author may integrate part of
 what the panel produced and push a new head H. When that happens, an
 upstream-moved mail arrives on the existing thread, `To: @pr-author`, carrying
 the header `X-Upstream-Head: <branch> <sha>`. Only the postmaster stamps that
-header, so a sender cannot forge it. The sender and the mechanism that
+header, so a sender cannot forge it. A thread run in tiers (below) may also
+say how the push is handled; a mail that says `carry` is addressed
+`To: @operator`, which resolves to no seat, so it wakes nobody. The sender and the mechanism that
 notices the push live outside this repo; this repo only reads the result.
 The mail may also carry a `Base: <sha>` line (the commit the PR now sits on)
 and the human's own integration notes, between the lines
@@ -251,11 +253,11 @@ by the human author; no reason given`; the persona never invents one and never
 asks. Notes are used only when their marker line names this version and a
 series name ending in the first 7 hex characters of the root's `Frozen-Head`.
 Nothing the human did not take is rebased forward: it counts as rejected, and
-the version's target is exactly H. Human-integration versions do not count
-toward `Version-Limit`.
+the version's target is exactly H. Human-integration versions count toward
+`Version-Limit` like every other version.
 
-The panel reviews it like any version, and every seat reviews it afresh;
-verdicts do not carry forward. A suggestion the human author did not take is
+With no push mode on the mail, the panel reviews it like any version, and
+every seat reviews it afresh; verdicts do not carry forward. A suggestion the human author did not take is
 **decided**: a seat may raise it again only as a blocking objection that says
 why the decision is wrong. Otherwise the author answers it as decided and
 changes nothing.
@@ -269,6 +271,83 @@ accepts a value other than the root's only when a message earlier on the
 thread carries an `X-Upstream-Head` with that same sha. Otherwise it reports
 the mismatch as a reason and falls back to the root's frozen head: the author
 cannot declare its own commits frozen and so earn a `SIGNED-OFF`.
+
+#### Tiers and push modes
+
+A thread may say how big a panel it needs and how a push is to be handled.
+Both are headers; the CI side that kicks off the thread and notices the push
+sets them (`lkml-fleet-kickoff.sh --header` and `--attach-file`), and this
+repo only reads them.
+
+On the root (kickoff) message:
+
+| Header | Value | Meaning |
+|---|---|---|
+| `X-Lkml-Tier` | `quick`, `standard` or `full` | the tier the tier step chose |
+| `X-Lkml-Tier-Reason` | one line, at most 200 characters | why, for the dashboard |
+
+The roster is still the root's `Panel:` line (stamped as `X-Seats` too). A
+smaller tier is a smaller *named* roster, never "fewer seats happened to
+answer": convergence needs a positive verdict from every seat in the roster.
+Per-seat focus text travels as an attached file `tier-focus.md`, one
+`## @<seat>` section per seat; the gate never reads it.
+
+On an upstream-moved mail, `X-Lkml-Push-Mode` says how the push is handled:
+
+| `X-Lkml-Push-Mode` | Extra headers | Who is woken | Verdicts on the new version |
+|---|---|---|---|
+| `carry` | none | nobody (`To: @operator`) | every seat's latest verdict carries forward unchanged |
+| `recheck` | `X-Lkml-Recheck-Seats: core, tests` | `@pr-author`, who posts the version to those seats only, scoped to the new commits | seats not listed carry forward; listed seats need a fresh verdict |
+| `escalate` | `X-Lkml-Add-Seats: security` (may be empty) and `X-Lkml-Tier: <new tier>` | `@pr-author`, who posts the version to the whole new roster | the roster becomes the root's `Panel:` plus every `X-Lkml-Add-Seats` so far; every seat needs a fresh verdict |
+| absent | none | as above | every seat needs a fresh verdict |
+
+A carry mail is identified by its header, never by who it is addressed to. It
+is `To: @operator` so that it wakes no one, and is not a question for the
+operator and never flags the thread. Seat names in the two seat headers may be
+bare or `@`-prefixed.
+
+Rules that hold in every mode:
+
+- The tier only ratchets up within a thread. An `escalate` may name the
+  current tier (to add seats) or a higher one; one that names a lower tier,
+  or none, is ignored as malformed and treated as absent.
+- A carried verdict is only ever a verdict that seat actually gave on an
+  earlier version of the same thread. A seat with nothing to carry still owes
+  one.
+- A blocking verdict carries forward as blocking. Carry never turns a
+  blocker into a pass.
+- `carry` is only correct when every commit on the new head is patch-identical
+  to the previous head's (a pure rebase). The tier step decides that from
+  `git patch-id`; the gate trusts the header and does not recompute it.
+- Every human push counts toward `Version-Limit`, whatever the mode.
+- A malformed push mode (an unknown value, a `recheck` with no seat on the
+  panel, an `escalate` naming a lower or unknown tier, or a push mode on a
+  message with no `X-Upstream-Head`, which only the postmaster stamps) is
+  treated as absent and reported as a reason in the gate's output. It is
+  never silently honoured, and, being a reason, blocks `CONVERGED`.
+
+How the gate reads a carry:
+
+- **A carry version.** When every push since the posted version is a `carry`,
+  the PR is on a synthetic next version. A carry does not move the review
+  target (only the author's post does), so the gate takes that version's
+  target and its frozen head from the newest push's `X-Upstream-Head`:
+  `target.source` is `carry`, `target.version` is the posted version plus one
+  per push, and `frozen_head` is `{sha, "upstream"}`. A panel that carries to
+  convergence therefore signs off at the new head. Every seat's latest verdict
+  and the secretary's trailer carry forward. A carried `RESPIN` contradicts a
+  target that is its own frozen head, so it blocks `CONVERGED` like any other
+  such verdict.
+- **A posted version that answers a push.** The author's first post after a
+  push, whose `Frozen-Head` is that push's head, carries every seat the pushes
+  since the previous version do not withhold: `recheck` withholds the seats it
+  lists, `escalate` and a missing or malformed mode withhold all. The
+  secretary's trailer is not carried here; the post needs a fresh one.
+- Carrying chains: a seat that carried onto a recheck version carries through
+  a later carry push too.
+- `seats[].carried` says whether a seat's verdict was given on this version
+  (`false`) or carried (`true`), and `seats[].version` is the version it was
+  given on, so a display can say "carried from v3".
 
 ### Closing
 
@@ -315,6 +394,16 @@ and `RESPIN` only when it differs; the other is a contradiction, named in
 `reasons`, and never `CONVERGED`. With none known, `SIGNED-OFF` is valid only
 on v1 and `RESPIN` only above it. The change is additive, so the schema stays
 `lkml-panel-state/1`.
+
+The same additive change gives the object `tier` (`{"name", "reason",
+"source", "message_id"}`: the root's, superseded by the newest valid
+`escalate`), `panel` (the effective roster: the root's `Panel:` plus
+escalated-in seats; `roster.panel` stays the root's), `push` (the newest
+upstream-moved mail: its `mode`, `seats`, `malformed` text and whether it is
+`answered`, or null), `seats[].carried`, `secretary.carried`, and a
+`target.source` of `carry`. A carry version's frozen head is the pushed head,
+so a panel that carries to convergence is `SIGNED-OFF` at the new head. See
+"Tiers and push modes".
 
 The gate also compares the newest `X-Upstream-Head` on the thread with the
 resolved frozen head. When they differ, the human author's newest push has no
@@ -473,8 +562,11 @@ agents:
   The postmaster runs `$FORK_SANDBOX_HOOKS_DIR/wake-when.lkml-panel` before
   each spawn of that seat. The gate asks `lkml-panel-state.py` whether every
   panel seat holds a verdict on the current version, and defers the wake
-  until they do. A human push, mail from anyone not on the panel, and a
-  thread with no target always wake the author.
+  until they do. A carried verdict counts as answered, so a `recheck`
+  version waits only on the seats it lists and a `carry` version on nobody;
+  a seat escalated in by a push is a panel reviewer like any other. A human
+  push, mail from anyone not on the panel, and a thread with no target always
+  wake the author.
 - **`budget-reserve`** names both seats because the author's final post
   comes before the secretary's verdict. A reserve held for the secretary
   alone would refuse that post, and the secretary would never be woken.

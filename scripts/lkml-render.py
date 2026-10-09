@@ -51,6 +51,23 @@ without parsing the HTML and without lkml-review installed. Like
 and CSS may still be redesigned freely, but the block cannot change
 shape without bumping the schema id.
 
+A fleet thread whose root carries X-Lkml-Tier / X-Lkml-Tier-Reason, or
+that has an upstream-moved mail (X-Upstream-Head) with X-Lkml-Push-Mode,
+shows the tier in force (the root's, ratcheted up by escalate pushes; an
+escalate naming a lower tier is ignored) and the newest push in the
+masthead (HTML) and as one 'tier ...' line under the current version's
+counts (--text). Under a carry push, or a recheck push for the seats it
+does not list, a seated reviewer whose latest tagged message predates the
+push is shown "carried from vK" (K: the version the verdict was given
+on) and counts as having answered; its carried verdict still shows and
+still stops the page reading converged. A carry push moves no version, so
+a carry no author post answers still marks the current version's
+verdicts carried. A valid escalate's X-Lkml-Add-Seats grow the seated
+panel the page waits on. These are facts read from
+headers alone, never a convergence judgment (lkml-panel-state.py owns
+that). A thread with none of those headers renders exactly as before, and
+the lkml-thread/1 block does not change.
+
 --text --version N restricts the render to one version's own section
 (exactly what the whole-series --text render prints for that version,
 byte for byte) plus, only when any exist, a late-replies block:
@@ -586,6 +603,12 @@ def read_fleet_msg(path, seq, attachment_root):
         "to": fleet_addr_list(hdr.get("To", "")),
         "cc": fleet_addr_list(hdr.get("Cc", "")),
         "x_seats": hdr.get("X-Seats"),
+        "x_upstream_head": hdr.get("X-Upstream-Head"),
+        "x_push_mode": hdr.get("X-Lkml-Push-Mode"),
+        "x_recheck_seats": hdr.get("X-Lkml-Recheck-Seats"),
+        "x_add_seats": hdr.get("X-Lkml-Add-Seats"),
+        "x_tier": hdr.get("X-Lkml-Tier"),
+        "x_tier_reason": hdr.get("X-Lkml-Tier-Reason"),
     }
 
 
@@ -829,6 +852,190 @@ def is_patch(m):
 
 def who_of(m):
     return esc(m["from"].split(" (AI persona)")[0].split(" <")[0]) or esc(m["persona"])
+
+
+FLEET_TIERS = ("quick", "standard", "full")
+
+
+def fleet_root(roots):
+    """The genuine thread root: the structural root that arrived first."""
+    return min(roots, key=lambda r: r["seq"]) if roots else None
+
+
+def fleet_valid_escalates(root, msgs):
+    """The escalate pushes the tier ratchet accepts, oldest first: each
+    names a known tier at or above the one in force (the root's, or any
+    when the root names none). One naming a lower or unknown tier is
+    ignored; lkml-panel-state.py reports it."""
+    tier = (root.get("x_tier") or "").strip()
+    tier = tier if tier in FLEET_TIERS else None
+    out = []
+    for m in fleet_pushes(msgs):
+        if (m.get("x_push_mode") or "").strip() != "escalate":
+            continue
+        new = (m.get("x_tier") or "").strip()
+        if new in FLEET_TIERS and (tier is None
+                                   or FLEET_TIERS.index(new) >= FLEET_TIERS.index(tier)):
+            tier = new
+            out.append(m)
+    return out
+
+
+def fleet_seated(roots, msgs=None):
+    """The seated panel (bare names) from the genuine thread root's
+    X-Seats, plus the X-Lkml-Add-Seats of each valid escalate when `msgs`
+    is given, or None. See render_series for why only the root counts."""
+    root = fleet_root(roots)
+    if root is not None and root.get("fleet") and root.get("x_seats"):
+        seated = set(fleet_addr_list(root["x_seats"]))
+        if msgs:
+            for m in fleet_valid_escalates(root, msgs):
+                seated |= {a for a in fleet_addr_list(m.get("x_add_seats") or "")
+                           if re.fullmatch(r"[a-z0-9][a-z0-9-]*", a)}
+        return seated
+    return None
+
+
+def fleet_pushes(msgs):
+    """Upstream-moved mails (X-Upstream-Head), oldest first."""
+    return sorted((m for m in msgs.values() if m.get("x_upstream_head")),
+                  key=lambda m: m["seq"])
+
+
+def fleet_tier_info(roots, msgs):
+    """The tier line's facts, or None when the thread has no tier or
+    push-mode header: {"tier", "reason", "escalated_at", "push_mode",
+    "push_sha"}. The tier is the root's, ratcheted up by each escalate
+    push naming the same or a higher one; one naming a lower tier, or
+    an unknown one, is ignored (lkml-panel-state.py reports it)."""
+    root = fleet_root(roots)
+    if root is None or not root.get("fleet"):
+        return None
+    tier = (root.get("x_tier") or "").strip()
+    tier = tier if tier in FLEET_TIERS else None
+    reason = (root.get("x_tier_reason") or "").strip()[:200]
+    at = None
+    pushes = fleet_pushes(msgs)
+    moded = [m for m in pushes if (m.get("x_push_mode") or "").strip()]
+    for m in fleet_valid_escalates(root, msgs):
+        tier, at = m["x_tier"].strip(), m["id"][:7]
+        if (m.get("x_tier_reason") or "").strip():
+            reason = m["x_tier_reason"].strip()[:200]
+    if not (root.get("x_tier") or root.get("x_tier_reason") or moded):
+        return None
+    last = moded[-1] if moded else None
+    return {"tier": tier, "reason": reason or None, "escalated_at": at,
+            "push_mode": last["x_push_mode"].strip() if last else None,
+            "push_sha": last["x_upstream_head"].split()[-1][:8] if last else None}
+
+
+def fleet_carried(msgs, seated, author, covers):
+    """{persona: {"from": 'K'|None, "tag": strongest tag|None}} for each
+    seated reviewer the version chain really carries into the current
+    version. `covers` is every version's (cover seq, version), oldest
+    first -- the real version boundaries, nested covers included. The
+    rules are the ones lkml-panel-state.py applies, so a display never
+    reads a carry the panel would refuse:
+    - every upstream-moved mail between two versions counts, and each
+      must say carry, or recheck without listing the seat and naming at
+      least one seated reviewer (a recheck that names none is malformed:
+      nothing carries); escalate, or no mode, carries nothing;
+    - a push a cover follows is answered by that version: a seat carries
+      the verdict it gave on the version before it, and the chain keeps
+      walking back while every push in between lets the seat carry
+      (recheck then carry carries a seat the recheck did not list through
+      both);
+    - carry pushes no cover follows move no version (the review target
+      stays the last posted one): the seat's verdict on the current
+      version carries, however many stack up. A recheck, or any other
+      mode, no author post answers carries nothing yet;
+    - a seat's verdict is its latest tagged message and must predate the
+      push; `recheck` seats it lists, and seats with nothing to carry on
+      that one version, owe a fresh verdict.
+    K is the version the carried verdict was given on."""
+    pushes = fleet_pushes(msgs)
+    if not pushes or not seated or not covers:
+        return {}
+    # Version boundaries; a trailing (inf) boundary stands for the
+    # synthetic version a stack of carry pushes makes after the last cover.
+    bounds = [(c[0], c[1]) for c in covers]
+    after = [p for p in pushes if p["seq"] > bounds[-1][0]]
+    if after:
+        if any((p.get("x_push_mode") or "").strip() != "carry" for p in after):
+            return {}
+        bounds.append((float("inf"), None))
+    out = {}
+    for persona in sorted(seated - {author}):
+        tagged = [m for m in msgs.values()
+                  if m["persona"] == persona and m["tags"] and m.get("fleet")]
+        if not tagged:
+            continue
+        latest = max(tagged, key=lambda m: m["seq"])
+        # Walk back one version boundary at a time, as lkml-panel-state.py's
+        # carry_chain does: a link holds while the version answers pushes
+        # that all let this seat carry.
+        for i in range(len(bounds) - 1, 0, -1):
+            q = [p for p in pushes if bounds[i - 1][0] < p["seq"] < bounds[i][0]]
+            if not q or not all(fleet_push_permits(p, persona, seated, author)
+                                for p in q):
+                break
+            if bounds[i - 1][0] < latest["seq"] < q[-1]["seq"]:
+                out[persona] = {"from": str(bounds[i - 1][1]),
+                                "tag": strongest_tag(latest["tags"]),
+                                "name": latest["from"]}
+                break
+    return out
+
+
+def fleet_push_permits(push, persona, seated, author):
+    """Does this upstream-moved mail let `persona` carry? carry always;
+    recheck unless it lists the seat, and only when it names at least one
+    seated reviewer (one that names none is malformed: nothing carries)."""
+    mode = (push.get("x_push_mode") or "").strip()
+    if mode == "carry":
+        return True
+    if mode != "recheck":
+        return False
+    listed = set(fleet_addr_list(push.get("x_recheck_seats") or ""))
+    return bool(listed & (seated - {author})) and persona not in listed
+
+
+def apply_carried(entries, strongest, carried):
+    """Mark the current version's reviewer entries that carried, and add
+    an entry (0 messages, the carried verdict) for each carried seat that
+    has none. Returns the carried tags that are NOT already in the
+    version's own tally rows, which the state chip must still weigh."""
+    have = {r["persona"] for r in entries}
+    extra_tags = []
+    for r in entries:
+        if r["persona"] in carried:
+            r["carried"] = carried[r["persona"]]
+    for persona, info in carried.items():
+        if persona not in have:
+            entries.append({"persona": persona, "name": info["name"] or persona,
+                            "harness": "", "network": "", "model": "",
+                            "count": 0, "rev": 0, "nak": 0, "carried": info})
+        # An entry can exist without a verdict (an untagged comment on
+        # the version): the carried tag must still be weighed.
+        if info["tag"] and persona not in strongest:
+            strongest[persona] = info["tag"]
+            extra_tags.append(info["tag"])
+    entries.sort(key=lambda r: r["persona"])
+    return extra_tags
+
+
+def carried_label(info):
+    return f"carried from v{info['from']}" if info["from"] else "carried"
+
+
+def tier_summary(info):
+    """The tier facts as display parts, absent ones omitted."""
+    parts = []
+    if info["tier"]:
+        parts.append(f"tier {info['tier']}")
+    if info["push_mode"]:
+        parts.append(f"push {info['push_mode']} {info['push_sha']}")
+    return parts
 
 
 def reviewer_rollup(version_msgs, author, tally_rows):
@@ -1100,6 +1307,8 @@ def render_reviewer_panel(series_dir, version, reviewer_entries, strongest):
         small = f'<small>{esc(role)}</small>'
         tag = strongest.get(r["persona"])
         chip = chip_html(tag) if tag else '<span class="chip pending">pending</span>'
+        if r.get("carried"):
+            chip += f'<small>{esc(carried_label(r["carried"]))}</small>'
         rows.append(f'        <div class="mrow">\n'
                     f'          {badge(r["persona"])}\n'
                     f'          <span class="who">{esc(r["name"])}{small}</span>\n'
@@ -1365,8 +1574,6 @@ def render_series(series_dir, assume_root_version=None):
             series_title = mm.group(1).strip()
     state = ""
     if cur:
-        s = strongest_tag([t for _t, latest in cur["rows"]
-                           for _p, _m, tags in latest.values() for t in tags])
         # The seated panel comes from the thread ROOT's X-Seats header,
         # stamped once at kickoff time by lkml-fleet-kickoff.sh --seats,
         # never from a version's own To:/Cc: -- those name wave one on
@@ -1385,16 +1592,20 @@ def render_series(series_dir, assume_root_version=None):
         # require_full_coverage) with a lower version marker in its own
         # Subject outrank the real kickoff. The genuine root is
         # whichever structural root actually arrived first.
-        seated = None
-        root = min(roots, key=lambda r: r["seq"]) if roots else None
-        if root is not None and root.get("fleet"):
-            x_seats = root.get("x_seats")
-            if x_seats:
-                seated = set(fleet_addr_list(x_seats))
+        seated = fleet_seated(roots, msgs)
+        carried = (fleet_carried(msgs, seated, cur["cover"]["persona"],
+                                 [(version_data[v]["cover"]["seq"], v) for v in versions])
+                   if cur["cover"].get("fleet") and seated else {})
+        # A carried verdict is still a verdict: its tag weighs in the
+        # state chip like any other, so a carried blocker cannot read
+        # as converged.
+        carried_tags = apply_carried(cur["reviewer_entries"], cur["strongest"], carried)
+        s = strongest_tag([t for _t, latest in cur["rows"]
+                           for _p, _m, tags in latest.values() for t in tags] + carried_tags)
         silent = set()
         if cur["cover"].get("fleet") and seated is not None:
             replied = {m["persona"] for m in cur["version_msgs"] if m["persona"]}
-            silent = seated - replied - {cur["cover"]["persona"]}
+            silent = seated - replied - {cur["cover"]["persona"]} - set(carried)
         if s == "NAK":
             state = '<span class="chip nak">nak</span>'
         elif s == "Changes-requested":
@@ -1405,12 +1616,20 @@ def render_series(series_dir, assume_root_version=None):
             state = '<span class="chip reviewed">converged</span>'
         else:
             state = '<span class="chip pending">pending</span>'
+    tier_info = fleet_tier_info(roots, msgs)
+    tier_html = ""
+    if tier_info:
+        bits = tier_summary(tier_info)
+        if tier_info["reason"]:
+            bits.append(tier_info["reason"])
+        if bits:
+            tier_html = " \u00b7 " + " \u00b7 ".join(esc(b) for b in bits)
     masthead = (f'<header class="masthead">\n'
                 f'  <div class="masthead-in">\n'
                 f'    <div class="grow">\n'
                 f'      <p class="eyebrow">lkml-mode series \u00b7 {esc(name)} \u00b7 v{current} \u00b7 {n_replies_cur} replies</p>\n'
                 f'      <h1>{esc(series_title)}</h1>\n'
-                f'      <p class="sub">{len(versions)} version{"s" if len(versions) != 1 else ""} \u00b7 {n_msgs_cur} messages in v{current}</p>\n'
+                f'      <p class="sub">{len(versions)} version{"s" if len(versions) != 1 else ""} \u00b7 {n_msgs_cur} messages in v{current}{tier_html}</p>\n'
                 f'    </div>\n'
                 f'    <div class="facts">\n'
                 f'      <div class="fact"><span class="eyebrow">version</span><b>v{current}</b></div>\n'
@@ -2043,6 +2262,8 @@ def render_text_reviewers(out, name, series_dir, reviewer_entries):
         if r["nak"]:
             counts.append(f"{r['nak']} NAK")
         out.append(f"    {', '.join(counts)}")
+        if r.get("carried"):
+            out.append(f"    {carried_label(r['carried'])}")
         if persona_brief_path(series_dir, r["persona"]):
             out.append(f"    brief: {name}/personas/{r['persona']}.md")
 
@@ -2054,7 +2275,7 @@ def compute_version_sections(series_dir, assume_root_version=None):
     data. Shared so --version reuses the exact same per-version
     computation the whole-series render does, rather than slicing that
     render's text."""
-    name, msgs, _roots, all_version_roots = build(series_dir, assume_root_version)
+    name, msgs, roots, all_version_roots = build(series_dir, assume_root_version)
     covers = [m for m in all_version_roots
               if is_cover_subject(m["subject"]) or m.get("assumed_cover")]
     require_fleet_covers(series_dir, msgs, covers)
@@ -2086,8 +2307,25 @@ def compute_version_sections(series_dir, assume_root_version=None):
             "cover": cover, "version_roots": version_roots,
             "version_msgs": version_msgs, "rows": rows,
             "personas": personas, "reviewer_entries": reviewer_entries,
-            "pcols": pcols,
+            "pcols": pcols, "tier_line": None,
         }
+    # Tier and carried verdicts belong to the CURRENT version's section
+    # only (the same facts render_series shows in the HTML). Applied
+    # after pcols, so the matrix columns are unchanged.
+    if versions and version_data[versions[-1]]["cover"].get("fleet"):
+        cur = version_data[versions[-1]]
+        seated = fleet_seated(roots, msgs)
+        if seated:
+            apply_carried(cur["reviewer_entries"], {},
+                          fleet_carried(msgs, seated, cur["cover"]["persona"],
+                                        [(version_data[v]["cover"]["seq"], v)
+                                         for v in versions]))
+        info = fleet_tier_info(roots, msgs)
+        if info:
+            bits = tier_summary(info)
+            if info["reason"]:
+                bits.append(info["reason"])
+            cur["tier_line"] = " \u00b7 ".join(bits) or None
     return name, msgs, versions, version_data, fleet_cover_ids, rendered_ids
 
 
@@ -2107,8 +2345,10 @@ def render_text_version_lines(series_dir, name, v, d, fleet_cover_ids):
     n_patches = len(rows) - 1
     reviewer_entries = d["reviewer_entries"]
     lines = [f"{name} v{v}",
-             f"{n_patches} patches · {n_replies} replies · {len(reviewer_entries)} reviewers",
-             ""]
+             f"{n_patches} patches · {n_replies} replies · {len(reviewer_entries)} reviewers"]
+    if d.get("tier_line"):
+        lines.append(d["tier_line"])
+    lines.append("")
     render_text_tally(lines, rows, d["pcols"])
     lines.append("")
     if reviewer_entries:

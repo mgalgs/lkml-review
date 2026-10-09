@@ -54,9 +54,9 @@ root2="$work/store2"
 mkdir -p -- "$root2/threads/$t3"
 
 # write_msg <store> <thread> <nnn> <id> <date> <from> <to> <cc> <subject>
-#            <hops> <in-reply-to> <body>
+#            <hops> <in-reply-to> <body> [<extra header lines, newline-separated>]
 write_msg() {
-    local store="$1" t="$2" nnn="$3" id="$4" date="$5" from="$6" to="$7" cc="$8" subj="$9" hops="${10}" irt="${11}" body="${12}"
+    local store="$1" t="$2" nnn="$3" id="$4" date="$5" from="$6" to="$7" cc="$8" subj="$9" hops="${10}" irt="${11}" body="${12}" extra="${13:-}"
     local f="$store/threads/$t/$nnn-$id.msg"
     {
         printf 'Message-ID: %s\n' "$id"
@@ -68,6 +68,7 @@ write_msg() {
         printf 'Subject: %s\n' "$subj"
         [[ -n "$irt" ]] && printf 'In-Reply-To: %s\n' "$irt"
         printf 'X-Hops: %s\n' "$hops"
+        [[ -n "$extra" ]] && printf '%s\n' "$extra"
         printf '\n'
         printf '%s\n' "$body"
     } > "$f"
@@ -1075,6 +1076,150 @@ PATH="$STUB_PATH" "$status" "$t1" --mail-root "$root" >/dev/null 2>&1
 PATH="$STUB_PATH" "$status" --list --mail-root "$root" >/dev/null 2>&1
 AFTER="$(snapshot_store "$root")"
 check "store is byte-identical after runs" "$BEFORE" "$AFTER"
+
+printf '\n== tier line and carried marks ==\n'
+# One store with several small threads, each a v1 panel (@review-one,
+# @review-three seated by the root's X-Seats) that then gets a push mail.
+# tier_thread <label, for the reader> <root headers> <push headers>: three messages besides
+# the root -- both seats' v1 Reviewed-by, then the push mail (seq 4).
+root9="$work/store9"
+UP='X-Upstream-Head: pr/example 1111111111111111111111111111111111111111'
+tier_thread() {
+    local rh="$2" ph="$3" t="99999999-$4-4999-8999-999999999999"
+    mkdir -p -- "$root9/threads/$t"
+    write_msg "$root9" "$t" 001 "${4}0010000-0000-4000-8000-000000000001" "$(D 0)" \
+        '@author' '@panel' '' '[PATCH v1 0/1] Tiered' 8 '' 'Cover.' \
+        "X-Seats: @review-one, @review-three${rh:+$'\n'$rh}"
+    write_msg "$root9" "$t" 002 "${4}0020000-0000-4000-8000-000000000002" "$(D 1)" \
+        '@review-one' '@author' '' 'Re: [PATCH v1 0/1] Tiered' 7 '' $'Fine.\n\nReviewed-by: One'
+    write_msg "$root9" "$t" 003 "${4}0030000-0000-4000-8000-000000000003" "$(D 2)" \
+        '@review-three' '@author' '' 'Re: [PATCH v1 0/1] Tiered' 7 '' $'Fine.\n\nReviewed-by: Three'
+    if [[ -n "$ph" ]]; then
+        write_msg "$root9" "$t" 004 "${4}0040000-0000-4000-8000-000000000004" "$(D 3)" \
+            '@postmaster' '@operator' '' 'Re: [PATCH v1 0/1] Tiered' 7 '' 'The author pushed.' "$UP"$'\n'"$ph"
+    fi
+    OUT="$(PATH="$STUB_PATH" "$status" "$t" --mail-root "$root9" 2>&1)"; RC=$?
+}
+
+tier_thread tier1 $'X-Lkml-Tier: standard\nX-Lkml-Tier-Reason: two subsystems' '' f1
+contains "(F-tier1) root tier headers: tier line, no push" "$OUT" "Tier: standard  push: none  reason: two subsystems"
+
+tier_thread tier2 $'X-Lkml-Tier: standard\nX-Lkml-Tier-Reason: two subsystems' \
+    $'X-Lkml-Push-Mode: escalate\nX-Lkml-Tier: full\nX-Lkml-Add-Seats: security' f2
+contains "(F-tier2) a valid escalate raises the tier and names where" "$OUT" "Tier: full (escalated at f20040"
+contains "(F-tier2) and the push is shown with its head" "$OUT" "push: escalate 11111111  reason: two subsystems"
+
+tier_thread tier3 $'X-Lkml-Tier: standard' $'X-Lkml-Push-Mode: escalate\nX-Lkml-Tier: quick' f3
+contains "(F-tier3) an escalate naming a lower tier does not lower it" "$OUT" "Tier: standard  push: escalate 11111111  reason: -"
+
+tier_thread none '' '' f4
+case "$OUT" in *"Tier:"*) no "(F-none) no new headers: no Tier line" "$OUT" ;; *) ok "(F-none) no new headers: no Tier line" ;; esac
+case "$OUT" in *carried*) no "(F-none) and no carried mark" "$OUT" ;; *) ok "(F-none) and no carried mark" ;; esac
+OUT="$(PATH="$STUB_PATH" "$status" "$t1" --mail-root "$root" 2>&1)"
+case "$OUT" in *"Tier:"*|*carried*) no "(F-none) the existing t1 screen is unchanged" "$OUT" ;; *) ok "(F-none) the existing t1 screen is unchanged" ;; esac
+
+# A recheck carries only once the author's v2 cover answers it (seq 5);
+# before that the verdicts on v1 are still the fresh ones.
+tier_thread re $'X-Lkml-Tier: standard' $'X-Lkml-Push-Mode: recheck\nX-Lkml-Recheck-Seats: review-one' f5
+case "$OUT" in *carried*) no "(F-re1) an unanswered recheck carries nothing yet" "$OUT" ;; *) ok "(F-re1) an unanswered recheck carries nothing yet" ;; esac
+t5="99999999-f5-4999-8999-999999999999"
+write_msg "$root9" "$t5" 005 "f50050000-0000-4000-8000-000000000005" "$(D 4)" \
+    '@author' '@review-one' '' '[PATCH v2 0/1] Tiered' 8 '' 'v2.'
+OUT="$(PATH="$STUB_PATH" "$status" "$t5" --mail-root "$root9" 2>&1)"
+contains "(F-re1) recheck: the unlisted seat is carried" "$OUT" "@review-three  sent 1  last $(D 2)  tags: Reviewed-by (carried from v1)"
+contains "(F-re1) the listed seat is not" "$OUT" "@review-one  sent 1  last $(D 1)  tags: Reviewed-by
+"
+
+tier_thread carry $'X-Lkml-Tier: quick' 'X-Lkml-Push-Mode: carry' f6
+contains "(F-carry1) carry: the first seat is carried" "$OUT" "tags: Reviewed-by (carried from v1)"
+check "(F-carry1) carry: both seats are marked" "2" "$(grep -c '(carried from v1)' <<<"$OUT")"
+
+tier_thread esc $'X-Lkml-Tier: quick' $'X-Lkml-Push-Mode: escalate\nX-Lkml-Tier: full' f7
+contains "(F-esc1) escalate: the screen rendered with both seats" "$OUT" "@review-three  sent 1"
+check "(F-esc1) escalate: nobody is carried" "0" "$(grep -c carried <<<"$OUT")"
+
+tier_thread abs $'X-Lkml-Tier: quick' 'X-Lkml-Tier-Reason: pushed, no mode' f8
+contains "(F-esc1) a push with no mode: the screen rendered with both seats" "$OUT" "@review-three  sent 1"
+check "(F-esc1) a push with no mode: nobody is carried" "0" "$(grep -c carried <<<"$OUT")"
+
+# A sender the root's X-Seats does not name is never marked: swap the
+# root's seats for one that names neither reviewer.
+t9="99999999-f9-4999-8999-999999999999"
+tier_thread nonseat $'X-Lkml-Tier: quick' 'X-Lkml-Push-Mode: carry' f9
+sed -i 's/^X-Seats: .*/X-Seats: @someone-else/' "$root9/threads/$t9/001-"*.msg
+OUT="$(PATH="$STUB_PATH" "$status" "$t9" --mail-root "$root9" 2>&1)"
+contains "(F-nonseat1) the screen rendered, with the carry push" "$OUT" "push: carry 11111111"
+check "(F-nonseat1) a sender not in X-Seats is never marked" "0" "$(grep -c carried <<<"$OUT")"
+
+# Stacked carry mails keep the chain: two carries, no reviewer reply in
+# between, and all three verdicts (the v1 ones) are still carried from v1.
+tier_thread carry2 $'X-Lkml-Tier: quick' 'X-Lkml-Push-Mode: carry' f10
+t10="99999999-f10-4999-8999-999999999999"
+write_msg "$root9" "$t10" 005 "f100050-0000-4000-8000-000000000005" "$(D 4)" \
+    '@postmaster' '@operator' '' 'Re: [PATCH v1 0/1] Tiered' 7 '' 'Pushed again.' \
+    "X-Upstream-Head: pr/example 2222222222222222222222222222222222222222"$'\nX-Lkml-Push-Mode: carry'
+OUT="$(PATH="$STUB_PATH" "$status" "$t10" --mail-root "$root9" 2>&1)"
+check "(F-carry2) a second carry keeps both seats marked" "2" "$(grep -c '(carried from v1)' <<<"$OUT")"
+
+# A cover posted after the verdict withholds it: v1 verdicts, a plain v2
+# cover, then a carry mail: nothing was said on v2, so nothing carries.
+tier_thread skip $'X-Lkml-Tier: quick' '' f11
+t11="99999999-f11-4999-8999-999999999999"
+write_msg "$root9" "$t11" 004 "f110040-0000-4000-8000-000000000004" "$(D 3)" \
+    '@author' '@panel' '' '[PATCH v2 0/1] Tiered' 8 '' 'v2.'
+write_msg "$root9" "$t11" 005 "f110050-0000-4000-8000-000000000005" "$(D 4)" \
+    '@postmaster' '@operator' '' 'Re: [PATCH v2 0/1] Tiered' 7 '' 'Pushed.' \
+    "$UP"$'\nX-Lkml-Push-Mode: carry'
+OUT="$(PATH="$STUB_PATH" "$status" "$t11" --mail-root "$root9" 2>&1)"
+contains "(F-carry3) the skip case rendered" "$OUT" "push: carry 11111111"
+check "(F-carry3) verdicts a later cover left unanswered are not carried" "0" "$(grep -c carried <<<"$OUT")"
+
+# Recheck, v2 cover, a fresh verdict from the listed seat, then a carry:
+# the chain walks back through both pushes. @review-three's verdict is
+# still v1's, carried through the recheck and the carry; @review-one's is
+# v2's, carried by the carry alone.
+tier_thread chain $'X-Lkml-Tier: standard' $'X-Lkml-Push-Mode: recheck\nX-Lkml-Recheck-Seats: review-one' f12
+t12="99999999-f12-4999-8999-999999999999"
+write_msg "$root9" "$t12" 005 "f120050-0000-4000-8000-000000000005" "$(D 4)" \
+    '@author' '@review-one' '' '[PATCH v2 0/1] Tiered' 8 '' 'v2.'
+write_msg "$root9" "$t12" 006 "f120060-0000-4000-8000-000000000006" "$(D 5)" \
+    '@review-one' '@author' '' 'Re: [PATCH v2 0/1] Tiered' 7 '' $'Fine.\n\nReviewed-by: One'
+write_msg "$root9" "$t12" 007 "f120070-0000-4000-8000-000000000007" "$(D 6)" \
+    '@postmaster' '@operator' '' 'Re: [PATCH v2 0/1] Tiered' 7 '' 'Pushed.' \
+    "X-Upstream-Head: pr/example 2222222222222222222222222222222222222222"$'\nX-Lkml-Push-Mode: carry'
+OUT="$(PATH="$STUB_PATH" "$status" "$t12" --mail-root "$root9" 2>&1)"
+contains "(F-chain1) recheck then carry: the unlisted seat is carried from v1" "$OUT" "@review-three  sent 1  last $(D 2)  tags: Reviewed-by (carried from v1)"
+contains "(F-chain1) the listed seat's v2 verdict is carried from v2" "$OUT" "tags: Reviewed-by (carried from v2)"
+
+# Recheck then recheck (a different seat): the seat neither listed carries
+# through both from v1; each listed seat's earlier verdict does not carry
+# through its own recheck.
+tier_thread chain2 $'X-Lkml-Tier: standard' $'X-Lkml-Push-Mode: recheck\nX-Lkml-Recheck-Seats: review-one' f13
+t13="99999999-f13-4999-8999-999999999999"
+write_msg "$root9" "$t13" 005 "f130050-0000-4000-8000-000000000005" "$(D 4)" \
+    '@author' '@review-one' '' '[PATCH v2 0/1] Tiered' 8 '' 'v2.'
+write_msg "$root9" "$t13" 006 "f130060-0000-4000-8000-000000000006" "$(D 5)" \
+    '@postmaster' '@author' '' 'Re: [PATCH v2 0/1] Tiered' 7 '' 'Pushed.' \
+    "X-Upstream-Head: pr/example 2222222222222222222222222222222222222222"$'\nX-Lkml-Push-Mode: recheck\nX-Lkml-Recheck-Seats: review-one'
+write_msg "$root9" "$t13" 007 "f130070-0000-4000-8000-000000000007" "$(D 6)" \
+    '@author' '@review-one' '' '[PATCH v3 0/1] Tiered' 8 '' 'v3.'
+OUT="$(PATH="$STUB_PATH" "$status" "$t13" --mail-root "$root9" 2>&1)"
+contains "(F-chain2) recheck then recheck: the unlisted seat is carried from v1" "$OUT" "@review-three  sent 1  last $(D 2)  tags: Reviewed-by (carried from v1)"
+check "(F-chain2) the twice-listed seat is not marked" "1" "$(grep -c carried <<<"$OUT")"
+
+# A seat an escalate added to the roster is a seat: after a v2 cover, its
+# verdict, and a carry, the mark appears although the root's X-Seats lacks it.
+tier_thread chain3 $'X-Lkml-Tier: quick' $'X-Lkml-Push-Mode: escalate\nX-Lkml-Tier: full\nX-Lkml-Add-Seats: security' f14
+t14="99999999-f14-4999-8999-999999999999"
+write_msg "$root9" "$t14" 005 "f140050-0000-4000-8000-000000000005" "$(D 4)" \
+    '@author' '@panel' '' '[PATCH v2 0/1] Tiered' 8 '' 'v2.'
+write_msg "$root9" "$t14" 006 "f140060-0000-4000-8000-000000000006" "$(D 5)" \
+    '@security' '@author' '' 'Re: [PATCH v2 0/1] Tiered' 7 '' $'Fine.\n\nReviewed-by: Sec'
+write_msg "$root9" "$t14" 007 "f140070-0000-4000-8000-000000000007" "$(D 6)" \
+    '@postmaster' '@operator' '' 'Re: [PATCH v2 0/1] Tiered' 7 '' 'Pushed.' \
+    "X-Upstream-Head: pr/example 2222222222222222222222222222222222222222"$'\nX-Lkml-Push-Mode: carry'
+OUT="$(PATH="$STUB_PATH" "$status" "$t14" --mail-root "$root9" 2>&1)"
+contains "(F-chain3) an escalated-in seat is marked carried" "$OUT" "@security  sent 1  last $(D 5)  tags: Reviewed-by (carried from v2)"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))

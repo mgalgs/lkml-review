@@ -35,13 +35,34 @@
 # sent, who was addressed, what was tagged, what is unanswered.
 #
 # Screen sections, in order:
-#   header     short id, root message's Subject, message count, date span
+#   header     short id, root message's Subject, message count, date span;
+#              then, only when the thread carries a tier or push-mode
+#              header (X-Lkml-Tier, X-Lkml-Tier-Reason on the root,
+#              X-Lkml-Push-Mode on an upstream-moved mail), one line:
+#                Tier: <tier|-> [(escalated at <id7>)]  push: <mode sha8|none>  reason: <text|->
+#              the tier is the root's, ratcheted up by escalate pushes
+#              (never down: an escalate naming a lower tier is ignored),
+#              and push is the newest upstream-moved mail's mode and head.
+#              A thread with none of those headers prints no such line.
 #   versions   each v<N> found in a Subject, with the date it first
 #              appeared and how many messages carry it. Where no Subject
 #              carries a version the thread is not a patch series, and is
 #              said so in one line rather than given an invented v1.
 #   seats      one row per sender: messages sent, date of its latest, the
-#              tags it has applied; then, separately, every address that
+#              tags it has applied (suffixed " (carried from vK)" for a
+#              seat named in the root's X-Seats whose latest tagged message
+#              predates the newest upstream-moved mail, when that mail's
+#              push mode carries it: `carry` carries every seat,
+#              `recheck` all but the X-Lkml-Recheck-Seats it lists. The mark
+#              is observable fact -- the push said so and the tag is older
+#              -- not a judgment that the verdict still stands. A carry
+#              no new cover follows moves no version, and stacked carries
+#              keep the mark; a cover posted after the verdict, or a
+#              recheck no cover has answered yet, carries nothing. K is
+#              the version the verdict was given on; the chain walks back
+#              through earlier versions while every push in between lets
+#              the seat carry, as lkml-panel-state.py does, and a seat an
+#              escalate added counts as seated); then, separately, every address that
 #              was To/Cc'd but has never sent. That set is the most useful
 #              thing on the screen: a seat that was woken and never spoke
 #              is indistinguishable from one that agreed, and those are
@@ -267,6 +288,7 @@ fs_body_tags() {
 # order (until a thread passes 999 messages).
 MSG_FILE=(); MSG_NNN=(); MSG_ID=(); MSG_DATE=(); MSG_FROM=()
 MSG_TO=(); MSG_CC=(); MSG_SUBJ=(); MSG_IRT=(); MSG_HOPS=(); MSG_TAGS=()
+MSG_UPSTREAM=(); MSG_PUSH_MODE=(); MSG_RECHECK=(); MSG_ADD=(); MSG_TIER=(); MSG_TIER_REASON=()
 load_thread() {
     local t="$1" f base id
     local dir="$MAIL_ROOT/threads/$t"
@@ -284,6 +306,12 @@ load_thread() {
         MSG_IRT+=("$(fs_header "$f" In-Reply-To)")
         MSG_HOPS+=("$(fs_header "$f" X-Hops)")
         MSG_TAGS+=("$(fs_body_tags "$f")")
+        MSG_UPSTREAM+=("$(fs_header "$f" X-Upstream-Head)")
+        MSG_PUSH_MODE+=("$(fs_header "$f" X-Lkml-Push-Mode)")
+        MSG_RECHECK+=("$(fs_header "$f" X-Lkml-Recheck-Seats)")
+        MSG_ADD+=("$(fs_header "$f" X-Lkml-Add-Seats)")
+        MSG_TIER+=("$(fs_header "$f" X-Lkml-Tier)")
+        MSG_TIER_REASON+=("$(fs_header "$f" X-Lkml-Tier-Reason)")
         MSG_FILE+=("$f")
     done
     (( ${#MSG_FILE[@]} > 0 )) || die "thread '$t' has no messages."
@@ -881,6 +909,35 @@ n="${#MSG_FILE[@]}"
 printf 'Thread: %s  %s\n' "${RESOLVED:0:7}" "${MSG_SUBJ[0]}"
 printf 'Messages: %d   %s .. %s\n' "$n" "${MSG_DATE[0]}" "${MSG_DATE[$(( n - 1 ))]}"
 
+# The tier line. The tier only ratchets up: the root's, then each escalate
+# push that names the same or a higher one. A push mode on a message with
+# no X-Upstream-Head is not a push and is not read here.
+tier_rank() { case "$1" in quick) echo 1 ;; standard) echo 2 ;; full) echo 3 ;; *) echo 0 ;; esac; }
+escalate_adds=" "
+tier_name=""; tier_reason=""; tier_at=""; push_text="none"; saw_tier_header=0
+[[ -n "${MSG_TIER[0]}" || -n "${MSG_TIER_REASON[0]}" ]] && saw_tier_header=1
+(( $(tier_rank "${MSG_TIER[0]}") > 0 )) && tier_name="${MSG_TIER[0]}"
+tier_reason="${MSG_TIER_REASON[0]:0:200}"
+for (( i = 1; i < n; i++ )); do
+    [[ -n "${MSG_UPSTREAM[$i]}" ]] || continue
+    [[ -n "${MSG_PUSH_MODE[$i]}" ]] || continue
+    saw_tier_header=1
+    head_sha="${MSG_UPSTREAM[$i]##* }"
+    push_text="${MSG_PUSH_MODE[$i]} ${head_sha:0:8}"
+    if [[ "${MSG_PUSH_MODE[$i]}" == escalate ]]; then
+        new="$(tier_rank "${MSG_TIER[$i]}")"
+        if (( new > 0 && new >= $(tier_rank "$tier_name") )); then
+            tier_name="${MSG_TIER[$i]}"; tier_at="${MSG_ID[$i]:0:7}"
+            for a in ${MSG_ADD[$i]//,/ }; do escalate_adds+="@${a#@} "; done
+            [[ -n "${MSG_TIER_REASON[$i]}" ]] && tier_reason="${MSG_TIER_REASON[$i]:0:200}"
+        fi
+    fi
+done
+if (( saw_tier_header )); then
+    printf 'Tier: %s%s  push: %s  reason: %s\n' "${tier_name:--}" \
+        "${tier_at:+ (escalated at $tier_at)}" "$push_text" "${tier_reason:--}"
+fi
+
 printf '\n== Versions ==\n'
 declare -A V_FIRST=() V_COUNT=()
 for (( i = 0; i < n; i++ )); do
@@ -901,7 +958,7 @@ else
 fi
 
 printf '\n== Seats ==\n'
-declare -A SEAT_COUNT=() SEAT_LAST=() SEAT_TAGS=()
+declare -A SEAT_COUNT=() SEAT_LAST=() SEAT_TAGS=() SEAT_TAG_IDX=()
 for (( i = 0; i < n; i++ )); do
     from="${MSG_FROM[$i]}"
     [[ -n "$from" ]] || continue
@@ -910,11 +967,78 @@ for (( i = 0; i < n; i++ )); do
     SEAT_LAST[$from]="${MSG_DATE[$i]}"
     if [[ -n "${MSG_TAGS[$i]}" ]]; then
         SEAT_TAGS[$from]="${MSG_TAGS[$i]%"${MSG_TAGS[$i]##*[! ]}"}"
+        SEAT_TAG_IDX[$from]="$i"
     fi
 done
+
+# Carried marks. Only the NEWEST upstream-moved mail counts, and only when
+# it says carry or recheck; under escalate, or with no mode, nothing is
+# carried. Only a sender the root's X-Seats names is a seat. The version
+# boundaries are the covers ('[PATCH vN 0/M]' subjects, nested ones
+# included), not the pushes: a carry moves no version, so stacked carry
+# mails leave a verdict carried, while a cover posted after the verdict
+# means the seat said nothing on that version and withholds it.
+cover_re='^\[[^]]*[[:space:]]0/[0-9]+\]'
+COVERS=(); COVER_VER=(); PUSHES=()
+for (( i = 0; i < n; i++ )); do
+    if [[ "${MSG_SUBJ[$i]}" =~ $cover_re ]]; then
+        COVERS+=("$i"); COVER_VER+=("$(fs_subject_versions "${MSG_SUBJ[$i]}" | tail -n1)")
+    fi
+    (( i > 0 )) && [[ -n "${MSG_UPSTREAM[$i]}" ]] && PUSHES+=("$i")
+done
+# The panel: the root's X-Seats plus what each valid escalate added.
+root_seats=" "
+for a in $(fs_header "${MSG_FILE[0]}" X-Seats | tr ',' ' '); do root_seats+="@${a#@} "; done
+root_seats+="${escalate_adds# }"
+# Version boundaries, with a trailing one for the synthetic version a stack
+# of carry pushes makes after the last cover. No such version when any push
+# after the last cover is not a carry: nothing carries into the current one.
+BOUNDS=("${COVERS[@]}"); BOUND_VER=("${COVER_VER[@]}"); carry_ok=1
+if (( ${#COVERS[@]} > 0 )); then
+    for p in "${PUSHES[@]}"; do
+        (( p > COVERS[-1] )) || continue
+        [[ "${MSG_PUSH_MODE[$p]}" == carry ]] || carry_ok=0
+        (( ${#BOUNDS[@]} == ${#COVERS[@]} )) && { BOUNDS+=(999999999); BOUND_VER+=(""); }
+    done
+fi
+# push_permits <push idx> <sender>: may the sender carry through this push?
+# carry always; recheck unless it lists the sender, and only when it lists
+# at least one seated reviewer (a recheck naming none is malformed).
+push_permits() {
+    case "${MSG_PUSH_MODE[$1]}" in
+        carry) return 0 ;;
+        recheck) ;;
+        *) return 1 ;;
+    esac
+    local listed=" " seated=0 a
+    for a in ${MSG_RECHECK[$1]//,/ }; do listed+="@${a#@} "; done
+    for a in $listed; do [[ "$root_seats" == *" $a "* ]] && seated=1; done
+    (( seated )) || return 1
+    [[ "$listed" != *" $2 "* ]]
+}
+carried_mark() { # carried_mark <sender>: ' (carried from vK)' or nothing
+    [[ -n "${SEAT_TAG_IDX[$1]:-}" && "$root_seats" == *" $1 "* ]] || return 0
+    (( carry_ok && ${#BOUNDS[@]} > 1 )) || return 0
+    local idx="${SEAT_TAG_IDX[$1]}" b p lo hi newest found
+    # Walk back one version boundary at a time: a link holds while every
+    # push in between lets the sender carry.
+    for (( b = ${#BOUNDS[@]} - 1; b > 0; b-- )); do
+        lo="${BOUNDS[$((b - 1))]}"; hi="${BOUNDS[$b]}"; found=0; newest=-1
+        for p in "${PUSHES[@]}"; do
+            (( p > lo && p < hi )) || continue
+            found=1; newest="$p"
+            push_permits "$p" "$1" || return 0
+        done
+        (( found )) || return 0
+        if (( idx > lo && idx < newest )); then
+            printf ' (carried%s)' "${COVER_VER[$((b - 1))]:+ from v${COVER_VER[$((b - 1))]}}"
+            return 0
+        fi
+    done
+}
 for s in $(printf '%s\n' "${!SEAT_COUNT[@]}" | sort); do
-    printf '%s  sent %d  last %s  tags: %s\n' \
-        "$s" "${SEAT_COUNT[$s]}" "${SEAT_LAST[$s]}" "${SEAT_TAGS[$s]:--}"
+    printf '%s  sent %d  last %s  tags: %s%s\n' \
+        "$s" "${SEAT_COUNT[$s]}" "${SEAT_LAST[$s]}" "${SEAT_TAGS[$s]:--}" "$(carried_mark "$s")"
 done
 
 # Addressed but never sent. A list address is turned into its members
