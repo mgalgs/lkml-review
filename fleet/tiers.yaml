@@ -100,3 +100,17 @@ rules:
   - name: docs-touched
     paths: ["docs/**"]
     add-seat: docs
+
+# Optional LLM tie-break, off unless this block exists. One request to an
+# OpenAI-compatible /chat/completions endpoint, made only when a matching
+# rule says `ambiguous: true` (and to write per-seat focus text). It may
+# raise the tier, never lower it below the rules' answer. Any failure
+# (timeout, HTTP error, bad answer) falls back to the rules and is
+# recorded in the output; it never fails the script. The bearer token is
+# read from the environment variable named here, not from this file.
+#
+# llm:
+#   base-url: https://llm.example.com/v1
+#   model: example-model
+#   api-key-env: LKML_TIER_LLM_KEY   # optional; no variable, no auth header
+#   timeout-seconds: 20              # optional, default 20
