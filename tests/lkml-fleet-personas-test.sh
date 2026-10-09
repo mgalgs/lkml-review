@@ -62,6 +62,13 @@ fi
 # of how to run its whole suite); otherwise the persona falls back to
 # tests/*-test.sh. Pin both paths and the contract path's reporting.
 ci_md="$personas_dir/ci.md"
+has_flat() { # like has, but the file is flattened so a needle may span a wrap
+    if tr '\n' ' ' < "$1" | sed 's/  */ /g' | grep -qF -- "$2"; then
+        ok "$3"
+    else
+        no "$3" "'$2' not found in $(basename "$1")"
+    fi
+}
 has() { # $1=file $2=fixed string $3=description
     if grep -qF -- "$2" "$1"; then
         ok "$3"
@@ -658,10 +665,30 @@ has "$pra" '## Decided' \
     "pr-author.md's integration cover has a Decided section"
 has "$pra" 'A suggestion the human author did not take is decided.' \
     "pr-author.md treats a dropped suggestion as decided"
-has "$pra" 'A human-integration version does not count toward Version-Limit.' \
-    "pr-author.md excludes human-integration versions from Version-Limit"
-has "$pra" 'The version count is 1 plus the number of' \
-    "pr-author.md counts only its own re-rolls against Version-Limit"
+has_flat "$pra" 'A human-integration version counts toward Version-Limit.' \
+    "pr-author.md counts human-integration versions against Version-Limit"
+has_flat "$pra" 'The version count is N, the highest `X-Version` on the thread' \
+    "pr-author.md counts every version, human pushes included, against Version-Limit"
+for stale in 'The version count is 1 plus the number of' 'does not count toward Version-Limit'; do
+    if tr '\n' ' ' < "$pra" | sed 's/  */ /g' | grep -qF -- "$stale"; then
+        no "pr-author.md dropped the old Version-Limit rule: $stale" "still present"
+    else
+        ok "pr-author.md dropped the old Version-Limit rule: $stale"
+    fi
+done
+# Push modes (tier effort): one home, in pr-author.
+# shellcheck disable=SC2016  # literal backticks in the needles
+for needle in \
+    '### Push modes' '`X-Lkml-Push-Mode`' '`X-Lkml-Recheck-Seats`' '`X-Lkml-Add-Seats`' \
+    '`X-Lkml-Tier-Reason`' 'quick < standard < full' 'treated as absent' \
+    'which seats were added and why' "verdicts carry forward" \
+    '`git range-diff head-<prev 12 hex>...head-<this 12 hex>`' '`review-v1`' \
+    'A blocking verdict carries as blocking.' 'cannot be confirmed' \
+    'owes no version' 'seats owed on' 'never shrinks' \
+    'A finding the human reimplemented'
+do
+    has_flat "$pra" "$needle" "pr-author.md pins: $needle"
+done
 has "$pra" '[PATCH v<N+1> 0/0]' \
     "pr-author.md's integration cover subject is 0/0"
 }

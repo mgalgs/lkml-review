@@ -54,6 +54,9 @@ re-read the tree or re-run anything until step 4 says you must.
    Take the Panel, Secretary and Version-Limit from the root, never from the
    message that woke you. The root's `Frozen-Head:` is the ROOT frozen head;
    the frozen head of a later version is the one on its cover (step 2).
+   The roster is the root's Panel plus every seat named by `X-Lkml-Add-Seats`
+   on a valid escalate push mail (Push modes, below); it never shrinks. Where
+   these steps say "the Panel", they mean the roster.
 2. **Find the current version N.** It is the highest `X-Version` header on
    any message on the thread, your own covers included. A reply is "on
    version n" when it carries `X-Version: n`; read the headers in the thread
@@ -65,21 +68,26 @@ re-read the tree or re-run anything until step 4 says you must.
    cover of yours carries `Frozen-Head: <that sha>`. In the thread render the
    header shows as an `Upstream-Head: <branch> <sha>` line directly after
    `Hops:`, never `> `-quoted; a quoted one is body text, not a push.
-   Only the newest counts; older ones are superseded. If one is unanswered:
+   Only the newest counts; older ones are superseded. A push mail carrying
+   `X-Lkml-Push-Mode: carry` owes no version: skip it when finding the newest
+   push, and never treat it as unanswered. If one is unanswered:
    when every Panel seat has replied on N (step 4's test), or you have already
    asked the Secretary for vN (step 5's test), run **Integrating the human author's push** (below)
    instead of steps 6-7. This reopens a converged thread. If seats are still
    reviewing N, end the wake with no reply as step 4 says; you will be woken
    again when they reply, and you integrate then. A push never aborts a round.
-4. **Has every Panel seat replied on N?** For each seat on the Panel line,
-   look for a reply from that seat carrying `X-Version: N`. If any seat has
+4. **Has every Panel seat replied on N?** For each of the seats owed on
+   N (every roster seat, unless N answers a recheck push: then only the seats
+   that push listed), look for a reply from that seat carrying `X-Version: N`. If any seat has
    none, the panel is still reviewing: **write no reply file and end the
    wake.** A missing reply is never read as agreement.
 5. **Have you already asked for the verdict?** If the thread already holds a
    message from you addressed to the Secretary and written after version N
    was posted, end the wake with no reply. A second request buys a second
    summary.
-6. **Read each seat's latest verdict on N.** A verdict is the tag on the last
+6. **Read each seat's latest verdict on N.** A seat not owed on N has its
+   latest verdict on an earlier version carried forward; a seat with none owes
+   one, so step 4 waits for it. A blocking verdict carries as blocking. A verdict is the tag on the last
    non-empty, non-quoted line of that seat's latest reply carrying
    `X-Version: N`. Non-blocking: `Reviewed-by:`, `Acked-by:`, `Tested-by:`
    (the colon matters). Blocking: `Changes-requested`, `Question`, `NAK`. A
@@ -92,11 +100,9 @@ re-read the tree or re-run anything until step 4 says you must.
      no `Version:` key.
    - Otherwise, if the version count is at or above Version-Limit: the same
      reply to the Secretary, saying the limit is reached and naming each seat
-     that still blocks and on what. The version count is 1 plus the number of
-     versions whose target sha differs from their own frozen head: your
-     re-rolls. A version whose target IS its frozen head is the human
-     author's own (the PR's head, or an integration of a push) and does not
-     count.
+     that still blocks and on what. The version count is N, the highest
+     `X-Version` on the thread: your re-rolls and the human author's pushes
+     count alike, whatever the push mode.
    - Otherwise: re-roll (below) and post version N+1.
 
 A reply to the Secretary is one short body: which version, that the Panel
@@ -166,8 +172,9 @@ Post version N+1 as **one** reply file: the cover. Its stanza:
     Reply-To-Id: <the message that woke you>
     Version: 3
 
-- `To:` is the Panel list, spelled out address by address from the root's
-  `Panel:` line. Never reply-all, and never leave `To:` empty.
+- `To:` is the roster, spelled out address by address from the root's
+  `Panel:` line (plus any seats added by escalation). Never reply-all, and
+  never leave `To:` empty.
 - `Subject:` is `[PATCH v<N+1> 0/<K>] <series subject>`, where K is the number
   of commits above the frozen head of vN (`git rev-list --count <frozen head>..HEAD`)
   and the series subject is the one the previous cover carried after its
@@ -212,6 +219,42 @@ does (checklist step 3). You post H, unchanged, as version N+1, and say
 plainly that it is the human's integration and which of your commits it took.
 You do NOT rebase or carry over any commit of yours the human did not take:
 what they did not take counts as rejected, and the new version is exactly H.
+
+### Push modes
+
+The upstream-moved mail may carry `X-Lkml-Push-Mode` (read it the way you read
+`X-Upstream-Head`; the render may spell it `Lkml-Push-Mode`). It says how the
+push is handled; the mail you answer is the one whose sha is the `Frozen-Head:`
+of the version it belongs to. Cases:
+
+- `carry`: you are not woken, and every seat's latest verdict carries forward.
+  Nothing for you to do; never count it as unanswered (checklist step 3).
+- `recheck`: `X-Lkml-Recheck-Seats` lists bare seat names (`core, tests`; map
+  each to `@name`, ignore any not on the roster and say so in the cover). Post
+  the integration cover `To:` those seats only. Scope it to the new commits:
+  name the range `<previous head>..<H>`, and name the exact range-diff to run,
+  `git range-diff head-<prev 12 hex>...head-<this 12 hex>`. Pod branches:
+  `review-v<N>` is the review target at version N, and `head-<12 hex>` is one
+  per human push, the 12 hex being the first 12 characters of the Message-ID
+  of the upstream-moved mail that announced it, hyphens removed. Find a push
+  mail's branch with `git branch --list 'head-*'`, and check `git rev-parse` of
+  it equals the mail's sha. When the previous head is vN's frozen head from the
+  root, its branch is `review-v1`. If a branch cannot be confirmed, say so and
+  give the commit range only; never invent a branch name. Say in the cover
+  that the other seats' verdicts carry forward. A blocking verdict carries as
+  blocking. A recheck list empty after dropping unknown seats is treated as
+  absent, and the cover says so.
+- `escalate`: `X-Lkml-Add-Seats` (may be empty) names seats to add, and
+  `X-Lkml-Tier` the new tier. Post `To:` the whole new roster, and say which
+  seats were added and why: the reason is the mail's `X-Lkml-Tier-Reason`,
+  else the reason in its body, else `no reason given`. Every seat owes a fresh
+  verdict. The tier only ratchets: `quick < standard < full`, starting from
+  the root's `X-Lkml-Tier`. A mail naming a lower tier than the current one,
+  or an unknown mode, is malformed and treated as absent; say so in one line
+  in the cover.
+- absent: the whole roster, as written below.
+
+Steps:
 
 1. Record vN's sha (`git rev-parse HEAD`), the branch you are on
    (`git branch --show-current`) and vN's frozen head. Check that
@@ -277,7 +320,8 @@ what they did not take counts as rejected, and the new version is exactly H.
 
 ### The human-integration cover
 
-Its stanza is a re-roll cover's: `To:` the Panel, spelled out; `Reply-To-Id:`
+Its stanza is a re-roll cover's: `To:` the roster, spelled out (a recheck
+narrows it, see Push modes); `Reply-To-Id:`
 the upstream-moved mail; `Version: <N+1>`; `Subject: [PATCH v<N+1> 0/0]
 <series subject>`. The body, in this order:
 
@@ -294,13 +338,16 @@ the upstream-moved mail; `Version: <N+1>`; `Subject: [PATCH v<N+1> 0/0]
   any note that the human's block was ignored.
 - `## Decided`: a suggestion the human author did not take is decided.
   Re-raise it only as a blocking objection saying why the decision is wrong;
-  otherwise do not raise it again.
+  otherwise do not raise it again. A finding the human reimplemented in their
+  own code instead of taking your commit is not decided against: it is
+  addressed if the code at H does what the finding asked, and the seat that
+  raised it judges that on the code, not on any explanation.
 - `## Testing`: as usual, for H.
 - `## Since v<N>`: `git range-diff <vN frozen head>..<vN sha> <base>..<H>` when
   a Base is known, else `git diff --stat <vN sha> <H>` with a note that it may
   include base-branch changes if the human rebased.
 
-A human-integration version does not count toward Version-Limit. The panel
+A human-integration version counts toward Version-Limit. The panel
 reviews it like any version, and a panel that accepts it can close
 `SIGNED-OFF`, because its target is its frozen head.
 
