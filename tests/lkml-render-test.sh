@@ -2920,6 +2920,45 @@ t="$(python3 "$renderer" --text "$d")"
 contains "(R-ci2) a CI header on a seat's mail is shown as untrusted" "$t" 'ci none from @operator (header seen from @core)'
 case "$t" in *"ci success"*) no "(R-ci2) a seat's CI header is not shown as a result" ;; *) ok "(R-ci2) a seat's CI header is not shown as a result" ;; esac
 
+# X-Lkml-CI-From on the root names the trusted CI sender (panel-state's rule).
+ci_case() { # ci_case <name> <root-extra|''> <ci-sender>
+    local d="$work/fleet-mail/threads/$1"
+    ci_thread "$d" "$2" "$3"
+    python3 "$renderer" --text "$d"
+}
+t="$(ci_case ci-from-ok 'X-Lkml-CI-From: @ci-x' @ci-x)"
+contains "(R-cf1) root names @ci-x: its CI mail shows its status" "$t" 'ci success 11111111 https://ci.example.com/run/7'
+t="$(ci_case ci-from-bare 'X-Lkml-CI-From: ci-x' @ci-x)"
+contains "(R-cf1) a bare name is accepted" "$t" 'ci success 11111111'
+t="$(ci_case ci-from-op 'X-Lkml-CI-From: @ci-x' @operator)"
+contains "(R-cf2) root names @ci-x: @operator's CI mail is untrusted" "$t" 'ci none from @ci-x (header seen from @operator)'
+case "$t" in *"ci success"*) no "(R-cf2) @operator's CI header is not a result" ;; *) ok "(R-cf2) @operator's CI header is not a result" ;; esac
+t="$(ci_case ci-from-bad 'X-Lkml-CI-From: not an address' @operator)"
+contains "(R-cf4) a malformed root value falls back to @operator" "$t" 'ci success 11111111'
+d="$work/fleet-mail/threads/ci-from-two"
+ci_thread "$d" 'X-Lkml-CI-From: @ci-x' @ci-x
+python3 - "$d" <<'PY'
+import glob, sys
+f = sorted(glob.glob(sys.argv[1] + "/001-*.msg"))[0]
+txt = open(f).read().replace("X-Lkml-CI-From: @ci-x\n", "X-Lkml-CI-From: @ci-x\nX-Lkml-CI-From: @ci-y\n", 1)
+open(f, "w").write(txt)
+PY
+t="$(python3 "$renderer" --text "$d")"
+contains "(R-cf4) two differing root values fall back to @operator" "$t" 'ci none from @operator (header seen from @ci-x)'
+# A non-root X-Lkml-CI-From is ignored: @operator stays the sender.
+d="$work/fleet-mail/threads/ci-from-nonroot"
+ci_thread "$d" '' @core
+python3 - "$d" <<'PY'
+import glob, sys
+f = sorted(glob.glob(sys.argv[1] + "/002-*.msg"))[0]
+txt = open(f).read().replace("\n\n", "\nX-Lkml-CI-From: @core\n\n", 1)
+open(f, "w").write(txt)
+PY
+t="$(python3 "$renderer" --text "$d")"
+contains "(R-cf5) a non-root X-Lkml-CI-From is ignored" "$t" 'ci none from @operator (header seen from @core)'
+t="$(ci_case ci-from-none '' @operator)"
+contains "(R-cf3) no X-Lkml-CI-From: as today" "$t" 'ci success 11111111 https://ci.example.com/run/7'
+
 printf '\n== fleet-store thread: convergence still fires once the only seated reviewer has spoken ==\n'
 full="$work/fleet-mail/threads/full-thread"
 mkdir -p "$full"

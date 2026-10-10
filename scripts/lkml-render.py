@@ -69,9 +69,12 @@ that). A thread with none of those headers renders exactly as before, and
 the lkml-thread/1 block does not change.
 
 A fleet thread also shows, in the same two places, one 'ci <status> <sha8>
-[<url>]' line when a mail From @operator carries X-Lkml-CI-Status and
+[<url>]' line when a mail From the CI sender carries X-Lkml-CI-Status and
 X-Lkml-CI-Head (the newest such; a CI header on any other sender's mail
-is shown as 'ci none from @operator'), and one 'questions (...)' line
+is shown as 'ci none from @<sender>'). The CI sender is the thread
+root's X-Lkml-CI-From when that is exactly one well-formed address, else
+@operator (lkml-panel-state.py's rule; only the root's header counts).
+Also, one 'questions (...)' line
 listing each seated reviewer's Question mail addressed to @operator with
 its age and, past the root's X-Lkml-Question-Timeout, 'timed out'. Both
 are facts read from the mail; the contract is in docs/cluster-panel.md.
@@ -586,9 +589,12 @@ def read_fleet_msg(path, seq, attachment_root):
         raw = f.read()
     head, _, body = raw.partition("\n\n")
     hdr = {}
+    ci_from = []
     attachments = []
     for line in head.splitlines():
         k, _, v = line.partition(": ")
+        if k.strip().lower() == "x-lkml-ci-from":
+            ci_from.append(v.strip())
         if k == "X-Attachment":
             v = v.strip()
             ref = v.removeprefix("attachments/") if v.startswith("attachments/") else v
@@ -624,6 +630,7 @@ def read_fleet_msg(path, seq, attachment_root):
         "x_ci_status": hdr.get("X-Lkml-CI-Status"),
         "x_ci_head": hdr.get("X-Lkml-CI-Head"),
         "x_ci_url": hdr.get("X-Lkml-CI-Url"),
+        "x_ci_from": ci_from,
     }
 
 
@@ -946,6 +953,22 @@ def fleet_tier_info(roots, msgs):
 
 FLEET_CI_STATUSES = ("success", "failure", "pending")
 FLEET_OPERATOR = "operator"
+FLEET_ADDRESS_RE = re.compile(r"^@[a-z0-9][a-z0-9-]*$")
+
+
+def fleet_ci_sender(root):
+    """The seat name whose CI mail counts: the root's X-Lkml-CI-From when
+    it is exactly one well-formed address (bare name accepted), else
+    operator -- lkml-panel-state.py's parse_ci_from rule, minus the
+    reasons. Never "anyone"."""
+    vals = set(root.get("x_ci_from") or [])
+    if len(vals) == 1:
+        addr = next(iter(vals))
+        if not addr.startswith("@"):
+            addr = "@" + addr
+        if FLEET_ADDRESS_RE.match(addr):
+            return addr[1:]
+    return FLEET_OPERATOR
 
 
 def render_now():
@@ -965,19 +988,21 @@ def age_label(seconds):
 
 def fleet_ci_info(roots, msgs):
     """The CI line's facts, or None when the thread has no CI mail:
-    {"status", "sha", "url", "id", "untrusted_from"}. A CI header counts
-    only on a mail from @operator (lkml-panel-state.py's rule); the newest
+    {"status", "sha", "url", "id", "untrusted_from", "sender"}. A CI header
+    counts only on a mail from the root's X-Lkml-CI-From sender, else
+    @operator (lkml-panel-state.py's rule; "sender" names it); the newest
     trusted result is shown whatever its sha -- the display never judges
     which head the gate wants, it names the sha it shows. With only
     untrusted CI mail, status is None and untrusted_from names a sender."""
     root = fleet_root(roots)
     if root is None or not root.get("fleet"):
         return None
+    sender = fleet_ci_sender(root)
     trusted, untrusted = None, None
     for m in sorted(msgs.values(), key=lambda m: m["seq"]):
         if not (m.get("x_ci_status") or m.get("x_ci_head") or m.get("x_ci_url")):
             continue
-        if m["persona"] != FLEET_OPERATOR:
+        if m["persona"] != sender:
             untrusted = untrusted or m["persona"]
             continue
         status = (m.get("x_ci_status") or "").strip()
@@ -987,12 +1012,13 @@ def fleet_ci_info(roots, msgs):
             continue
         trusted = {"status": status, "sha": head[1].lower()[:8],
                    "url": (m.get("x_ci_url") or "").strip() or None,
-                   "id": m["id"][:7], "untrusted_from": None}
+                   "id": m["id"][:7], "untrusted_from": None,
+                   "sender": sender}
     if trusted:
         return trusted
     if untrusted:
         return {"status": None, "sha": None, "url": None, "id": None,
-                "untrusted_from": untrusted}
+                "untrusted_from": untrusted, "sender": sender}
     return None
 
 
@@ -1028,7 +1054,7 @@ def ci_summary(info):
     if info is None:
         return None
     if info["status"] is None:
-        return f"ci none from @operator (header seen from @{info['untrusted_from']})"
+        return f"ci none from @{info['sender']} (header seen from @{info['untrusted_from']})"
     return f"ci {info['status']} {info['sha']}" + (f" {info['url']}" if info["url"] else "")
 
 
