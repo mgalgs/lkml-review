@@ -2,8 +2,8 @@
 """lkml-panel-state.py — where does a fleet-transport review panel stand,
 as one machine-readable JSON object.
 
-Usage: lkml-panel-state.py <thread-id> [--remote]
-       lkml-panel-state.py --export-file <f> --status-file <f>
+Usage: lkml-panel-state.py <thread-id> [--remote] [--now <ISO-8601>]
+       lkml-panel-state.py --export-file <f> --status-file <f> [--now <ISO-8601>]
        lkml-panel-state.py -h|--help
 
 The first form runs, as subprocesses (argv lists, never a shell):
@@ -287,6 +287,31 @@ false when the target sits above the frozen head.
 The `ci` object reports the newest trusted result on the frozen head on
 every thread, gated or not; reasons are raised only under `ci`.
 
+Operator questions and the timeout -- a message from a seat on the
+effective panel that carries the `Question` tag and names @operator among
+its To/Cc recipients is an operator question. They are listed, whatever
+the timeout, so a dashboard can show them:
+
+    "questions": [{"seat","message_id","asked_at","age_seconds",
+                   "timed_out","subject"}]    (every version, seq order)
+
+asked_at is the message's Date as an ISO UTC stamp, age_seconds is
+against `now` (--now <ISO-8601>, default the clock; the output carries it
+as "now"), subject is the first line, clipped to 200 characters. A Date
+that cannot be read leaves those three null and the question blocking.
+
+The timeout is the root's `X-Lkml-Question-Timeout: <N>h` (whole hours,
+N >= 1; so every reader of a thread agrees). Absent: no timeout, and
+timed_out is null. Malformed: a reason, no timeout. A question is timed out
+when its age is >= N hours. Then the `Question` tag on that message is
+dropped before any seat is judged and the strongest REMAINING tag on the
+same message decides; a message whose only tag was the question gives the
+seat no verdict, so it still owes one and falls back to its earlier
+verdicts by the usual rules (carry included). A timeout NEVER manufactures
+a positive verdict. A question answered by an @operator reply is ordinary:
+the seat's next verdict decides. Nothing wakes a thread when a question
+times out; the timeout is read, not scheduled.
+
 Secretary -- the roster's Secretary seat reports the panel's overall
 state in the LAST non-empty lines of a message body, in this order:
 
@@ -359,6 +384,9 @@ Output (null, never an omitted key, for what is unknown):
                                         # the newest trusted CI result on
                                         # the frozen head, null when none;
                                         # see "Suite source and the CI gate"
+     "question_timeout_hours": N|null,  # see "Operator questions ..."
+     "questions": [...],
+     "now": "<ISO UTC>",                # the clock the ages were taken at
      "seats": [{"seat","state","verdict","message_id","version","sha",
                 "suite_run","carried"}],   # suite_run: null, or {"status",
                                  # "passed","failed","detail"}; see "Suite
@@ -377,6 +405,8 @@ import json
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 SCHEMA = "lkml-panel-state/1"
 
@@ -424,10 +454,13 @@ CI_HEAD_HEADER = "X-Lkml-CI-Head"
 CI_URL_HEADER = "X-Lkml-CI-Url"
 CI_HEADERS = (CI_STATUS_HEADER, CI_HEAD_HEADER, CI_URL_HEADER)
 CI_STATUSES = ("success", "failure", "pending")
+QUESTION_TIMEOUT_HEADER = "X-Lkml-Question-Timeout"
+QUESTION_TIMEOUT_RE = re.compile(r"([0-9]{1,18})h")
+QUESTION_SUBJECT_MAX = 200
 
 USAGE = """\
-Usage: lkml-panel-state.py <thread-id> [--remote]
-       lkml-panel-state.py --export-file <f> --status-file <f>
+Usage: lkml-panel-state.py <thread-id> [--remote] [--now <ISO-8601>]
+       lkml-panel-state.py --export-file <f> --status-file <f> [--now <ISO-8601>]
        lkml-panel-state.py -h|--help"""
 
 
@@ -526,7 +559,7 @@ def normalize_message(raw):
         raise InputError("export has a message without an integer seq")
     m = {"seq": raw["seq"], "ok": False, "id": None, "from": None,
          "subject": None, "date": None, "body": "", "headers": [],
-         "sha": None, "version": None, "tags": []}
+         "to": [], "cc": [], "sha": None, "version": None, "tags": []}
     if "error" in raw:
         return m
     if not (isinstance(raw.get("from"), str) and isinstance(raw.get("body"), str)
@@ -536,6 +569,9 @@ def normalize_message(raw):
              headers=raw["headers"], date=raw.get("date"),
              subject=raw.get("subject"))
     m["from"] = raw["from"].strip()
+    for key in ("to", "cc"):
+        if isinstance(raw.get(key), list):
+            m[key] = [x.strip() for x in raw[key] if isinstance(x, str)]
     tgt = single_target_header(m, "X-Review-Target")
     m["sha"] = tgt[1] if tgt else None
     m["version"] = int_header(m, "X-Version")
@@ -664,6 +700,79 @@ def ci_result(records, frozen_head, target, source):
     elif gated and r["status"] == "failure":
         reasons.append(f"CI failed on {head[:8]} (message {r['message_id']})")
     return ci, reasons
+
+
+def parse_question_timeout(root):
+    """The root's X-Lkml-Question-Timeout -> (hours|None, reasons). See the
+    module docstring, "Operator questions and the timeout"."""
+    if root is None or not root["ok"]:
+        return None, []
+    vals = set(header_values(root, QUESTION_TIMEOUT_HEADER))
+    if not vals:
+        return None, []
+    mt = QUESTION_TIMEOUT_RE.fullmatch(next(iter(vals))) \
+        if len(vals) == 1 else None
+    if mt and int(mt.group(1)) >= 1:
+        return int(mt.group(1)), []
+    shown = " / ".join(repr(clip(v)) for v in sorted(vals))
+    return None, [f"root {QUESTION_TIMEOUT_HEADER} {shown} is not <N>h with "
+                  f"N >= 1; no timeout applied"]
+
+
+def parse_when(text):
+    """A message Date (RFC 2822) or an ISO-8601 stamp -> an aware datetime,
+    or None. A stamp with no zone is read as UTC."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    text = text.strip()
+    when = None
+    try:
+        when = parsedate_to_datetime(text)
+    except (TypeError, ValueError, IndexError):
+        iso = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
+        try:
+            when = datetime.fromisoformat(iso)
+        except ValueError:
+            return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.astimezone(timezone.utc)
+
+
+def stamp(when):
+    return when.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def operator_questions(msgs, panel, hours, now):
+    """Every operator question on the thread -> (list, reasons). A message
+    from a seat on the effective panel that carries the Question tag and
+    names @operator among its recipients is one. When a timeout is set and
+    the question is at least that old, its `Question` tag is dropped IN
+    PLACE, before any seat is judged: the strongest remaining tag decides,
+    and a message left with none is not a verdict at all. A timeout never
+    produces a positive verdict by itself."""
+    out, reasons = [], []
+    for m in msgs:
+        if not (m["ok"] and m["from"] in panel and "Question" in m["tags"]
+                and OPERATOR in m["to"] + m["cc"]):
+            continue
+        asked = parse_when(m["date"])
+        age = timed_out = None
+        if asked is not None:
+            age = int((now - asked).total_seconds())
+            if hours is not None:
+                timed_out = age >= hours * 3600
+        elif hours is not None:
+            reasons.append(f"question {m['id']} from {m['from']}: unreadable "
+                           f"Date; the timeout cannot apply")
+        if timed_out:
+            m["tags"] = [t for t in m["tags"] if t != "Question"]
+        out.append({"seat": m["from"], "message_id": m["id"],
+                    "asked_at": stamp(asked) if asked else None,
+                    "age_seconds": age, "timed_out": timed_out,
+                    "subject": first_line(m["subject"] or "",
+                                          QUESTION_SUBJECT_MAX)})
+    return out, reasons
 
 
 def seat_tokens(msg, name, reasons):
@@ -1387,7 +1496,7 @@ def postmaster_facts(status):
     return facts, reasons
 
 
-def build_state(export, status):
+def build_state(export, status, now):
     if not isinstance(export, dict) or not isinstance(export.get("thread"), str) \
             or not isinstance(export.get("messages"), list):
         raise InputError("mail export is not a thread object "
@@ -1422,6 +1531,10 @@ def build_state(export, status):
     reasons += source_reasons
     ci_records, ci_mail_reasons = parse_ci_mails(msgs, source == "ci")
     reasons += ci_mail_reasons
+    timeout, timeout_reasons = parse_question_timeout(root)
+    reasons += timeout_reasons
+    questions, question_reasons = operator_questions(msgs, panel, timeout, now)
+    reasons += question_reasons
 
     bad = [str(m["seq"]) for m in msgs if not m["ok"]]
     if bad:
@@ -1526,6 +1639,9 @@ def build_state(export, status):
         "push": push,
         "frozen_head": frozen_head,
         "ci": ci,
+        "question_timeout_hours": timeout,
+        "questions": questions,
+        "now": stamp(now),
         "seats": seats,
         "secretary": secretary,
         "postmaster": pm,
@@ -1566,9 +1682,21 @@ def run_fork_sandbox(argv, label):
     return parse_json(p.stdout.decode("utf-8", "replace"), label)
 
 
+def parse_when_iso(text):
+    """--now's value: ISO-8601 only (a mail Date is not one)."""
+    iso = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
+    try:
+        when = datetime.fromisoformat(iso)
+    except ValueError:
+        raise UsageError(f"--now {text!r} is not an ISO-8601 timestamp")
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.astimezone(timezone.utc)
+
+
 def parse_args(argv):
     opts = {"thread": None, "remote": False, "export": None, "status": None,
-            "help": False}
+            "help": False, "now": None}
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -1581,6 +1709,13 @@ def parse_args(argv):
                 raise UsageError(f"{a} requires a file")
             opts["export" if a == "--export-file" else "status"] = argv[i + 1]
             i += 1
+        elif a == "--now":
+            if i + 1 >= len(argv):
+                raise UsageError("--now requires an ISO-8601 timestamp")
+            opts["now"] = parse_when_iso(argv[i + 1])
+            i += 1
+        elif a.startswith("--now="):
+            opts["now"] = parse_when_iso(a[len("--now="):])
         elif a.startswith("-") and a != "-":
             raise UsageError(f"unknown option '{a}'")
         elif opts["thread"] is None:
@@ -1630,7 +1765,8 @@ def main(argv):
         else:
             export = read_json(opts["export"], "mail export")
             status = read_json(opts["status"], "postmaster status")
-        state = build_state(export, status)
+        state = build_state(export, status,
+                            opts["now"] or datetime.now(timezone.utc))
     except InputError as e:
         sys.stderr.write("Error: " + " ".join(str(e).split()) + "\n")
         return 1

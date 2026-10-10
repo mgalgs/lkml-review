@@ -162,7 +162,7 @@ OUT=""; RC=0; cases_run=()
 run_case() {
     local d="$work/case-$1"
     cases_run+=("$1")
-    OUT="$("$ps" --export-file "$d/export.json" --status-file "$d/status.json" 2>"$work/err")"; RC=$?
+    OUT="$("$ps" --export-file "$d/export.json" --status-file "$d/status.json" "${@:2}" 2>"$work/err")"; RC=$?
 }
 j() { jq -c "$1" <<<"$OUT"; }
 jr() { jq -r "$1" <<<"$OUT"; }
@@ -1150,6 +1150,26 @@ def ci_mail(seq, status, head=A, frm="@operator", url=None, extra=(),
         h.append(["X-Lkml-CI-Url", url])
     h.extend(list(x) for x in extra)
     return msg(seq, frm, "CI result: %s." % status, extra=h, to=["@operator"])
+
+# Operator-question fixtures. question() is a seat's message; qthread() is
+# a v1 panel at head A (the root's Frozen-Head) in which @core's message is
+# core_body at seq 2, @tests and @docs are positive on A, and the secretary
+# says CONVERGED SIGNED-OFF v1 at seq 20. Message dates are 10:<seq> on
+# 2026-03-02, so ages are exact arithmetic.
+Q = "Question: which tests cover the retry path?"
+
+def question(seq, frm, body, sha=A, ver=1, to=("@pr-author", "@operator")):
+    return msg(seq, frm, body, sha=sha, ver=ver, to=list(to))
+
+def timeout_root(hours="2h", head=A, extra=()):
+    hs = [] if hours is None else ([hours] if isinstance(hours, str) else list(hours))
+    return root(sha=head, body=ROOT_BODY.replace("f" * 40, head),
+                extra=[["X-Lkml-Question-Timeout", h] for h in hs] + [list(x) for x in extra])
+
+def qthread(core_body, hours="2h", to=("@pr-author", "@operator")):
+    return [timeout_root(hours), question(2, "@core", core_body, to=to),
+            msg(3, "@tests", "Reviewed-by: T", sha=A, ver=1),
+            msg(4, "@docs", "Reviewed-by: D", sha=A, ver=1), sec(20)]
 FX3
 
 gen fh_a <<'PY'
@@ -2434,6 +2454,193 @@ run_case ci12
 check "(ci12) no frozen head under ci: STALLED" "STALLED" "$(jr .status)"
 reason_has "(ci12) the named reason" "CI gate: no frozen head is known, so no CI result can apply"
 
+printf '\n== operator questions and the timeout ==\n'
+# Shared shape: qthread(): v1 at head A, @core's message at seq 2 (dated
+# 2026-03-02T10:02:00Z), @tests/@docs positive, the secretary saying
+# CONVERGED SIGNED-OFF. The question is a message tagged Question whose
+# To includes @operator. Whatever @core's message resolves to is the only
+# open variable.
+gen q1 <<'PY'
+write(D, export(qthread(Q, hours=None)), status())
+PY
+run_case q1 --now 2026-03-02T12:02:00Z
+# Hand-worked: asked 10:02:00Z, now 12:02:00Z: 7200 s. No timeout header, so
+# timed_out is null and the question blocks: @core is in state question,
+# the secretary's CONVERGED is contradicted, STALLED.
+check "(q1) one operator question is listed" \
+    '{"seat":"@core","message_id":"m002","asked_at":"2026-03-02T10:02:00Z","age_seconds":7200,"timed_out":null,"subject":"Re: [PATCH v1] Fix the thing"}' \
+    "$(j '.questions[0]')"
+check "(q1) exactly one" "1" "$(jr '.questions | length')"
+check "(q1) no timeout: null" "null" "$(j .question_timeout_hours)"
+check "(q1) now is the given clock" "2026-03-02T12:02:00Z" "$(jr .now)"
+check "(q1) the seat is in state question" "question" "$(seat @core state)"
+reason_has "(q1) it blocks as an unanswered Question" "@core: unanswered Question on v1"
+check "(q1) STALLED" "STALLED" "$(jr .status)"
+
+gen q2 <<'PY'
+write(D, export(qthread(Q, hours=None, to=("@pr-author",))), status())
+PY
+run_case q2 --now 2026-03-02T12:02:00Z
+# Hand-worked: not addressed to @operator: an ordinary Question, not listed,
+# still blocking.
+check "(q2) a Question not addressed to @operator is not listed" "[]" "$(j .questions)"
+check "(q2) it blocks as before" "question" "$(seat @core state)"
+
+gen q3 <<'PY'
+write(D, export(qthread(Q, hours="2h")), status())
+PY
+run_case q3 --now 2026-03-02T11:00:00Z
+# Hand-worked: asked 10:02:00Z, now 11:00:00Z: 58 min = 3480 s < 7200. Not
+# timed out; still blocks.
+check "(q3) age" "3480" "$(jr '.questions[0].age_seconds')"
+check "(q3) before the timeout: timed_out false" "false" "$(jr '.questions[0].timed_out')"
+check "(q3) the timeout is reported" "2" "$(jr .question_timeout_hours)"
+check "(q3) before the timeout it blocks" "question" "$(seat @core state)"
+check "(q3) STALLED" "STALLED" "$(jr .status)"
+
+gen q4 <<'PY'
+write(D, export(qthread(Q + "\nReviewed-by: C <c@example.com>", hours="2h")), status())
+PY
+run_case q4 --now 2026-03-02T13:00:00Z
+# Hand-worked: the same message carries Question (first line) and a
+# Reviewed-by trailer. Age 10680 s >= 7200: timed out, Question dropped,
+# Reviewed-by decides: @core positive on A; all three positive, secretary on
+# target: CONVERGED SIGNED-OFF.
+check "(q4) timed_out true" "true" "$(jr '.questions[0].timed_out')"
+check "(q4) @core is positive from the same message" "positive Reviewed-by m002" "$(seat @core state) $(seat @core verdict) $(seat @core message_id)"
+check "(q4) CONVERGED" "CONVERGED" "$(jr .status)"
+
+run_case q4 --now 2026-03-02T12:02:00Z
+# Hand-worked: age exactly 7200 s: the boundary counts as timed out.
+check "(q4b) exactly at the timeout: timed out" "true" "$(jr '.questions[0].timed_out')"
+check "(q4b) and positive" "positive" "$(seat @core state)"
+
+run_case q4 --now 2026-03-02T12:01:59Z
+# Hand-worked: one second short: 7199 s: not timed out, Question wins.
+check "(q4c) one second before: not timed out" "false" "$(jr '.questions[0].timed_out')"
+check "(q4c) and blocking" "question" "$(seat @core state)"
+
+gen q5 <<'PY'
+write(D, export(qthread(Q, hours="2h")), status())
+PY
+run_case q5 --now 2026-03-02T13:00:00Z
+# Hand-worked: Question was the message's only tag. Timed out, the tag is
+# dropped and nothing remains: @core has given no verdict on v1, so it is
+# silent and owes one; a timeout never makes it positive. STALLED.
+check "(q5) timed out" "true" "$(jr '.questions[0].timed_out')"
+check "(q5) the seat is silent, not positive" "silent" "$(seat @core state)"
+reason_has "(q5) it still owes a verdict" "@core: no verdict on v1 (aaaaaaaa)"
+check "(q5) STALLED" "STALLED" "$(jr .status)"
+
+gen q5b <<'PY'
+e = qthread(Q, hours="2h")
+e[1] = msg(2, "@core", "Reviewed-by: C", sha=A, ver=1)
+e.insert(2, question(5, "@core", Q))
+write(D, export(e), status())
+PY
+run_case q5b --now 2026-03-02T10:30:00Z
+# Hand-worked: @core said Reviewed-by at seq 2, then asked at seq 5 (dated
+# 10:05). Now 10:30: age 1500 s < 7200: the later Question is the verdict on
+# A: unanswered.
+check "(q5b) before the timeout the later question wins" "question m005" "$(seat @core state) $(seat @core message_id)"
+reason_has "(q5b) unanswered Question" "@core: unanswered Question on v1"
+run_case q5b --now 2026-03-02T13:00:00Z
+# Hand-worked: now 13:00: age 10500 s >= 7200: m005 is timed out and loses
+# its only tag; @core's verdict is the earlier Reviewed-by m002: positive,
+# CONVERGED.
+check "(q5b) after the timeout the earlier verdict decides" "positive m002" "$(seat @core state) $(seat @core message_id)"
+check "(q5b) CONVERGED" "CONVERGED" "$(jr .status)"
+
+gen q5c <<'PY'
+e = [timeout_root("2h")] + panel_positive() + [sec(20), upstream(30, H, mode="carry", to=["@operator"]),
+     question(31, "@core", Q)]
+write(D, export(e), status(sha=A, ver=1))
+PY
+run_case q5c --now 2026-03-02T10:40:00Z
+# Hand-worked: v1 positive at m002-m004; a carry push (seq 30) makes v2 at H
+# and every verdict carries; @core then asks at seq 31 (10:31) on sha A. Now
+# 10:40: age 540 s: not timed out; the question is @core's latest message
+# on v1, which carries, so it blocks "(carried from v1)".
+reason_has "(q5c) before the timeout the carried question blocks" "@core: unanswered Question on v2 (carried from v1)"
+run_case q5c --now 2026-03-02T13:00:00Z
+# Hand-worked: age 8940 s >= 7200: the question loses its only tag, so
+# @core's latest tagged message on v1 is its Reviewed-by m002, which carries
+# onto H: CONVERGED SIGNED-OFF at H. The question is still listed (it is on
+# v1, not the target).
+check "(q5c) after the timeout the earlier verdict carries" "true 1 positive" "$(seat @core carried) $(seat @core version) $(seat @core state)"
+check "(q5c) CONVERGED" "CONVERGED" "$(jr .status)"
+check "(q5c) the question on v1 is still listed" "m031" "$(jr '.questions[0].message_id')"
+
+gen q6 <<'PY'
+vals = ["2", "0h", "two hours", "2h30m", " h", "-1h", "2H", ("2h", "3h")]
+for i, v in enumerate(vals):
+    os.makedirs(D + "-%d" % i, exist_ok=True)
+    write(D + "-%d" % i, export(qthread(Q, hours=v)), status())
+PY
+for i in 0 1 2 3 4 5 6 7; do
+    gen_dir="$work/case-q6-$i"; cases_run+=("q6-$i")
+    OUT="$("$ps" --export-file "$gen_dir/export.json" --status-file "$gen_dir/status.json" --now 2026-03-02T23:00:00Z 2>/dev/null)"
+    # Hand-worked: a malformed or conflicting header is no timeout, whatever
+    # the age (12 h 58 min): reported, question_timeout_hours null,
+    # timed_out null, and the question blocks.
+    check "(q6-$i) malformed timeout: no hours" "null" "$(j .question_timeout_hours)"
+    check "(q6-$i) timed_out is null" "null" "$(j '.questions[0].timed_out')"
+    check "(q6-$i) still blocks" "question" "$(seat @core state)"
+    reason_has "(q6-$i) the malformed reason" "is not <N>h with N >= 1; no timeout applied"
+done
+
+gen q7 <<'PY'
+write(D, export(qthread(Q, hours=None)), status())
+PY
+run_case q7 --now yesterday
+check "(q7) a malformed --now is a usage error" "2" "$RC"
+run_case q7 --now
+check "(q7) --now without a value is a usage error" "2" "$RC"
+run_case q7 --now=2026-03-02T12:02:00+01:00
+# Hand-worked: 12:02+01:00 is 11:02Z: age against 10:02Z is 3600 s.
+check "(q7) the --now= form and a zone offset" "3600 2026-03-02T11:02:00Z" "$(jr '"\(.questions[0].age_seconds) \(.now)"')"
+run_case q7
+check "(q7) no --now: the clock, as an ISO UTC stamp" "true" "$(jr '.now | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")')"
+
+gen q8 <<'PY'
+e = qthread(Q, hours="2h")
+e[1]["date"] = "sometime last week"
+write(D, export(e), status())
+PY
+run_case q8 --now 2026-03-02T13:00:00Z
+# Hand-worked: an unreadable Date leaves asked_at/age/timed_out null and the
+# question blocking (the safe direction), with a reason naming the message.
+check "(q8) null asked_at, age and timed_out" "null null null" "$(jr '"\(.questions[0].asked_at) \(.questions[0].age_seconds) \(.questions[0].timed_out)"')"
+reason_has "(q8) the unreadable Date is named" "question m002 from @core: unreadable Date; the timeout cannot apply"
+check "(q8) the question still blocks" "question" "$(seat @core state)"
+
+gen q9 <<'PY'
+e = qthread(Q, hours="2h")
+e[1] = msg(2, "@core", "Reviewed-by: C", sha=A, ver=1)
+e.insert(2, question(25, "@secretary", Q, to=("@operator",)))
+write(D, export(e), status())
+PY
+run_case q9 --now 2026-03-02T13:00:00Z
+# Hand-worked: @secretary is not a panel seat: its question is not an
+# operator question for the panel's purposes and is not listed.
+check "(q9) a non-panel sender's question is not listed" "[]" "$(j .questions)"
+
+gen q10 <<'PY'
+e = [tier_root()] + panel_positive() + [sec(20)]
+e.append(upstream(30, H, mode="escalate",
+                  extra=[["X-Lkml-Tier", "full"], ["X-Lkml-Add-Seats", "security"]]))
+e.append(cover(31, H, 2, "Human integration.\n\nFrozen-Head: " + H))
+e += panel_positive(sha=H, ver=2, start=40)
+e.append(question(43, "@security", Q, sha=H, ver=2))
+write(D, export(e), status(sha=H, ver=2))
+PY
+run_case q10 --now 2026-03-02T13:00:00Z
+# Hand-worked: @security was escalated onto the effective panel at seq 30,
+# so its question to @operator at seq 43 is listed; no timeout header, so it
+# blocks.
+check "(q10) an escalated-in seat's question is listed" "@security m043 null" "$(jr '"\(.questions[0].seat) \(.questions[0].message_id) \(.questions[0].timed_out)"')"
+check "(q10) it blocks" "question" "$(seat @security state)"
+
 printf '\n== invariants over every case above ==\n'
 inv_bad=""; inv_n=0; inv_conv=0; diff_bad=""; diff_n=0
 # Opt-in differential check: LKML_PANEL_STATE_BASELINE names an earlier copy
@@ -2441,7 +2648,7 @@ inv_bad=""; inv_n=0; inv_conv=0; diff_bad=""; diff_n=0
 # new output, minus the keys this change added, must equal the old output
 # byte for byte. Unset, it did not run, and reports nothing.
 baseline="${LKML_PANEL_STATE_BASELINE:-}"
-strip_new='del(.tier, .panel, .push, .ci) | .seats |= map(del(.carried)) | if .secretary then .secretary |= del(.carried) else . end'
+strip_new='del(.tier, .panel, .push, .ci, .questions, .question_timeout_hours, .now) | .seats |= map(del(.carried)) | if .secretary then .secretary |= del(.carried) else . end'
 for c in "${cases_run[@]}"; do
     d="$work/case-$c"
     o="$("$ps" --export-file "$d/export.json" --status-file "$d/status.json" 2>/dev/null)" || { inv_bad+=" $c(exit)"; continue; }
@@ -2452,7 +2659,7 @@ for c in "${cases_run[@]}"; do
         [[ "$(jq -c "$strip_new" <<<"$o")" == "$ob" ]] || diff_bad+=" $c"
     fi
     if ! jq -e '
-        (["schema","thread","subject","status","verdict","target","roster","tier","panel","push","frozen_head","ci","seats","secretary","postmaster","bundle","reasons"]
+        (["schema","thread","subject","status","verdict","target","roster","tier","panel","push","frozen_head","ci","question_timeout_hours","questions","now","seats","secretary","postmaster","bundle","reasons"]
          - keys | length) == 0
         and (.status | IN("CONVERGED","IN-PROGRESS","STALLED","NEEDS-OPERATOR"))
         and ((.status == "CONVERGED") == (.reasons | length == 0))
@@ -2470,6 +2677,9 @@ for c in "${cases_run[@]}"; do
              and has("verdict") and has("on_target") and has("malformed") and has("carried")))
         and (.ci | has("source") and has("status") and has("sha") and has("branch") and has("url") and has("message_id") and has("covers_target"))
         and (.status != "CONVERGED" or .ci.source != "ci" or .ci.status == "success")
+        and (.questions | type == "array")
+        and all(.questions[]; has("seat") and has("message_id") and has("asked_at") and has("age_seconds") and has("timed_out") and has("subject"))
+        and (.now | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
         and (.tier | has("name") and has("reason") and has("source") and has("message_id"))
         and (.push == null or (.push | has("mode") and has("message_id") and has("seq") and has("sha") and has("seats") and has("tier") and has("malformed") and has("answered")))
         and (.panel | type == "array") and (.panel[:(.roster.panel | length)] == .roster.panel)
