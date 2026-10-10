@@ -782,6 +782,9 @@ if [[ -f "$prk" ]]; then
         "pr-review.md lets a decided suggestion be re-raised only as a blocking objection"
     has "$prk" 'The frozen head can move to' \
         "pr-review.md says the frozen head can move to the human's push"
+    # shellcheck disable=SC2016  # literal backticks in the needle
+    has "$prk" 'If the root above carries `X-Lkml-Suite-Source: ci`, skip this section:' \
+        "pr-review.md skips its Running-the-suite section under the CI suite source"
     has "$prk" 'lkml-fleet-kickoff.sh --template pr-review' \
         "pr-review.md header points at the kickoff script that fills its placeholders"
     if grep -qF 'does not yet fill' "$prk"; then

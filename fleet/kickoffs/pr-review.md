@@ -122,7 +122,11 @@ is non-blocking.
 
 ## Running the suite
 
-If the root above carries a `Suite:` line and the `Suite-Seats:` line
+If the root above carries `X-Lkml-Suite-Source: ci`, skip this section:
+CI runs the suite, no seat runs it or writes a `Suite-Run:` line, and the
+gate reads CI's result mail instead (your persona says how to read it).
+
+Otherwise, if the root above carries a `Suite:` line and the `Suite-Seats:` line
 names your seat, run that exact command at your checkout before you
 choose a verdict, and put one line directly above your verdict line:
 
