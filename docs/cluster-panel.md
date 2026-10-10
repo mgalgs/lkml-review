@@ -85,7 +85,9 @@ so the recipients and the roster cannot drift apart. `--remote` sends through
 the mail API; the client reads `FORK_SANDBOX_MAIL_API_URL` and
 `FORK_SANDBOX_MAIL_API_TOKEN_FILE` from the environment. The grant flags
 (`--allow-namespace`, `--reach-probe`, `--context-secret`) attach to the new
-thread. `--header` adds headers of the caller's own; the headers the mail
+thread, as do `--no-grant` (open the thread with no environment; refused with
+any grant flag) and `--budget <n>` (the thread's own cap on seat spawns).
+`--header` adds headers of the caller's own; the headers the mail
 layer or this script owns are refused. `lkml-fleet-kickoff.sh --help` has
 the full rules.
 
@@ -324,6 +326,7 @@ On the root (kickoff) message:
 | Header | Value | Meaning |
 |---|---|---|
 | `X-Lkml-Suite-Source` | `ci` | the CI gate below replaces the per-seat `Suite-Run` gate for this thread; any other value is a reason and leaves the `Suite-Run` gate in force |
+| `X-Lkml-CI-From` | one address, `@ci` or `ci` | the one sender whose CI headers count on this thread; absent, `@operator`; anything else is a reason and falls back to `@operator` |
 | `X-Lkml-Question-Timeout` | `<N>h`, whole hours, N of at least 1 | an operator question stops blocking once it is that old; malformed is a reason and no timeout |
 
 On a CI result mail, one per result, `To: @operator` so that it wakes nobody,
@@ -338,10 +341,15 @@ with a short human summary (failing jobs and tests) as the body:
 Rules for the CI gate (only under `X-Lkml-Suite-Source: ci`; without it the
 `Suite-Run` gate in the kickoff section is unchanged, byte for byte):
 
-- **Trust.** A CI header counts only on a mail `From: @operator`. Any seat can
-  set an `X-*` header, so on any other sender it is ignored and reported as a
-  reason. A mail from `@operator` with an unknown status, or a head that is not
-  exactly one `<branch> <sha>`, is ignored with a reason too.
+- **Trust.** A CI header counts only on a mail from the trusted sender,
+  and there is exactly one: `@operator`, unless the root's `X-Lkml-CI-From`
+  names an address, in which case that address instead (`@operator`'s CI mail
+  then no longer counts). A recipient is not required. Only the root may name
+  it, because no seat can change the root; `X-Lkml-CI-From` on any other
+  message is ignored and reported as a reason. Any seat can set an `X-*`
+  header, so a CI header from any other sender is ignored and reported as a
+  reason. A mail from the trusted sender with an unknown status, or a head
+  that is not exactly one `<branch> <sha>`, is ignored with a reason too.
 - **The gate.** `CONVERGED` needs the newest trusted CI mail whose head sha
   equals the current frozen head's to say `success`. None, or `pending`, is
   "CI has not reported on `<sha8>`"; `failure` is "CI failed on `<sha8>`". A
@@ -434,8 +442,15 @@ upstream-moved mail: its `mode`, `seats`, `malformed` text and whether it is
 so a panel that carries to convergence is `SIGNED-OFF` at the new head. See
 "Tiers and push modes".
 
-It also has `ci`, `question_timeout_hours`, `questions` and `now`; see "Suite
-source, CI results and operator questions".
+It also has `ci` (with `ci.trusted_from`, the sender whose CI mail counts),
+`question_timeout_hours`, `questions` and `now`; see "Suite source, CI results
+and operator questions".
+
+`postmaster` carries the postmaster's budget facts as well: `budget`,
+`budget_source` (`thread` or `global`), `spawns_total` (never reset) and
+`grant_mode` (`none`, `file` or `missing`). Each is null when the status JSON
+lacks it or has it in the wrong type (an older postmaster). They are for a
+dashboard: they raise no reason and change no status.
 
 The gate also compares the newest `X-Upstream-Head` on the thread with the
 resolved frozen head. When they differ, the human author's newest push has no
