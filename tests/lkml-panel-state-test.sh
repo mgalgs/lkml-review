@@ -731,7 +731,7 @@ check "secretary object on target, well-formed" \
     '{"message_id":"m020","version":1,"status":"CONVERGED","verdict":"SIGNED-OFF","on_target":true,"malformed":null,"carried":false}' \
     "$(j .secretary)"
 check "postmaster facts of a quiet thread" \
-    '{"quiescent":true,"flagged":false,"flag_reason":null,"live_runs":0,"pending_retries":0,"held":0,"unrouted":0}' \
+    '{"quiescent":true,"flagged":false,"flag_reason":null,"live_runs":0,"pending_retries":0,"held":0,"unrouted":0,"budget":null,"budget_source":null,"spawns_total":null,"grant_mode":null}' \
     "$(j .postmaster)"
 
 gen g3 <<'PY'
@@ -1421,6 +1421,45 @@ run_case p6
 check "an unreadable unrouted count is not quiescent" "false" "$(jr .postmaster.quiescent)"
 reason_has "an unreadable unrouted count is a reason" "unrouted count is unreadable"
 check "and is not CONVERGED" "IN-PROGRESS" "$(jr .status)"
+
+# Budget facts: passed through from the postmaster's status, never a reason.
+gen b1 <<'PY'
+write(D, export(green()), status(budget=6, budget_source="thread", spawns_total=9, grant_mode="file"))
+PY
+run_case b1
+# Hand-worked: a green thread; the four facts are in the status JSON and
+# are reported unchanged; nothing about them is a reason, so CONVERGED.
+check "(b1) the facts pass through" '{"budget":6,"budget_source":"thread","spawns_total":9,"grant_mode":"file"}' \
+    "$(j '.postmaster | {budget, budget_source, spawns_total, grant_mode}')"
+check "(b1) CONVERGED" "CONVERGED" "$(jr .status)"
+check "(b1) no reasons" "[]" "$(j .reasons)"
+
+gen b1g <<'PY'
+write(D, export(green()), status(budget=1, budget_source="global", spawns_total=0, grant_mode="none"))
+PY
+run_case b1g
+# Hand-worked: zero is a value, not absent; the other enum words pass too.
+check "(b1g) zero and the other words pass through" '{"budget":1,"budget_source":"global","spawns_total":0,"grant_mode":"none"}' \
+    "$(j '.postmaster | {budget, budget_source, spawns_total, grant_mode}')"
+
+gen b2 <<'PY'
+write(D, export(green()), status(budget="6", budget_source=7, spawns_total=True, grant_mode=None))
+PY
+run_case b2
+# Hand-worked: a string, a number where a word belongs, a bool and a null
+# are the wrong type: all four null, no reason, CONVERGED.
+check "(b2) wrong types are null" '{"budget":null,"budget_source":null,"spawns_total":null,"grant_mode":null}' \
+    "$(j '.postmaster | {budget, budget_source, spawns_total, grant_mode}')"
+check "(b2) CONVERGED, no reasons" "CONVERGED []" "$(jr '.status + " " + (.reasons | tojson)')"
+
+gen b3 <<'PY'
+write(D, export(green()), status(grant_mode="missing", budget=None, budget_source=None, spawns_total=0))
+PY
+run_case b3
+# Hand-worked: the shape an upgraded postmaster prints for a thread with no
+# budget line: two nulls, a zero, and "missing".
+check "(b3) mixed nulls and values" '{"budget":null,"budget_source":null,"spawns_total":0,"grant_mode":"missing"}' \
+    "$(j '.postmaster | {budget, budget_source, spawns_total, grant_mode}')"
 
 printf '\n== a newer tagged message with no usable target ==\n'
 gen nohdr <<'PY'
@@ -2779,7 +2818,7 @@ inv_bad=""; inv_n=0; inv_conv=0; diff_bad=""; diff_n=0
 # new output, minus the keys this change added, must equal the old output
 # byte for byte. Unset, it did not run, and reports nothing.
 baseline="${LKML_PANEL_STATE_BASELINE:-}"
-strip_new='del(.tier, .panel, .push, .ci, .questions, .question_timeout_hours, .now) | .seats |= map(del(.carried)) | if .secretary then .secretary |= del(.carried) else . end'
+strip_new='del(.tier, .panel, .push, .ci, .questions, .question_timeout_hours, .now) | .postmaster |= del(.budget, .budget_source, .spawns_total, .grant_mode) | .seats |= map(del(.carried)) | if .secretary then .secretary |= del(.carried) else . end'
 for c in "${cases_run[@]}"; do
     d="$work/case-$c"
     o="$("$ps" --export-file "$d/export.json" --status-file "$d/status.json" 2>/dev/null)" || { inv_bad+=" $c(exit)"; continue; }
@@ -2797,7 +2836,8 @@ for c in "${cases_run[@]}"; do
         and (.verdict == null or .status == "CONVERGED")
         and (.bundle == null or .verdict == "RESPIN")
         and (.postmaster | has("quiescent") and has("flagged") and has("flag_reason") and has("live_runs")
-             and has("pending_retries") and has("held") and has("unrouted"))
+             and has("pending_retries") and has("held") and has("unrouted")
+             and has("budget") and has("budget_source") and has("spawns_total") and has("grant_mode"))
         and (.roster | has("author") and has("panel") and has("secretary") and has("version_limit") and has("frozen_head")
              and has("suite") and has("suite_seats"))
         and all(.seats[]; has("seat") and has("state") and has("verdict") and has("message_id") and has("version") and has("sha") and has("suite_run") and has("carried"))

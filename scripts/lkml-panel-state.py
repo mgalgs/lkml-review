@@ -344,6 +344,14 @@ FAILS-only record with no state are history). A state this script does
 not recognize is treated as live/pending, with a reason. flagged means
 the postmaster's flag is not null.
 
+The postmaster's budget facts -- budget, budget_source ("thread" or
+"global"), spawns_total (never reset) and grant_mode ("none", "file" or
+"missing") -- are passed through in the `postmaster` object for a
+dashboard: an int (not a bool) for the two counts, a non-empty string for
+the two words, else null (absent, or an older postmaster). A word this
+script does not know is passed through, not nulled. They raise no reason
+and change no status.
+
 Status -- precedence top to bottom, first match wins:
 
     NEEDS-OPERATOR  the thread is flagged
@@ -406,7 +414,8 @@ Output (null, never an omitted key, for what is unknown):
      "secretary": {"message_id","version","status","verdict",
                    "on_target","malformed","carried"},
      "postmaster": {"quiescent","flagged","flag_reason","live_runs",
-                    "pending_retries","held","unrouted"},
+                    "pending_retries","held","unrouted","budget",
+                    "budget_source","spawns_total","grant_mode"},
      "bundle": {"base","tip","branch"},   # RESPIN + a frozen head only;
                                           # base is that frozen head
      "reasons": [...]}                    # empty only for CONVERGED
@@ -1532,6 +1541,14 @@ def postmaster_facts(status):
              "flagged": flag is not None, "flag_reason": flag_reason,
              "live_runs": live, "pending_retries": pending, "held": held,
              "unrouted": unrouted}
+    budget, spawns = status.get("budget"), status.get("spawns_total")
+    facts.update(
+        budget=budget if isinstance(budget, int)
+        and not isinstance(budget, bool) else None,
+        budget_source=opt_str(status.get("budget_source")),
+        spawns_total=spawns if isinstance(spawns, int)
+        and not isinstance(spawns, bool) else None,
+        grant_mode=opt_str(status.get("grant_mode")))
     return facts, reasons
 
 
