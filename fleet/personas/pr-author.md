@@ -254,8 +254,9 @@ of the version it belongs to. Cases:
   name the range `<previous head>..<H>`, and name the exact range-diff to run,
   `git range-diff head-<prev 12 hex>...head-<this 12 hex>`. Pod branches:
   `review-v<N>` is the review target at version N, and `head-<12 hex>` is one
-  per human push, the 12 hex being the first 12 characters of the Message-ID
-  of the upstream-moved mail that announced it, hyphens removed. Find a push
+  per human push, the 12 hex being the first 12 hex digits of the Message-ID
+  of the upstream-moved mail that announced it, taken after its hyphens are
+  removed (so they can run past the first group). Find a push
   mail's branch with `git branch --list 'head-*'`, and check `git rev-parse` of
   it equals the mail's sha. When the previous head is vN's frozen head from the
   root, its branch is `review-v1`. If a branch cannot be confirmed, say so and

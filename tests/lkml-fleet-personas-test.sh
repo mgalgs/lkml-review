@@ -653,6 +653,8 @@ has_flat "$pra" 'the union of their `X-Lkml-Recheck-Seats`' \
     "pr-author.md sends a coalesced recheck to the union of listed seats"
 has_flat "$pra" 'seats those pushes listed, together' \
     "pr-author.md owes the union of recheck seats at step 4"
+has_flat "$pra" 'the first 12 hex digits of the Message-ID of the upstream-moved mail that announced it, taken after its hyphens are removed' \
+    "pr-author.md derives head-<12 hex> after removing the Message-ID's hyphens"
 has "$pra" 'header shows as an `Upstream-Head: <branch> <sha>` line directly after' \
     "pr-author.md names the render's unquoted Upstream-Head line"
 has "$pra" 'A push never aborts a round.' \
