@@ -45,9 +45,11 @@
 #              and push is the newest upstream-moved mail's mode and head.
 #              A thread with none of those headers prints no such line.
 #              Then, when the thread has CI mail (X-Lkml-CI-Status), one line
-#              from the newest mail From @operator:
+#              from the newest mail From the CI sender (the root's
+#              X-Lkml-CI-From when exactly one well-formed address, else
+#              @operator; a non-root header is ignored):
 #                CI: <status> <sha8> (<id7>)[ <url>]
-#              or, with only untrusted CI mail, "CI: none from @operator
+#              or, with only untrusted CI mail, "CI: none from <CI sender>
 #              (X-Lkml-CI-Status seen from <sender>)". Then, when a seated
 #              sender's message carries Question and names @operator in
 #              To/Cc, one line:
@@ -245,6 +247,21 @@ fs_header() {
         if [[ "$line" == "$name:"* ]]; then
             printf '%s' "${line#"$name": }"
             return 0
+        fi
+    done < "$file"
+    return 0
+}
+
+# Prints every value of one header in a message file, one per line, up to
+# the first blank line. Case-insensitive on the name, values trimmed.
+fs_header_all() {
+    local file="$1" name="${2,,}" line v
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && break
+        if [[ "${line,,}" == "$name:"* ]]; then
+            v="${line#*:}"
+            v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+            printf '%s\n' "$v"
         fi
     done < "$file"
     return 0
@@ -960,14 +977,24 @@ root_seats=" "
 for a in $(fs_header "${MSG_FILE[0]}" X-Seats | tr ',' ' '); do root_seats+="@${a#@} "; done
 root_seats+="${escalate_adds# }"
 
-# The CI line. A CI header counts only on a mail From @operator (the same
-# trust rule lkml-panel-state.py applies); the newest such result is shown
-# whatever its sha -- this screen reports, it does not match a head to the
-# gate. With only untrusted CI mail the line says so, naming the sender.
+# The CI line. A CI header counts only on a mail From the CI sender: the
+# root's X-Lkml-CI-From when it is exactly one well-formed address (bare
+# name accepted), else @operator -- the same trust rule lkml-panel-state.py
+# applies, minus its reasons; a non-root X-Lkml-CI-From is never read. The
+# newest such result is shown whatever its sha -- this screen reports, it
+# does not match a head to the gate. With only untrusted CI mail the line
+# says so, naming the trusted sender and the sender seen.
+ci_sender="@operator"
+mapfile -t ci_from_vals < <(fs_header_all "${MSG_FILE[0]}" X-Lkml-CI-From | sort -u)
+if (( ${#ci_from_vals[@]} == 1 )); then
+    ci_cand="${ci_from_vals[0]}"
+    [[ "$ci_cand" == @* ]] || ci_cand="@$ci_cand"
+    [[ "$ci_cand" =~ ^@[a-z0-9][a-z0-9-]*$ ]] && ci_sender="$ci_cand"
+fi
 ci_line=""; ci_untrusted=""
 for (( i = 1; i < n; i++ )); do
     [[ -n "${MSG_CI_STATUS[$i]}${MSG_CI_HEAD[$i]}${MSG_CI_URL[$i]}" ]] || continue
-    if [[ "${MSG_FROM[$i]}" != "@operator" ]]; then
+    if [[ "${MSG_FROM[$i]}" != "$ci_sender" ]]; then
         ci_untrusted="${ci_untrusted:-${MSG_FROM[$i]}}"
         continue
     fi
@@ -979,7 +1006,7 @@ done
 if [[ -n "$ci_line" ]]; then
     printf '%s\n' "$ci_line"
 elif [[ -n "$ci_untrusted" ]]; then
-    printf 'CI: none from @operator (X-Lkml-CI-Status seen from %s)\n' "$ci_untrusted"
+    printf 'CI: none from %s (X-Lkml-CI-Status seen from %s)\n' "$ci_sender" "$ci_untrusted"
 fi
 
 # The Questions line: each seated sender's Question mail that names

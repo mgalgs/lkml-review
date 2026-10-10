@@ -1279,6 +1279,28 @@ case "$OUT" in *"CI: success"*) no "(F-ci2) and not shown as a result" "$OUT" ;;
 ci_thread c6 'X-Lkml-Question-Timeout: soon' '@author, @operator' ''
 contains "(F-q5) a malformed timeout reads as absent" "$OUT" "Questions (no timeout): @review-one c600200 3h00m"
 
+# X-Lkml-CI-From on the root names the trusted CI sender.
+ci_thread cf1 'X-Lkml-CI-From: @ci-x' '@author' '@ci-x'
+contains "(F-cf1) root names @ci-x: its CI mail shows its status" "$OUT" "CI: success 11111111 (cf10040) https://ci.example.com/run/7"
+ci_thread cf2 'X-Lkml-CI-From: ci-x' '@author' '@ci-x'
+contains "(F-cf1) a bare name is accepted" "$OUT" "CI: success 11111111 (cf20040)"
+ci_thread cf3 'X-Lkml-CI-From: @ci-x' '@author' '@operator'
+contains "(F-cf2) root names @ci-x: @operator's CI mail is untrusted" "$OUT" "CI: none from @ci-x (X-Lkml-CI-Status seen from @operator)"
+case "$OUT" in *"CI: success"*) no "(F-cf2) and not shown as a result" "$OUT" ;; *) ok "(F-cf2) and not shown as a result" ;; esac
+ci_thread cf4 'X-Lkml-CI-From: not an address' '@author' '@operator'
+contains "(F-cf4) a malformed root value falls back to @operator" "$OUT" "CI: success 11111111 (cf40040)"
+ci_thread cf5 $'X-Lkml-CI-From: @ci-x\nX-Lkml-CI-From: @ci-y' '@author' '@ci-x'
+contains "(F-cf4) two differing root values fall back to @operator" "$OUT" "CI: none from @operator (X-Lkml-CI-Status seen from @ci-x)"
+ci_thread cf6 '' '@author' '@operator'
+contains "(F-cf3) no X-Lkml-CI-From: as today" "$OUT" "CI: success 11111111 (cf60040) https://ci.example.com/run/7"
+# A non-root X-Lkml-CI-From is ignored: @operator stays the sender.
+t="99999999-cf7-4999-8999-999999999999"
+ci_thread cf7 '' '@author' '@ci-x'
+write_msg "$root10" "$t" 005 "cf70050-0000-4000-8000-000000000005" "$(D 23)" \
+    '@review-one' '@author' '' 'Re: [PATCH v1 0/1] Asked' 7 '' 'noise.' 'X-Lkml-CI-From: @ci-x'
+OUT="$(SOURCE_DATE_EPOCH="$(epoch_at 13:20:00)" PATH="$STUB_PATH" "$status" "$t" --mail-root "$root10" 2>&1)"
+contains "(F-cf5) a non-root X-Lkml-CI-From is ignored" "$OUT" "CI: none from @operator (X-Lkml-CI-Status seen from @ci-x)"
+
 OUT="$(PATH="$STUB_PATH" "$status" "$t1" --mail-root "$root" 2>&1)"
 case "$OUT" in *"CI:"*|*"Questions"*) no "(F-none) the existing t1 screen has no CI or Questions line" "$OUT" ;; *) ok "(F-none) the existing t1 screen has no CI or Questions line" ;; esac
 
