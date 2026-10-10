@@ -268,11 +268,18 @@ The CI side posts one mail per CI result, `To: @operator`:
     X-Lkml-CI-Head:   <branch> <sha>     (the commit CI ran on)
     X-Lkml-CI-Url:    <url>              (optional)
 
-TRUST: a CI header counts only on a message From exactly `@operator`.
-Any seat can set an X-* header, so on any other sender it is ignored and,
-under `ci`, a reason. A mail from @operator whose status is not one
-distinct value of success/failure/pending, or whose head is not one
-parseable `<branch> <sha>`, is ignored with a reason too.
+TRUST: a CI header counts only on a message From exactly `@operator`,
+or, when the root carries `X-Lkml-CI-From: <address>`, exactly that
+address instead (a bare name is accepted; mail from it needs no particular
+recipient). The root is written once by the kickoff and no seat can change
+it, which is why only the root may name the sender: the header on any
+other message is ignored and, under `ci`, a reason. One distinct,
+well-formed address is needed; anything else is a reason and `@operator`
+stays trusted, never "anyone". Any seat can set an X-* header, so on any
+other sender a CI header is ignored and, under `ci`, a reason. A mail from
+the trusted sender whose status is not one distinct value of
+success/failure/pending, or whose head is not one parseable
+`<branch> <sha>`, is ignored with a reason too.
 
 Under `ci`, CONVERGED needs the NEWEST (highest seq) trusted CI mail whose
 sha equals the current frozen head's to say `success`. None, or `pending`,
@@ -379,8 +386,12 @@ Output (null, never an omitted key, for what is unknown):
                                         # null; see "Pushes and push modes"
      "frozen_head": {"sha","source"},   # of the current target; source
                                         # "root" or "upstream"
-     "ci": {"source","status","sha","branch","url","message_id",
-            "covers_target"},           # source "ci"|null; the rest describe
+     "ci": {"source","trusted_from","status","sha","branch","url",
+            "message_id","covers_target"},
+                                        # source "ci"|null; trusted_from is
+                                        # the CI sender counted (@operator
+                                        # unless the root names one); the
+                                        # rest describe
                                         # the newest trusted CI result on
                                         # the frozen head, null when none;
                                         # see "Suite source and the CI gate"
@@ -452,6 +463,7 @@ SUITE_SOURCE_HEADER = "X-Lkml-Suite-Source"
 CI_STATUS_HEADER = "X-Lkml-CI-Status"
 CI_HEAD_HEADER = "X-Lkml-CI-Head"
 CI_URL_HEADER = "X-Lkml-CI-Url"
+CI_FROM_HEADER = "X-Lkml-CI-From"
 CI_HEADERS = (CI_STATUS_HEADER, CI_HEAD_HEADER, CI_URL_HEADER)
 CI_STATUSES = ("success", "failure", "pending")
 QUESTION_TIMEOUT_HEADER = "X-Lkml-Question-Timeout"
@@ -633,23 +645,50 @@ def parse_suite_source(root):
                   f"Suite-Run gate stays in force"]
 
 
-def parse_ci_mails(msgs, gated):
+def parse_ci_from(root):
+    """The root's X-Lkml-CI-From -> (trusted sender, reasons). Absent, or
+    not exactly one well-formed address: @operator (never "anyone")."""
+    if root is None or not root["ok"]:
+        return OPERATOR, []
+    vals = set(header_values(root, CI_FROM_HEADER))
+    if not vals:
+        return OPERATOR, []
+    if len(vals) == 1:
+        addr = next(iter(vals))
+        if not addr.startswith("@"):
+            addr = "@" + addr
+        if ADDRESS_RE.match(addr):
+            return addr, []
+    shown = " / ".join(repr(clip(v)) for v in sorted(vals))
+    return OPERATOR, [f"root {CI_FROM_HEADER} {shown} is not one "
+                      f"well-formed address; {OPERATOR}'s CI mail counts"]
+
+
+def parse_ci_mails(msgs, gated, trusted=OPERATOR):
     """Every CI result mail -> (trusted records, reasons). A CI header
-    counts only on a message From @operator (any seat can set an X-*
-    header); anything else is ignored, and a reason only when `gated`."""
+    counts only on a message From `trusted` (any seat can set an X-*
+    header); anything else is ignored, and a reason only when `gated`.
+    X-Lkml-CI-From on a non-root message is ignored: only the root names
+    the sender."""
     records, reasons = [], []
     for m in msgs[1:]:
         if not m["ok"]:
             continue
+        if gated and header_values(m, CI_FROM_HEADER):
+            reasons.append(
+                f"message seq {m['seq']} ({m['id']}) from "
+                f"{clip(m['from'] or 'an unknown sender')} carries "
+                f"{CI_FROM_HEADER}; only the root names the trusted CI "
+                f"sender; ignored")
         present = [h for h in CI_HEADERS if header_values(m, h)]
         if not present:
             continue
         where = f"message seq {m['seq']} ({m['id']})"
-        if m["from"] != OPERATOR:
+        if m["from"] != trusted:
             if gated:
                 reasons.append(
                     f"{where} from {clip(m['from'] or 'an unknown sender')} "
-                    f"carries {present[0]}; only {OPERATOR}'s CI mail "
+                    f"carries {present[0]}; only {trusted}'s CI mail "
                     f"counts; ignored")
             continue
         statuses = set(header_values(m, CI_STATUS_HEADER))
@@ -675,11 +714,11 @@ def parse_ci_mails(msgs, gated):
     return records, reasons
 
 
-def ci_result(records, frozen_head, target, source):
+def ci_result(records, frozen_head, target, source, trusted=OPERATOR):
     """The newest trusted CI result on the frozen head -> (ci object,
     reasons). The object reports the fact whatever the source; reasons are
     raised only when the root opted in with `ci`."""
-    ci = {"source": source, "status": None, "sha": None, "branch": None,
+    ci = {"source": source, "trusted_from": trusted, "status": None, "sha": None, "branch": None,
           "url": None, "message_id": None, "covers_target": None}
     gated = source == "ci"
     if frozen_head is None:
@@ -1529,7 +1568,9 @@ def build_state(export, status, now):
     reasons += push_reasons
     source, source_reasons = parse_suite_source(root)
     reasons += source_reasons
-    ci_records, ci_mail_reasons = parse_ci_mails(msgs, source == "ci")
+    trusted, from_reasons = parse_ci_from(root)
+    reasons += from_reasons
+    ci_records, ci_mail_reasons = parse_ci_mails(msgs, source == "ci", trusted)
     reasons += ci_mail_reasons
     timeout, timeout_reasons = parse_question_timeout(root)
     reasons += timeout_reasons
@@ -1561,7 +1602,7 @@ def build_state(export, status, now):
             cur = len(versions) - 1
     reasons += unanswered_push(msgs, frozen_head)
 
-    ci, ci_reasons = ci_result(ci_records, frozen_head, target, source)
+    ci, ci_reasons = ci_result(ci_records, frozen_head, target, source, trusted)
     reasons += ci_reasons
     # Under `ci` the suite's truth is CI's result, not a seat's claim: no
     # seat owes a Suite-Run line, and none is read.

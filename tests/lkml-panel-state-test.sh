@@ -2238,7 +2238,7 @@ run_case ci0
 check "(ci0) no header: STALLED on the Suite-Run gate" "STALLED" "$(jr .status)"
 reason_has "(ci0) the missing Suite-Run is the reason" "@tests signed off without a clean suite run (missing"
 check "(ci0) ci.source is null" "null" "$(j .ci.source)"
-check "(ci0) ci is all null" '{"source":null,"status":null,"sha":null,"branch":null,"url":null,"message_id":null,"covers_target":null}' "$(j .ci)"
+check "(ci0) ci is all null" '{"source":null,"trusted_from":"@operator","status":null,"sha":null,"branch":null,"url":null,"message_id":null,"covers_target":null}' "$(j .ci)"
 
 gen ci1 <<'PY'
 e = [ci_root()] + panel_positive() + [sec(20), ci_mail(30, "success", A)]
@@ -2252,7 +2252,9 @@ check "(ci1) CONVERGED" "CONVERGED" "$(jr .status)"
 check "(ci1) SIGNED-OFF" "SIGNED-OFF" "$(jr .verdict)"
 check "(ci1) every suite_run is null" "[null,null,null]" "$(j '[.seats[].suite_run]')"
 check "(ci1) the roster still reports the Suite" '"pytest -q" ["@tests"]' "$(jr '"\"" + .roster.suite + "\" " + (.roster.suite_seats | tojson)')"
-check "(ci1) the ci object" '{"source":"ci","status":"success","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","branch":"pr/example","url":null,"message_id":"m030","covers_target":true}' "$(j .ci)"
+check "(ci1) the ci object" '{"source":"ci","trusted_from":"@operator","status":"success","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","branch":"pr/example","url":null,"message_id":"m030","covers_target":true}' "$(j .ci)"
+
+ci1_out="$OUT"
 
 gen ci1b <<'PY'
 e = [ci_root()] + panel_positive() + [sec(20), ci_mail(30, "success", A, url="https://ci.example.com/run/7")]
@@ -2453,6 +2455,132 @@ run_case ci12
 # head: a reason, STALLED (SIGNED-OFF on v1 is otherwise valid).
 check "(ci12) no frozen head under ci: STALLED" "STALLED" "$(jr .status)"
 reason_has "(ci12) the named reason" "CI gate: no frozen head is known, so no CI result can apply"
+
+# X-Lkml-CI-From: the root names the one sender whose CI headers count.
+gen cf0 <<'PY'
+e = [ci_root(extra=[["X-Lkml-CI-From", "@operator"]])] + panel_positive() + [sec(20), ci_mail(30, "success", A)]
+write(D, export(e), status())
+PY
+run_case cf0
+# Hand-worked: ci1's thread with the root naming @operator itself: the same
+# rule as no header, so the output is identical to ci1's (bar `now`).
+check "(cf0) naming @operator is today's rule" "$(jq -c 'del(.now)' <<<"$ci1_out")" "$(jq -c 'del(.now)' <<<"$OUT")"
+
+gen cf1 <<'PY'
+e = [ci_root(extra=[["X-Lkml-CI-From", "@ci-x"]])] + panel_positive() + [sec(20), ci_mail(30, "success", A, frm="@ci-x")]
+write(D, export(e), status())
+PY
+run_case cf1
+# Hand-worked: ci1 with the root naming @ci-x and the success mail From
+# @ci-x (To @operator, but that is not required): trusted, CONVERGED.
+check "(cf1) the named sender's success converges" "CONVERGED" "$(jr .status)"
+check "(cf1) ci.trusted_from" "@ci-x" "$(jr .ci.trusted_from)"
+check "(cf1) ci.message_id" "m030" "$(jr .ci.message_id)"
+check "(cf1) no reasons" "[]" "$(j .reasons)"
+
+gen cf2 <<'PY'
+e = [ci_root(extra=[["X-Lkml-CI-From", "@ci-x"]])] + panel_positive() + [sec(20), ci_mail(30, "success", A)]
+write(D, export(e), status())
+PY
+run_case cf2
+# Hand-worked: root names @ci-x; the success is From @operator, who is no
+# longer the trusted sender: ignored with a reason naming @ci-x, no result.
+check "(cf2) @operator's mail no longer counts" "STALLED" "$(jr .status)"
+reason_has "(cf2) the untrusted reason names the trusted sender" "from @operator carries X-Lkml-CI-Status; only @ci-x's CI mail counts; ignored"
+reason_has "(cf2) CI has not reported" "CI has not reported on aaaaaaaa"
+check "(cf2) ci.status is null" "null" "$(j .ci.status)"
+
+gen cf3 <<'PY'
+e = [ci_root(extra=[["X-Lkml-CI-From", "ci-x"]])] + panel_positive() + [sec(20), ci_mail(30, "success", A, frm="@ci-x")]
+write(D, export(e), status())
+PY
+run_case cf3
+# Hand-worked: a bare name is accepted as elsewhere: @ci-x is trusted.
+check "(cf3) bare name converges" "CONVERGED" "$(jr .status)"
+check "(cf3) trusted_from is the @-form" "@ci-x" "$(jr .ci.trusted_from)"
+
+gen cf4 <<'PY'
+e = [ci_root(extra=[["X-Lkml-CI-From", "@ci-x"]])] + panel_positive() + [sec(20),
+     msg(30, "@ci-x", "CI result: success.", to=["@pr-author"],
+         extra=[["X-Lkml-CI-Status", "success"], ["X-Lkml-CI-Head", "pr/example " + A]])]
+write(D, export(e), status())
+PY
+run_case cf4
+# Hand-worked: the named sender's mail is addressed to @pr-author, not
+# @operator: it still counts, so CONVERGED.
+check "(cf4) no particular recipient is needed" "CONVERGED" "$(jr .status)"
+
+gen cf5 <<'PY'
+e = [ci_root(extra=[["X-Lkml-CI-From", "@CI x"]])] + panel_positive() + [sec(20),
+     ci_mail(30, "success", A), ci_mail(31, "success", A, frm="@ci-x")]
+write(D, export(e), status())
+PY
+run_case cf5
+# Hand-worked: '@CI x' is not an address: a reason, @operator is trusted.
+# m030 (From @operator) is the result (success); m031 (From @ci-x) is
+# ignored with a reason naming @operator. The root reason blocks: STALLED.
+reason_has "(cf5) the malformed header is a reason" "root X-Lkml-CI-From '@CI x' is not one well-formed address"
+check "(cf5) @operator is trusted" "@operator" "$(jr .ci.trusted_from)"
+check "(cf5) @operator's success is the result" "success m030" "$(jr '.ci.status + " " + .ci.message_id')"
+reason_has "(cf5) the other sender is ignored, naming @operator" "from @ci-x carries X-Lkml-CI-Status; only @operator's CI mail counts; ignored"
+check "(cf5) the reason blocks" "STALLED" "$(jr .status)"
+
+gen cf5b <<'PY'
+e = [ci_root(extra=[["X-Lkml-CI-From", "@ci-x"], ["X-Lkml-CI-From", "@ci-y"]])] + panel_positive() + [sec(20),
+     ci_mail(30, "success", A, frm="@ci-x")]
+write(D, export(e), status())
+PY
+run_case cf5b
+# Hand-worked: two distinct values: a reason naming both, @operator trusted
+# (never "anyone"), so the @ci-x success is ignored.
+reason_has "(cf5b) multi-valued is a reason" "root X-Lkml-CI-From '@ci-x' / '@ci-y' is not one well-formed address"
+check "(cf5b) @operator is trusted" "@operator" "$(jr .ci.trusted_from)"
+check "(cf5b) the @ci-x mail is not a result" "null" "$(j .ci.status)"
+
+gen cf5c <<'PY'
+e = [ci_root(extra=[["X-Lkml-CI-From", ""]])] + panel_positive() + [sec(20), ci_mail(30, "success", A)]
+write(D, export(e), status())
+PY
+run_case cf5c
+# Hand-worked: an empty value is not an address: a reason, @operator trusted.
+reason_has "(cf5c) empty is a reason" "root X-Lkml-CI-From '' is not one well-formed address"
+check "(cf5c) @operator is trusted" "@operator" "$(jr .ci.trusted_from)"
+
+gen cf6 <<'PY'
+e = [ci_root()] + panel_positive() + [sec(20),
+     ci_mail(30, "success", A, frm="@ci-x", extra=[["X-Lkml-CI-From", "@ci-x"]])]
+write(D, export(e), status())
+PY
+run_case cf6
+# Hand-worked: no root header; a reply naming @ci-x is ignored (a reason
+# under ci), and @operator stays trusted so @ci-x's success is ignored too.
+check "(cf6) STALLED" "STALLED" "$(jr .status)"
+reason_has "(cf6) the non-root header is a reason" "carries X-Lkml-CI-From; only the root names the trusted CI sender; ignored"
+reason_has "(cf6) the sender is untrusted" "from @ci-x carries X-Lkml-CI-Status; only @operator's CI mail counts"
+check "(cf6) trusted_from" "@operator" "$(jr .ci.trusted_from)"
+
+gen cf6b <<'PY'
+e = [ci_root(extra=[["X-Lkml-CI-From", "@ci-x"]])] + panel_positive() + [sec(20),
+     ci_mail(30, "success", A, frm="@ci-x", extra=[["X-Lkml-CI-From", "@ci-y"]])]
+write(D, export(e), status())
+PY
+run_case cf6b
+# Hand-worked: the trusted sender's result also carries the header: the
+# header is ignored with one reason, the result still counts. That reason
+# alone blocks convergence: STALLED with exactly one reason.
+check "(cf6b) the result counts" "success m030" "$(jr '.ci.status + " " + .ci.message_id')"
+check "(cf6b) trusted_from is the root's" "@ci-x" "$(jr .ci.trusted_from)"
+check "(cf6b) exactly one reason" "1" "$(jr '.reasons | length')"
+reason_has "(cf6b) the header reason" "carries X-Lkml-CI-From; only the root names"
+
+gen cf6c <<'PY'
+e = suite_case("Reviewed-by: T") + [ci_mail(30, "success", A, frm="@ci-x", extra=[["X-Lkml-CI-From", "@ci-x"]])]
+write(D, export(e), status())
+PY
+run_case cf6c
+# Hand-worked: no `ci` on the root: a non-root X-Lkml-CI-From is no reason.
+reason_lacks "(cf6c) no reason outside the ci gate" "X-Lkml-CI-From"
+check "(cf6c) trusted_from is still reported" "@operator" "$(jr .ci.trusted_from)"
 
 printf '\n== operator questions and the timeout ==\n'
 # Shared shape: qthread(): v1 at head A, @core's message at seq 2 (dated
@@ -2678,7 +2806,7 @@ for c in "${cases_run[@]}"; do
         and (.roster.suite != null or .roster.suite_seats == [])
         and (.secretary == null or (.secretary | has("message_id") and has("version") and has("status")
              and has("verdict") and has("on_target") and has("malformed") and has("carried")))
-        and (.ci | has("source") and has("status") and has("sha") and has("branch") and has("url") and has("message_id") and has("covers_target"))
+        and (.ci | has("source") and has("trusted_from") and has("status") and has("sha") and has("branch") and has("url") and has("message_id") and has("covers_target"))
         and (.status != "CONVERGED" or .ci.source != "ci" or .ci.status == "success")
         and (.questions | type == "array")
         and all(.questions[]; has("seat") and has("message_id") and has("asked_at") and has("age_seconds") and has("timed_out") and has("subject"))
