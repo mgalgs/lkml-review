@@ -1131,6 +1131,27 @@ def human_thread(seq_up=2, seq_cover=3, cover_head=H, up_head=H, verdict="SIGNED
     return m
 FX2
 
+# The CI gate's fixtures: a root that opts in (`X-Lkml-Suite-Source: ci`,
+# still carrying its Suite lines, which the gate must not read), and the
+# CI side's result mail.
+cat >> "$work/fx.py" <<'FX3'
+def ci_root(head=A, extra=(), body=None):
+    if body is None:
+        body = "\n".join([ROOT_BODY.replace("f" * 40, head),
+                          "Suite: pytest -q", "Suite-Seats: @tests"])
+    return root(sha=A, body=body,
+                extra=[["X-Lkml-Suite-Source", "ci"]] + [list(x) for x in extra])
+
+def ci_mail(seq, status, head=A, frm="@operator", url=None, extra=(),
+            head_value=None):
+    h = [["X-Lkml-CI-Status", status],
+         ["X-Lkml-CI-Head", head_value or ("pr/example " + head)]]
+    if url:
+        h.append(["X-Lkml-CI-Url", url])
+    h.extend(list(x) for x in extra)
+    return msg(seq, frm, "CI result: %s." % status, extra=h, to=["@operator"])
+FX3
+
 gen fh_a <<'PY'
 e = [frozen_root()] + panel_positive(sha=F, ver=1) + [sec(20, "CONVERGED", 1, "SIGNED-OFF", F, 1)]
 write(D, export(e), status(sha=F, ver=1))
@@ -2183,6 +2204,236 @@ check "(sc2) could-not-run carries as such" "could-not-run" "$(seat @tests suite
 reason_has "(sc2) the usual suite reason, on the carry version" "@tests signed off without a clean suite run (could-not-run"
 check "(sc2) not CONVERGED" "STALLED" "$(jr .status)"
 
+printf '\n== CI gate: X-Lkml-Suite-Source ci and the operator'"'"'s CI mail ==\n'
+# Shared shape: a v1 panel at head A: @core, @tests, @docs positive on A
+# (seq 2-4), the secretary CONVERGED SIGNED-OFF v1 on A (seq 20), the
+# postmaster quiet. The root says `ci` and still has Suite lines, but no
+# seat states a Suite-Run, so under the Suite-Run gate it would be STALLED.
+gen ci0 <<'PY'
+write(D, export(suite_case("Reviewed-by: T")), status())
+PY
+run_case ci0
+# Hand-worked: no Suite-Source header: the Suite-Run gate is in force, @tests
+# has no Suite-Run line, so STALLED with the missing reason; ci all null.
+check "(ci0) no header: STALLED on the Suite-Run gate" "STALLED" "$(jr .status)"
+reason_has "(ci0) the missing Suite-Run is the reason" "@tests signed off without a clean suite run (missing"
+check "(ci0) ci.source is null" "null" "$(j .ci.source)"
+check "(ci0) ci is all null" '{"source":null,"status":null,"sha":null,"branch":null,"url":null,"message_id":null,"covers_target":null}' "$(j .ci)"
+
+gen ci1 <<'PY'
+e = [ci_root()] + panel_positive() + [sec(20), ci_mail(30, "success", A)]
+write(D, export(e), status())
+PY
+run_case ci1
+# Hand-worked: three positives on A, secretary CONVERGED SIGNED-OFF v1 on
+# A, frozen head A == target A, newest trusted CI mail (m030, From
+# @operator) says success on A. No Suite-Run anywhere, and none required.
+check "(ci1) CONVERGED" "CONVERGED" "$(jr .status)"
+check "(ci1) SIGNED-OFF" "SIGNED-OFF" "$(jr .verdict)"
+check "(ci1) every suite_run is null" "[null,null,null]" "$(j '[.seats[].suite_run]')"
+check "(ci1) the roster still reports the Suite" '"pytest -q" ["@tests"]' "$(jr '"\"" + .roster.suite + "\" " + (.roster.suite_seats | tojson)')"
+check "(ci1) the ci object" '{"source":"ci","status":"success","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","branch":"pr/example","url":null,"message_id":"m030","covers_target":true}' "$(j .ci)"
+
+gen ci1b <<'PY'
+e = [ci_root()] + panel_positive() + [sec(20), ci_mail(30, "success", A, url="https://ci.example.com/run/7")]
+e[3] = msg(4, "@docs", "Reviewed-by: D", sha=A, ver=1)
+e[2] = msg(3, "@tests", "Suite-Run: 0 passed, 0 failed\nReviewed-by: T", sha=A, ver=1)
+write(D, export(e), status())
+PY
+run_case ci1b
+# Hand-worked: as ci1, but @tests wrote a Suite-Run that would be no-tests
+# (blocking under the Suite-Run gate). Under ci it is not read: CONVERGED,
+# suite_run null, and the url is carried.
+check "(ci1b) a seat's Suite-Run line is not gated under ci" "CONVERGED" "$(jr .status)"
+check "(ci1b) suite_run stays null" "null" "$(seat @tests suite_run)"
+check "(ci1b) the url is reported" "https://ci.example.com/run/7" "$(jr .ci.url)"
+
+gen ci2 <<'PY'
+e = [ci_root()] + panel_positive() + [sec(20), ci_mail(30, "success", B)]
+write(D, export(e), status())
+PY
+run_case ci2
+# Hand-worked: the only trusted success is on B, not on the frozen head A.
+# It says nothing about A: "CI has not reported on aaaaaaaa", STALLED.
+check "(ci2) a result on another sha does not converge" "STALLED" "$(jr .status)"
+reason_has "(ci2) CI has not reported on the head" "CI has not reported on aaaaaaaa"
+check "(ci2) ci.status is null" "null" "$(j .ci.status)"
+check "(ci2) ci.source is still ci" "ci" "$(jr .ci.source)"
+
+gen ci3 <<'PY'
+e = [ci_root()] + panel_positive() + [sec(20), ci_mail(30, "failure", A)]
+write(D, export(e), status())
+PY
+run_case ci3
+# Hand-worked: the result on A is failure: STALLED, "CI failed on aaaaaaaa
+# (message m030)".
+check "(ci3) failure blocks" "STALLED" "$(jr .status)"
+reason_has "(ci3) CI failed" "CI failed on aaaaaaaa (message m030)"
+check "(ci3) ci.status is failure" "failure" "$(jr .ci.status)"
+
+gen ci4 <<'PY'
+e = [ci_root()] + panel_positive() + [sec(20), ci_mail(30, "pending", A)]
+write(D, export(e), status())
+PY
+run_case ci4
+# Hand-worked: pending is no result yet: not CONVERGED.
+check "(ci4) pending blocks" "STALLED" "$(jr .status)"
+reason_has "(ci4) the pending reason" "CI has not reported on aaaaaaaa (pending, message m030)"
+
+gen ci5 <<'PY'
+e = [ci_root()] + panel_positive() + [sec(20)]
+write(D, export(e), status())
+PY
+run_case ci5
+# Hand-worked: no CI mail at all under ci: missing is a reason.
+check "(ci5) no CI mail blocks" "STALLED" "$(jr .status)"
+reason_has "(ci5) the missing reason" "CI has not reported on aaaaaaaa"
+check "(ci5) ci.status is null" "null" "$(j .ci.status)"
+
+gen ci6 <<'PY'
+e = [ci_root()] + panel_positive() + [sec(20), ci_mail(30, "success", A, frm="@tests")]
+write(D, export(e), status())
+PY
+run_case ci6
+# Hand-worked: a "success" CI mail from a seat is ignored (any seat can set
+# an X-* header), so there is no CI result: not CONVERGED, and the forgery
+# is a reason that names the sender.
+check "(ci6) a forged success does not converge" "STALLED" "$(jr .status)"
+check "(ci6) ci.status is null" "null" "$(j .ci.status)"
+reason_has "(ci6) the forgery is named" "from @tests carries X-Lkml-CI-Status; only @operator's CI mail counts; ignored"
+reason_has "(ci6) and CI has not reported" "CI has not reported on aaaaaaaa"
+
+gen ci6b <<'PY'
+e = [ci_root()] + panel_positive() + [sec(20), ci_mail(30, "success", A),
+     ci_mail(31, "failure", A, frm="@core")]
+write(D, export(e), status())
+PY
+run_case ci6b
+# Hand-worked: the trusted success (m030) stands; the later forged failure
+# from @core is ignored, so the only blocker is the forgery reason itself.
+check "(ci6b) the trusted result stands" "success m030" "$(jr '"\(.ci.status) \(.ci.message_id)"')"
+check "(ci6b) the forgery is the only reason" "1" "$(jr '.reasons | length')"
+check "(ci6b) STALLED on that reason alone" "STALLED" "$(jr .status)"
+
+gen ci7a <<'PY'
+e = [ci_root()] + panel_positive() + [sec(20), upstream(30, H, mode="carry", to=["@operator"]),
+     ci_mail(31, "success", A)]
+write(D, export(e), status())
+PY
+run_case ci7a
+# Hand-worked: a carry push to H makes the thread v2 at H: the verdicts and
+# the secretary carry, the frozen head is H. CI succeeded on A, the OLD
+# head, which says nothing about H: not CONVERGED.
+check "(ci7a) CI on the old head does not cover the pushed head" "STALLED" "$(jr .status)"
+reason_has "(ci7a) CI has not reported on the pushed head" "CI has not reported on 11111111"
+check "(ci7a) the target is the carry version at H" "2 $(printf '1%.0s' $(seq 40))" "$(jr '"\(.target.version) \(.target.sha)"')"
+
+gen ci7b <<'PY'
+e = [ci_root()] + panel_positive() + [sec(20), upstream(30, H, mode="carry", to=["@operator"]),
+     ci_mail(31, "success", H)]
+write(D, export(e), status())
+PY
+run_case ci7b
+# Hand-worked: as ci7a, but CI succeeded on H: the carried verdicts plus a
+# green CI on the new frozen head converge, SIGNED-OFF (target == frozen head).
+check "(ci7b) CI on the pushed head converges the carry version" "CONVERGED SIGNED-OFF" "$(jr '"\(.status) \(.verdict)"')"
+check "(ci7b) ci.sha is H" "$(printf '1%.0s' $(seq 40))" "$(jr .ci.sha)"
+check "(ci7b) covers the target" "true" "$(jr .ci.covers_target)"
+
+gen ci8 <<'PY'
+e = [ci_root()] + panel_positive() + [sec(20), ci_mail(30, "success", A), ci_mail(31, "failure", A)]
+write(D, export(e), status())
+PY
+run_case ci8
+# Hand-worked: two trusted results on A; the newest (seq 31) is failure.
+check "(ci8) the newest result wins: failure" "STALLED" "$(jr .status)"
+reason_has "(ci8) failed on message m031" "CI failed on aaaaaaaa (message m031)"
+check "(ci8) ci.message_id" "m031" "$(jr .ci.message_id)"
+
+gen ci8b <<'PY'
+e = [ci_root()] + panel_positive() + [sec(20), ci_mail(30, "failure", A), ci_mail(31, "success", A)]
+write(D, export(e), status())
+PY
+run_case ci8b
+# Hand-worked: failure at seq 30, then success at seq 31 (a re-run): the
+# newest is success.
+check "(ci8b) a re-run that passed converges" "CONVERGED" "$(jr .status)"
+check "(ci8b) ci.message_id" "m031" "$(jr .ci.message_id)"
+
+gen ci9 <<'PY'
+e = [ci_root()] + panel_positive() + [sec(20), ci_mail(30, "success", A)]
+e[0] = ci_root()
+e[0]["headers"] = [h for h in e[0]["headers"] if h[0] != "X-Lkml-Suite-Source"] + [["X-Lkml-Suite-Source", "local"]]
+write(D, export(e), status())
+PY
+run_case ci9
+# Hand-worked: Suite-Source 'local' is not ci: reason, Suite-Run gate in
+# force (@tests has no Suite-Run: missing), ci.source null, yet the trusted
+# success on A is still reported as a fact.
+check "(ci9) unknown source: STALLED" "STALLED" "$(jr .status)"
+reason_has "(ci9) the source reason" "root X-Lkml-Suite-Source 'local' is not ci; the Suite-Run gate stays in force"
+reason_has "(ci9) the Suite-Run gate is in force" "@tests signed off without a clean suite run (missing"
+check "(ci9) ci.source is null" "null" "$(j .ci.source)"
+check "(ci9) the CI result is still a fact" "success" "$(jr .ci.status)"
+check "(ci9) @tests' suite_run is read as before" "missing" "$(seat @tests suite_run.status)"
+
+gen ci9b <<'PY'
+e = [ci_root()] + panel_positive() + [sec(20), ci_mail(30, "success", A)]
+e[0]["headers"].append(["X-Lkml-Suite-Source", "local"])
+write(D, export(e), status())
+PY
+run_case ci9b
+# Hand-worked: two distinct values (ci, local) are not 'ci': same as ci9.
+check "(ci9b) two distinct values leave the Suite-Run gate in force" "null" "$(j .ci.source)"
+reason_has "(ci9b) the source reason" "is not ci; the Suite-Run gate stays in force"
+
+gen ci10 <<'PY'
+e = green(sha=B, ver=2)
+e[0] = root(sha=B, ver=2, body=ROOT_BODY, extra=[["X-Lkml-Suite-Source", "ci"]])
+e.append(ci_mail(30, "success", F))
+write(D, export(e), status(sha=B, ver=2))
+PY
+run_case ci10
+# Hand-worked: v2 at B is the author's re-roll on top of the frozen head F.
+# CI succeeded on F, the frozen head; B itself (the panel's own commits) was
+# never CI-tested. RESPIN is valid (B is not the frozen head), the gate
+# passes on F, ci.covers_target says false, and the bundle is F..B.
+check "(ci10) CONVERGED RESPIN" "CONVERGED RESPIN" "$(jr '"\(.status) \(.verdict)"')"
+check "(ci10) the result is on the frozen head, not the target" "false" "$(jr .ci.covers_target)"
+check "(ci10) bundle base is the frozen head" "$(printf 'f%.0s' $(seq 40))" "$(jr .bundle.base)"
+
+gen ci11 <<'PY'
+e = [ci_root()] + panel_positive() + [sec(20), ci_mail(30, "green", A)]
+write(D, export(e), status())
+PY
+run_case ci11
+# Hand-worked: status 'green' is not success/failure/pending: ignored with a
+# reason, so no result: not CONVERGED.
+check "(ci11) a bad status is ignored" "STALLED" "$(jr .status)"
+reason_has "(ci11) the malformed reason" "X-Lkml-CI-Status 'green' is not success, failure or pending; ignored"
+reason_has "(ci11) and no result" "CI has not reported on aaaaaaaa"
+
+gen ci11b <<'PY'
+e = [ci_root()] + panel_positive() + [sec(20), ci_mail(30, "success", A, head_value="garbage")]
+write(D, export(e), status())
+PY
+run_case ci11b
+# Hand-worked: a head that is not '<branch> <sha>' names no commit: ignored.
+check "(ci11b) an unparseable head is ignored" "STALLED" "$(jr .status)"
+reason_has "(ci11b) the malformed reason" "no parseable X-Lkml-CI-Head; ignored"
+reason_has "(ci11b) and no result" "CI has not reported"
+
+gen ci12 <<'PY'
+body = "\n".join(l for l in ROOT_BODY.split("\n") if not l.startswith("Frozen-Head:"))
+e = [ci_root(body=body)] + panel_positive() + [sec(20), ci_mail(30, "success", A)]
+write(D, export(e), status())
+PY
+run_case ci12
+# Hand-worked: no Frozen-Head anywhere, so no CI result can be matched to a
+# head: a reason, STALLED (SIGNED-OFF on v1 is otherwise valid).
+check "(ci12) no frozen head under ci: STALLED" "STALLED" "$(jr .status)"
+reason_has "(ci12) the named reason" "CI gate: no frozen head is known, so no CI result can apply"
+
 printf '\n== invariants over every case above ==\n'
 inv_bad=""; inv_n=0; inv_conv=0; diff_bad=""; diff_n=0
 # Opt-in differential check: LKML_PANEL_STATE_BASELINE names an earlier copy
@@ -2190,7 +2441,7 @@ inv_bad=""; inv_n=0; inv_conv=0; diff_bad=""; diff_n=0
 # new output, minus the keys this change added, must equal the old output
 # byte for byte. Unset, it did not run, and reports nothing.
 baseline="${LKML_PANEL_STATE_BASELINE:-}"
-strip_new='del(.tier, .panel, .push) | .seats |= map(del(.carried)) | if .secretary then .secretary |= del(.carried) else . end'
+strip_new='del(.tier, .panel, .push, .ci) | .seats |= map(del(.carried)) | if .secretary then .secretary |= del(.carried) else . end'
 for c in "${cases_run[@]}"; do
     d="$work/case-$c"
     o="$("$ps" --export-file "$d/export.json" --status-file "$d/status.json" 2>/dev/null)" || { inv_bad+=" $c(exit)"; continue; }
@@ -2201,7 +2452,7 @@ for c in "${cases_run[@]}"; do
         [[ "$(jq -c "$strip_new" <<<"$o")" == "$ob" ]] || diff_bad+=" $c"
     fi
     if ! jq -e '
-        (["schema","thread","subject","status","verdict","target","roster","tier","panel","push","frozen_head","seats","secretary","postmaster","bundle","reasons"]
+        (["schema","thread","subject","status","verdict","target","roster","tier","panel","push","frozen_head","ci","seats","secretary","postmaster","bundle","reasons"]
          - keys | length) == 0
         and (.status | IN("CONVERGED","IN-PROGRESS","STALLED","NEEDS-OPERATOR"))
         and ((.status == "CONVERGED") == (.reasons | length == 0))
@@ -2217,6 +2468,8 @@ for c in "${cases_run[@]}"; do
         and (.roster.suite != null or .roster.suite_seats == [])
         and (.secretary == null or (.secretary | has("message_id") and has("version") and has("status")
              and has("verdict") and has("on_target") and has("malformed") and has("carried")))
+        and (.ci | has("source") and has("status") and has("sha") and has("branch") and has("url") and has("message_id") and has("covers_target"))
+        and (.status != "CONVERGED" or .ci.source != "ci" or .ci.status == "success")
         and (.tier | has("name") and has("reason") and has("source") and has("message_id"))
         and (.push == null or (.push | has("mode") and has("message_id") and has("seq") and has("sha") and has("seats") and has("tier") and has("malformed") and has("answered")))
         and (.panel | type == "array") and (.panel[:(.roster.panel | length)] == .roster.panel)

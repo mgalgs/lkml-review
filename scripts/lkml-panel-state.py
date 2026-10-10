@@ -256,6 +256,37 @@ fix the environment). Its state stays "positive": the seat HAS answered,
 and a consumer that keys off state (lkml-wake-gate.py) must still see
 that. A suite seat that is blocking or asking needs no extra reason.
 
+Suite source and the CI gate -- a root header `X-Lkml-Suite-Source: ci`
+turns the gate on for that thread, and ONLY that thread. Without it
+nothing here changes: the Suite-Run gate above is in force, byte for
+byte. Any other value (or several distinct values) is a reason, leaves the
+Suite-Run gate in force, and reports ci.source null.
+
+The CI side posts one mail per CI result, `To: @operator`:
+
+    X-Lkml-CI-Status: success|failure|pending
+    X-Lkml-CI-Head:   <branch> <sha>     (the commit CI ran on)
+    X-Lkml-CI-Url:    <url>              (optional)
+
+TRUST: a CI header counts only on a message From exactly `@operator`.
+Any seat can set an X-* header, so on any other sender it is ignored and,
+under `ci`, a reason. A mail from @operator whose status is not one
+distinct value of success/failure/pending, or whose head is not one
+parseable `<branch> <sha>`, is ignored with a reason too.
+
+Under `ci`, CONVERGED needs the NEWEST (highest seq) trusted CI mail whose
+sha equals the current frozen head's to say `success`. None, or `pending`,
+is "CI has not reported on <sha8>"; `failure` is "CI failed on <sha8>".
+A result on any other sha says nothing about this one: a carry version's
+frozen head is the pushed head, so a rebase needs CI on the new head. The
+seats' Suite-Run lines are neither required nor read (every suite_run is
+null); roster.suite and roster.suite_seats are still reported. The panel's
+own commits (a RESPIN's bundle) are never CI-tested: ci.covers_target is
+false when the target sits above the frozen head.
+
+The `ci` object reports the newest trusted result on the frozen head on
+every thread, gated or not; reasons are raised only under `ci`.
+
 Secretary -- the roster's Secretary seat reports the panel's overall
 state in the LAST non-empty lines of a message body, in this order:
 
@@ -323,6 +354,11 @@ Output (null, never an omitted key, for what is unknown):
                                         # null; see "Pushes and push modes"
      "frozen_head": {"sha","source"},   # of the current target; source
                                         # "root" or "upstream"
+     "ci": {"source","status","sha","branch","url","message_id",
+            "covers_target"},           # source "ci"|null; the rest describe
+                                        # the newest trusted CI result on
+                                        # the frozen head, null when none;
+                                        # see "Suite source and the CI gate"
      "seats": [{"seat","state","verdict","message_id","version","sha",
                 "suite_run","carried"}],   # suite_run: null, or {"status",
                                  # "passed","failed","detail"}; see "Suite
@@ -381,6 +417,13 @@ PUSH_MODE_HEADER = "X-Lkml-Push-Mode"
 RECHECK_HEADER = "X-Lkml-Recheck-Seats"
 ADD_SEATS_HEADER = "X-Lkml-Add-Seats"
 PUSH_MODES = ("carry", "recheck", "escalate")
+OPERATOR = "@operator"
+SUITE_SOURCE_HEADER = "X-Lkml-Suite-Source"
+CI_STATUS_HEADER = "X-Lkml-CI-Status"
+CI_HEAD_HEADER = "X-Lkml-CI-Head"
+CI_URL_HEADER = "X-Lkml-CI-Url"
+CI_HEADERS = (CI_STATUS_HEADER, CI_HEAD_HEADER, CI_URL_HEADER)
+CI_STATUSES = ("success", "failure", "pending")
 
 USAGE = """\
 Usage: lkml-panel-state.py <thread-id> [--remote]
@@ -536,6 +579,91 @@ def parse_tier(root):
         reasons.append(f"root {TIER_HEADER} {shown} is not quick, standard "
                        f"or full")
     return tier, reasons
+
+
+def parse_suite_source(root):
+    """The root's X-Lkml-Suite-Source -> (source|None, reasons). Only the
+    value `ci` turns the CI gate on; see the module docstring, "Suite
+    source and the CI gate"."""
+    if root is None or not root["ok"]:
+        return None, []
+    vals = set(header_values(root, SUITE_SOURCE_HEADER))
+    if not vals:
+        return None, []
+    if vals == {"ci"}:
+        return "ci", []
+    shown = " / ".join(repr(clip(v)) for v in sorted(vals))
+    return None, [f"root {SUITE_SOURCE_HEADER} {shown} is not ci; the "
+                  f"Suite-Run gate stays in force"]
+
+
+def parse_ci_mails(msgs, gated):
+    """Every CI result mail -> (trusted records, reasons). A CI header
+    counts only on a message From @operator (any seat can set an X-*
+    header); anything else is ignored, and a reason only when `gated`."""
+    records, reasons = [], []
+    for m in msgs[1:]:
+        if not m["ok"]:
+            continue
+        present = [h for h in CI_HEADERS if header_values(m, h)]
+        if not present:
+            continue
+        where = f"message seq {m['seq']} ({m['id']})"
+        if m["from"] != OPERATOR:
+            if gated:
+                reasons.append(
+                    f"{where} from {clip(m['from'] or 'an unknown sender')} "
+                    f"carries {present[0]}; only {OPERATOR}'s CI mail "
+                    f"counts; ignored")
+            continue
+        statuses = set(header_values(m, CI_STATUS_HEADER))
+        head = single_target_header(m, CI_HEAD_HEADER)
+        if len(statuses) != 1 or next(iter(statuses)) not in CI_STATUSES:
+            shown = " / ".join(repr(clip(v)) for v in sorted(statuses)) \
+                or "missing"
+            if gated:
+                reasons.append(
+                    f"CI mail seq {m['seq']} ({m['id']}): {CI_STATUS_HEADER} "
+                    f"{shown} is not success, failure or pending; ignored")
+            continue
+        if head is None:
+            if gated:
+                reasons.append(
+                    f"CI mail seq {m['seq']} ({m['id']}): no parseable "
+                    f"{CI_HEAD_HEADER}; ignored")
+            continue
+        url = next((v for v in header_values(m, CI_URL_HEADER) if v), None)
+        records.append({"seq": m["seq"], "message_id": m["id"],
+                        "status": next(iter(statuses)), "branch": head[0],
+                        "sha": head[1], "url": url})
+    return records, reasons
+
+
+def ci_result(records, frozen_head, target, source):
+    """The newest trusted CI result on the frozen head -> (ci object,
+    reasons). The object reports the fact whatever the source; reasons are
+    raised only when the root opted in with `ci`."""
+    ci = {"source": source, "status": None, "sha": None, "branch": None,
+          "url": None, "message_id": None, "covers_target": None}
+    gated = source == "ci"
+    if frozen_head is None:
+        return ci, (["CI gate: no frozen head is known, so no CI result "
+                     "can apply"] if gated else [])
+    head = frozen_head["sha"]
+    on_head = [r for r in records if r["sha"] == head]
+    if not on_head:
+        return ci, ([f"CI has not reported on {head[:8]}"] if gated else [])
+    r = on_head[-1]
+    ci.update(status=r["status"], sha=r["sha"], branch=r["branch"],
+              url=r["url"], message_id=r["message_id"],
+              covers_target=target is not None and target["sha"] == head)
+    reasons = []
+    if gated and r["status"] == "pending":
+        reasons.append(f"CI has not reported on {head[:8]} "
+                       f"(pending, message {r['message_id']})")
+    elif gated and r["status"] == "failure":
+        reasons.append(f"CI failed on {head[:8]} (message {r['message_id']})")
+    return ci, reasons
 
 
 def seat_tokens(msg, name, reasons):
@@ -1290,6 +1418,10 @@ def build_state(export, status):
     reasons += tier_reasons
     pushes, panel, tier, push_reasons = parse_pushes(msgs, roster["panel"], tier)
     reasons += push_reasons
+    source, source_reasons = parse_suite_source(root)
+    reasons += source_reasons
+    ci_records, ci_mail_reasons = parse_ci_mails(msgs, source == "ci")
+    reasons += ci_mail_reasons
 
     bad = [str(m["seq"]) for m in msgs if not m["ok"]]
     if bad:
@@ -1316,11 +1448,17 @@ def build_state(export, status):
             cur = len(versions) - 1
     reasons += unanswered_push(msgs, frozen_head)
 
+    ci, ci_reasons = ci_result(ci_records, frozen_head, target, source)
+    reasons += ci_reasons
+    # Under `ci` the suite's truth is CI's result, not a seat's claim: no
+    # seat owes a Suite-Run line, and none is read.
+    suite_seats = () if source == "ci" else roster["suite_seats"]
+
     seats = []
     for seat in panel:
         chain, rechecked = carry_chain(seat, msgs, roster, pushes, versions,
                                        cur, carry_from is not None)
-        entry, why = judge_seat(seat, msgs, target, roster["suite_seats"],
+        entry, why = judge_seat(seat, msgs, target, suite_seats,
                                 chain, rechecked)
         seats.append(entry)
         if why:
@@ -1387,6 +1525,7 @@ def build_state(export, status):
         "panel": panel,
         "push": push,
         "frozen_head": frozen_head,
+        "ci": ci,
         "seats": seats,
         "secretary": secretary,
         "postmaster": pm,
