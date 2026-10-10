@@ -1433,6 +1433,85 @@ kick "${kick_base[@]}" --subject '[PATCH v3 0/2] improve the thing' --focus 'pat
     --template "$focused_template" --context-secret one --send
 refused "a focused template with --context-secret (--send)" "fork-sandbox mail grant"
 
+printf '\n== --no-grant and --budget: forwarded to the cover only ==\n'
+nogrant_reply_free() {
+    case "$(grep -- "$2" <<<"$3")" in
+        *"$1"*) no "$4" "$3" ;;
+        *) ok "$4" ;;
+    esac
+}
+kick "${kick_base[@]}" --no-grant --send
+check "--send with --no-grant exits 0" "0" "$k_rc"
+contains "the sent cover carries --no-grant" "$k_argv" "--to @lkml-panel --no-grant --subject"
+kick "${kick_base[@]}" --no-grant --patches --send
+check "--send --patches with --no-grant exits 0" "0" "$k_rc"
+contains "the posted cover carries --no-grant" "$(grep -m1 -- '^mail send' <<<"$k_argv")" "--no-grant"
+nogrant_reply_free "--no-grant" '^mail reply' "$k_argv" "no per-patch reply carries --no-grant"
+kick "${kick_base[@]}" --no-grant --patches
+contains "the printed cover carries --no-grant" "$(grep -m1 -- 'cover_id=\$(' <<<"$k_out")" "--no-grant"
+nogrant_reply_free "--no-grant" '^fork-sandbox mail reply' "$k_out" "no printed per-patch reply carries --no-grant"
+kick "${kick_base[@]}" --budget 3 --review-target "topic:$rt_tip" --send
+check "--send with --budget exits 0" "0" "$k_rc"
+contains "the sent cover carries --budget before --review-target" "$k_argv" "--budget 3 --review-target topic:$rt_tip --subject"
+kick "${kick_base[@]}" --no-grant --budget 3 --send
+contains "--no-grant precedes --budget" "$k_argv" "--to @lkml-panel --no-grant --budget 3 --subject"
+kick "${kick_base[@]}" --allow-namespace example-ns --budget 3 --review-target "topic:$rt_tip" --send
+contains "a grant flag precedes --budget" "$k_argv" "--allow-namespace example-ns --budget 3 --review-target topic:$rt_tip --subject"
+kick "${kick_base[@]}" --budget 10 --patches --send
+contains "the posted cover carries --budget 10" "$(grep -m1 -- '^mail send' <<<"$k_argv")" "--budget 10"
+nogrant_reply_free "--budget" '^mail reply' "$k_argv" "no per-patch reply carries --budget"
+kick "${kick_base[@]}" --budget 3 --patches
+contains "the printed cover carries --budget" "$(grep -m1 -- 'cover_id=\$(' <<<"$k_out")" "--budget 3"
+nogrant_reply_free "--budget" '^fork-sandbox mail reply' "$k_out" "no printed per-patch reply carries --budget"
+kick "${kick_base[@]}" --remote --budget 3 --send
+contains "--remote and --budget compose" "$k_argv" "mail --remote send"
+contains "--remote still carries --budget" "$k_argv" "--budget 3"
+kick "${kick_base[@]}" --send
+case "$k_argv" in
+    *"--no-grant"*|*"--budget"*) no "neither flag given: argv carries neither" "$k_argv" ;;
+    *) ok "neither flag given: argv carries neither" ;;
+esac
+
+printf '\n== --budget validation ==\n'
+kick "${kick_base[@]}" --budget 0
+refused "--budget 0 (print-only)" "positive integer"
+for bad_budget in 0 -1 07 abc ''; do
+    kick "${kick_base[@]}" --budget "$bad_budget" --send
+    refused "--budget '$bad_budget'" "positive integer"
+done
+kick "${kick_base[@]}" --budget 3 --budget 4 --send
+refused "a second --budget" "--budget may only be given once"
+
+printf '\n== --no-grant refuses against the grant flags ==\n'
+kick "${kick_base[@]}" --no-grant --allow-namespace example-ns --send
+refused "--no-grant with --allow-namespace" "cannot be combined"
+kick "${kick_base[@]}" --no-grant --reach-probe 'svc-a.example-ns.svc.cluster.local:8001' --send
+refused "--no-grant with --reach-probe" "cannot be combined"
+kick "${kick_base[@]}" --no-grant --context-ro "$grant_ctx_dir" --send
+refused "--no-grant with --context-ro" "cannot be combined"
+kick "${kick_base[@]}" --no-grant --context-secret one --send
+refused "--no-grant with --context-secret" "cannot be combined"
+kick "${kick_base[@]}" --no-grant --context-ro "$missing_ctx_dir" --send
+refused "--no-grant with a nonexistent --context-ro still names the conflict" "cannot be combined"
+
+printf '\n== --no-grant and --budget refuse against a focused (${FOCUS}) template ==\n'
+for focused_flag in "--no-grant" "--budget 3"; do
+    # shellcheck disable=SC2086
+    kick "${kick_base[@]}" --subject '[PATCH v3 0/2] improve the thing' --focus 'patch 2 only' \
+        --template "$focused_template" $focused_flag
+    refused "a focused template with $focused_flag (print-only)" "reply inside an existing thread"
+    # shellcheck disable=SC2086
+    kick "${kick_base[@]}" --subject '[PATCH v3 0/2] improve the thing' --focus 'patch 2 only' \
+        --template "$focused_template" $focused_flag --send
+    refused "a focused template with $focused_flag (--send)" "fork-sandbox mail grant"
+done
+
+printf '\n== --help names the budget and grant-opt-out flags ==\n'
+help_out="$("$kickoff" --help 2>&1)"
+check "--help exits 0" "0" "$?"
+contains "--help mentions --no-grant" "$help_out" "--no-grant"
+contains "--help mentions --budget" "$help_out" "--budget"
+
 printf '\n== --header: forwarded in order to the cover only ==\n'
 kick "${kick_base[@]}" --seats '@ci' --header 'X-Preview-PR: 42' --header 'X-Other: two words' \
     --allow-namespace example-ns --send
