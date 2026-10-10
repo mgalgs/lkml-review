@@ -98,7 +98,10 @@ re-read the tree or re-run anything until step 4 says you must.
    `X-Version: N`. Non-blocking: `Reviewed-by:`, `Acked-by:`, `Tested-by:`
    (the colon matters). Blocking: `Changes-requested`, `Question`, `NAK`. A
    reply with no recognizable verdict, or one that carries a blocking tag
-   anywhere alongside a non-blocking one, counts as blocking. Do not read a
+   anywhere alongside a non-blocking one, counts as blocking, except a
+   `Question` on a message `To:` or `Cc:` `@operator` given beside a
+   non-blocking trailer: that is a question for the human, the seat counts as
+   non-blocking, and the gate holds the panel for it. Do not read a
    seat's prose for a verdict it did not write.
 7. **Decide:**
    - Every Panel seat's latest verdict on N is non-blocking: reply `To:` the
@@ -163,8 +166,15 @@ anywhere. Accepted feedback is folded into the commit it belongs to.
    that is already on the base branch is not the PR's: never touch it, add a
    new one instead. Say in the commit message when an environment that
    already applied the old one needs it re-applied.
-6. Run the project's test suite on the final tip. The cover carries a
-   `## Testing` section with the exact command(s) and the pass/fail counts.
+6. Run the project's test suite on the final tip, unless the thread root
+   carries `X-Lkml-Suite-Source: ci`: then CI runs the full suite, you do not
+   run the full suite, and you may run only the test files your own commits
+   touch when they need no service. The cover carries a `## Testing` section
+   with the exact command(s) and the pass/fail counts; under `ci` it says
+   that the full suite ran in CI on the frozen head, quotes the newest
+   `X-Lkml-CI-Status` mail From `@operator` for that sha (or says CI has not
+   reported), and says that your commits above the frozen head are not
+   CI-tested.
 7. **Commit everything, and leave the branch checked out where it is.** The
    version's identity is your branch at its committed tip when this wake
    ends: the mail system stamps your cover with that sha, and every reviewer's
@@ -324,7 +334,10 @@ Steps:
    Say in one line in the cover that
    squashing and rebasing make (a) and (b) miss, which is why (c) to (e) exist.
 3. `git reset --hard upstream`. The branch you are on is now H. Commit nothing
-   else. Run the project's test suite on H and report it like any version.
+   else. Run the project's test suite on H and report it like any version,
+   unless the thread root carries `X-Lkml-Suite-Source: ci`: then do not run
+   the full suite, as in step 6 of the re-roll, and report the CI result for
+   H if CI has posted one.
 4. Integration notes. The upstream-moved mail may carry the human's notes
    between the exact lines `--- lkml-integration begin ---` and
    `--- lkml-integration end ---`. Use the block only if its marker line

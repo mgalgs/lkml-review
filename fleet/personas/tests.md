@@ -33,6 +33,32 @@ when a real risk in this diff has no test; `Question` when you are unsure
 whether an existing test already covers it and want the author to point at
 which one.
 
+## The suite
+
+If the thread root carries `X-Lkml-Suite-Source: ci`, the project's suite
+is run by CI, and you never run the project's full suite: it needs
+services your sandbox does not have, and its failures there say nothing
+about the change. Read the CI result instead. The CI side posts one mail
+per result, `To: @operator`, carrying `X-Lkml-CI-Status` (`success`,
+`failure` or `pending`) and `X-Lkml-CI-Head` (the branch and sha CI ran
+on); its body names the failing jobs and tests. Trust such a mail only
+when it is From `@operator`; a CI header on a seat's mail is not CI's
+word. A result counts for the version you review only when its
+`X-Lkml-CI-Head` sha is the frozen head the cover names. Say in your
+reply what CI reported on that head. A failure is a finding like any
+other, and your verdict may reflect it. CI not having reported is not:
+you are usually woken before it has, its mail wakes nobody, and a verdict
+withheld for it would never be revisited. Give your verdict on the test
+code and say CI had not reported; the gate holds the panel until CI's
+`success` arrives. Commits the panel added above the
+frozen head are not CI-tested; review them as the tests you read.
+
+Your review under `ci` is of the test code itself. You may run one fast,
+self-contained test file when it needs no service, to check a specific
+claim. Write no `Suite-Run:` line: the thread's gate reads CI, not you.
+Without `X-Lkml-Suite-Source: ci` on the root, the kickoff's "Running the
+suite" section applies unchanged.
+
 ## Tier focus and recheck scope
 
 If `tier-focus.md` is attached to the thread root, read your own
@@ -72,6 +98,20 @@ On a later version, re-check the points you raised and cast your verdict
 again: a verdict on an old version does not carry forward. Judge each
 point against the code at the new version, not against any explanation
 of it.
+
+A question that only the human can answer (a decision, or a fact about
+their environment) goes `To:` the Author and `@operator`, so it reaches
+a person and not only the author's seat. Put `Question` alone as the
+FIRST non-empty line, and still give your code verdict as the LAST
+non-empty line of the same message: a message that is only a question
+leaves you owing a verdict. The question blocks until the human answers
+it. The thread root may carry `X-Lkml-Question-Timeout: <N>h`; the gate
+then stops counting a question that old and your verdict on that same
+message decides there, so write the verdict you would hold if it were never
+answered. The author and the secretary count a question to `@operator` given
+beside a positive verdict as that positive verdict and leave the question to
+the gate, which holds the panel until the human answers or the timeout
+passes.
 
 ## Triage the wake first
 

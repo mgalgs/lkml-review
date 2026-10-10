@@ -478,6 +478,10 @@ if [[ -n "$verdict_baseline" ]]; then
         '`Question`' \
         '`NAK`' \
         'Having nothing to add is' \
+        '`@operator`' \
+        'FIRST non-empty line' \
+        '`X-Lkml-Question-Timeout' \
+        'leaves you owing a verdict' \
         'does not carry forward' \
         'against the code at the new version'
     do
@@ -493,6 +497,11 @@ fi
 # lines are a machine contract read by a separate parser, so spelling and
 # order are pinned exactly, and the summary goes to @operator alone.
 sec="$personas_dir/secretary.md"
+# shellcheck disable=SC2016  # literal backticks in the needle
+has_flat "$sec" 'a `Question` on a message that is `To:` or `Cc:` `@operator`, given beside a non-blocking trailer' \
+    "secretary.md leaves an operator question beside a verdict to the gate"
+has_flat "$personas_dir/tests.md" 'CI not having reported is not' \
+    "tests.md does not let pending CI shape its verdict"
 extract_closing() {
     awk '/^## Closing the panel$/{ f = 1; print; next }
          f && /^## / { exit }
@@ -551,6 +560,33 @@ has "$sec" 'last in the body' \
 # that carry the protocol are pinned, not just the frontmatter.
 pra="$personas_dir/pr-author.md"
 pra_fm="$(awk 'NR == 1 && /^---$/ { f = 1; next } f && /^---$/ { exit } f { print }' "$pra")"
+
+# The CI suite source (X-Lkml-Suite-Source: ci): the project's suite is CI's
+# to run, so the tests seat and the author stop running it, and the
+# secretary reports CI's result on the frozen head in place of Suite-Run.
+# shellcheck disable=SC2016  # literal backticks in the needles
+ci_source_pins() {
+local tst="$personas_dir/tests.md"
+has_flat "$tst" '## The suite' "tests.md has the suite section"
+has_flat "$tst" '`X-Lkml-Suite-Source: ci`' "tests.md names the opt-in header"
+has_flat "$tst" "never run the project's full suite" "tests.md never runs the full suite under ci"
+has_flat "$tst" '`X-Lkml-CI-Status`' "tests.md reads the CI status header"
+has_flat "$tst" '`X-Lkml-CI-Head`' "tests.md matches the CI head to the frozen head"
+has_flat "$tst" 'From `@operator`' "tests.md trusts CI mail only From @operator"
+has_flat "$tst" 'one fast, self-contained test file' "tests.md may run one self-contained test file"
+has_flat "$tst" 'Write no `Suite-Run:` line' "tests.md writes no Suite-Run line under ci"
+has_flat "$pra" 'unless the thread root carries `X-Lkml-Suite-Source: ci`' "pr-author.md exempts the re-roll's suite run under ci"
+has_flat "$pra" 'do not run the full suite' "pr-author.md does not run the full suite under ci"
+has_flat "$pra" 'not CI-tested' "pr-author.md says its own commits are not CI-tested"
+has_flat "$pra" 'as in step 6 of the re-roll' "pr-author.md applies the same rule to the integration"
+has_flat "$sec" 'If the root carries `X-Lkml-Suite-Source: ci`' "secretary.md has a CI branch"
+has_flat "$sec" 'no seat owes a `Suite-Run:` line' "secretary.md requires no Suite-Run line under ci"
+has_flat "$sec" 'whose `X-Lkml-CI-Head` sha' "secretary.md matches the CI head sha"
+has_flat "$sec" "in place of the seats' Suite-Run lines" "secretary.md reports CI in place of Suite-Run lines"
+has_flat "$sec" 'CI'"'"'s status does not change `Panel-Status`' "secretary.md leaves CI blocking to the gate"
+}
+ci_source_pins
+
 if grep -qE '^description: .+' <<<"$pra_fm"; then
     ok "pr-author.md frontmatter has a description"
 else
@@ -908,15 +944,15 @@ for needle in '`X-Lkml-Add-Seats`' '`X-Lkml-Recheck-Seats`' 'A blocking verdict 
     has_flat "$sec" "$needle" "secretary.md pins: $needle"
 done
 
-# Contract header names: exactly five X-Lkml-* names appear in fleet/, so
+# Contract header names: exactly nine X-Lkml-* names appear in fleet/, so
 # a typo'd header never ships, and push modes / tier focus live only in
 # the personas that own them.
 lkml_headers="$(grep -rhoE 'X-Lkml-[A-Za-z-]+' "$repo_dir/fleet" | sed 's/-$//' | sort -u | tr '\n' ' ')"
-expected_headers='X-Lkml-Add-Seats X-Lkml-Push-Mode X-Lkml-Recheck-Seats X-Lkml-Tier X-Lkml-Tier-Reason '
+expected_headers='X-Lkml-Add-Seats X-Lkml-CI-Head X-Lkml-CI-Status X-Lkml-Push-Mode X-Lkml-Question-Timeout X-Lkml-Recheck-Seats X-Lkml-Suite-Source X-Lkml-Tier X-Lkml-Tier-Reason '
 if [[ "$lkml_headers" == "$expected_headers" ]]; then
-    ok "fleet/ spells only the five contract X-Lkml-* headers"
+    ok "fleet/ spells only the nine contract X-Lkml-* headers"
 else
-    no "fleet/ spells only the five contract X-Lkml-* headers" "got: $lkml_headers"
+    no "fleet/ spells only the nine contract X-Lkml-* headers" "got: $lkml_headers"
 fi
 push_files="$(grep -rlF 'X-Lkml-Push-Mode' "$repo_dir/fleet" | xargs -n1 basename | sort | tr '\n' ' ')"
 if [[ "$push_files" == 'pr-author.md secretary.md ' ]]; then

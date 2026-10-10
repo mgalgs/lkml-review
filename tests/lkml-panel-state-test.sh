@@ -2459,7 +2459,10 @@ printf '\n== operator questions and the timeout ==\n'
 # 2026-03-02T10:02:00Z), @tests/@docs positive, the secretary saying
 # CONVERGED SIGNED-OFF. The question is a message tagged Question whose
 # To includes @operator. Whatever @core's message resolves to is the only
-# open variable.
+# open variable. A conforming secretary writes CONVERGED over a seat's
+# Question beside a positive trailer (the q4 shape); for a message that is
+# only a question it writes IN-PROGRESS, so q5-q5c exercise the gate's
+# judgement rule on a mailbox the personas ask seats not to produce.
 gen q1 <<'PY'
 write(D, export(qthread(Q, hours=None)), status())
 PY

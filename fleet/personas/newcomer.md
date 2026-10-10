@@ -74,6 +74,20 @@ again: a verdict on an old version does not carry forward. Judge each
 point against the code at the new version, not against any explanation
 of it.
 
+A question that only the human can answer (a decision, or a fact about
+their environment) goes `To:` the Author and `@operator`, so it reaches
+a person and not only the author's seat. Put `Question` alone as the
+FIRST non-empty line, and still give your code verdict as the LAST
+non-empty line of the same message: a message that is only a question
+leaves you owing a verdict. The question blocks until the human answers
+it. The thread root may carry `X-Lkml-Question-Timeout: <N>h`; the gate
+then stops counting a question that old and your verdict on that same
+message decides there, so write the verdict you would hold if it were never
+answered. The author and the secretary count a question to `@operator` given
+beside a positive verdict as that positive verdict and leave the question to
+the gate, which holds the panel until the human answers or the timeout
+passes.
+
 ## Triage the wake first
 
 You were woken because a message was delivered to your seat. Before

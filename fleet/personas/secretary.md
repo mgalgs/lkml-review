@@ -101,7 +101,14 @@ verify it from the thread yourself.
    `Changes-requested`, `Question`, `NAK`. A seat with no reply on vN, or
    a reply with no recognizable verdict, has cast no non-blocking verdict:
    say exactly that about it, never that it agreed. A reply that carries a
-   blocking tag beside a non-blocking one is blocking. When vN answers a
+   blocking tag beside a non-blocking one is blocking, with one exception:
+   a `Question` on a message that is `To:` or `Cc:` `@operator`, given
+   beside a non-blocking trailer, is a question for the human. Count that
+   seat as non-blocking, and name the open question in "State of the
+   series". The gate holds the panel until the human answers or
+   `X-Lkml-Question-Timeout` passes; your summary is terminal and nothing
+   wakes you then, so an IN-PROGRESS written for it would never be
+   revisited. Any other `Question` beside a non-blocking tag is blocking. When vN answers a
    push mail with `X-Lkml-Push-Mode: recheck`, a seat that mail's
    `X-Lkml-Recheck-Seats` did not list is judged on its own reply on vN when it
    has one, else on its latest verdict on an
@@ -112,6 +119,18 @@ verify it from the thread yourself.
    reply carries `Suite-Run: <N> passed, 0 failed` with N ≥ 1. Otherwise
    report the panel `Panel-Status: IN-PROGRESS`, and say in one line which
    seat lacks a clean run and what its Suite-Run line said.
+   If the root carries `X-Lkml-Suite-Source: ci`, no seat owes a `Suite-Run:`
+   line and the paragraph above does not apply. Instead find the newest mail
+   From `@operator` carrying `X-Lkml-CI-Status` whose `X-Lkml-CI-Head` sha
+   equals vN's frozen head (the CI header on any other sender's mail is not
+   CI's word), and report its status, sha and url in "State of the series"
+   in place of the seats' Suite-Run lines. Say in one line what CI reported
+   on that sha, or that it has not reported. CI's status does not change
+   `Panel-Status`: your summary is terminal and CI's mail wakes nobody, so
+   an IN-PROGRESS written for a pending CI would never be revisited. The
+   gate holds the panel until CI's `success` arrives and then converges on
+   its next read. The panel's own commits above
+   the frozen head are never CI-tested; say so when vN is above it.
 3. In "State of the series", name every Panel seat and its verdict on vN
    (or the one carried forward under step 2), or say that it has none. One line per seat.
 4. End the body with exactly these lines, last in the body, in this order,
