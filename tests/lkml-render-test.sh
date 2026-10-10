@@ -2869,9 +2869,56 @@ check "(R-chain2) the twice-listed seat is not carried" "2" "$(python3 "$rendere
 
 # R-none: a thread with none of the new headers renders with neither.
 case "$fhtml$(python3 "$renderer" --text "$fleet")" in
-    *"tier "*|*"carried from"*|*'>carried'*) no "(R-none) the existing fleet thread shows no tier line and no carried mark" ;;
+    *"tier "*|*"carried from"*|*'>carried'*|*"questions ("*|*"ci success"*|*"ci none"*) no "(R-none) the existing fleet thread shows no tier line and no carried mark" ;;
     *) ok "(R-none) the existing fleet thread shows no tier line and no carried mark" ;;
 esac
+
+# CI result and operator questions. fm's ids are m<N>@example.com, so the 7-char id is
+# "m<N>@exam"; message N is dated 2025-09-17 N:00 UTC.
+# Hand-worked: @tests' seq 3 (03:00Z) is a Question to @operator. With the
+# clock at 06:00Z its age is 3h00m, at 04:00Z 1h00m; a 2h timeout marks only
+# the first. The CI mail (seq 5, From @operator) says success on 11111111.
+ci_thread() { # ci_thread <dir> <root-extra-header|''> <ci-sender>
+    local d="$1" extra="$2" sender="$3"
+    local hdrs=("$SEATS3"); [[ -n "$extra" ]] && hdrs+=("$extra")
+    fm "$d" 1 0 @author @core '[PATCH v1 0/1] ci demo' kickoff "${hdrs[@]}"
+    fm "$d" 2 1 @core @author 'Re: [PATCH v1 0/1] ci demo' 'Reviewed-by: core'
+    fm "$d" 3 1 @tests '@author, @operator' 'Re: [PATCH v1 0/1] ci demo' $'Question: which database?\nReviewed-by: tests'
+    fm "$d" 4 1 @docs @author 'Re: [PATCH v1 0/1] ci demo' 'Reviewed-by: docs'
+    fm "$d" 5 1 "$sender" @operator 'Re: [PATCH v1 0/1] ci demo' 'CI finished.' \
+        'X-Lkml-CI-Status: success' 'X-Lkml-CI-Head: pr/example 1111111111111111111111111111111111111111' \
+        'X-Lkml-CI-Url: https://ci.example.com/run/7'
+    fm "$d" 6 4 @author @core '[PATCH v2 0/1] ci demo' 'v2.'
+}
+epoch_at() { date -u -d "2025-09-17 $1" +%s; }
+
+d="$work/fleet-mail/threads/ci-q1"
+ci_thread "$d" 'X-Lkml-Question-Timeout: 2h' @operator
+t="$(SOURCE_DATE_EPOCH="$(epoch_at 06:00:00)" python3 "$renderer" --text "$d")"
+contains "(R-ci1) --text: the CI line with sha8 and url" "$t" 'ci success 11111111 https://ci.example.com/run/7'
+contains "(R-q1) --text: a question past the timeout is marked" "$t" 'questions (timeout 2h): @tests m3@exam 3h00m timed out'
+check "(R-q1) --text: each line is printed once" "1 1" "$(grep -c '^ci success' <<<"$t") $(grep -c '^questions (' <<<"$t")"
+SOURCE_DATE_EPOCH="$(epoch_at 06:00:00)" python3 "$renderer" "$d" -o "$work/ci-q1.html"
+contains "(R-ci1) the masthead shows the CI result" "$(<"$work/ci-q1.html")" 'ci success 11111111 https://ci.example.com/run/7'
+contains "(R-q1) the masthead shows the question" "$(<"$work/ci-q1.html")" 'questions (timeout 2h): @tests m3@exam 3h00m timed out'
+v1="$(SOURCE_DATE_EPOCH="$(epoch_at 06:00:00)" python3 "$renderer" --text --version 1 "$d")"
+case "$v1" in *"ci success"*|*"questions ("*) no "(R-q1) --version 1 shows neither line" "$v1" ;; *) ok "(R-q1) --version 1 shows neither line" ;; esac
+
+t="$(SOURCE_DATE_EPOCH="$(epoch_at 04:00:00)" python3 "$renderer" --text "$d")"
+contains "(R-q2) before the timeout: age without a mark" "$t" 'questions (timeout 2h): @tests m3@exam 1h00m'
+case "$t" in *"timed out"*) no "(R-q2) not timed out at 1h00m" ;; *) ok "(R-q2) not timed out at 1h00m" ;; esac
+
+d="$work/fleet-mail/threads/ci-q3"
+ci_thread "$d" '' @operator
+t="$(SOURCE_DATE_EPOCH="$(epoch_at 06:00:00)" python3 "$renderer" --text "$d")"
+contains "(R-q3) no timeout header: no mark" "$t" 'questions (no timeout): @tests m3@exam 3h00m'
+case "$t" in *"timed out"*) no "(R-q3) no timeout, no mark" ;; *) ok "(R-q3) no timeout, no mark" ;; esac
+
+d="$work/fleet-mail/threads/ci-untrusted"
+ci_thread "$d" '' @core
+t="$(python3 "$renderer" --text "$d")"
+contains "(R-ci2) a CI header on a seat's mail is shown as untrusted" "$t" 'ci none from @operator (header seen from @core)'
+case "$t" in *"ci success"*) no "(R-ci2) a seat's CI header is not shown as a result" ;; *) ok "(R-ci2) a seat's CI header is not shown as a result" ;; esac
 
 printf '\n== fleet-store thread: convergence still fires once the only seated reviewer has spoken ==\n'
 full="$work/fleet-mail/threads/full-thread"

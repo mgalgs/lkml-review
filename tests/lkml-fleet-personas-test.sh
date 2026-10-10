@@ -944,6 +944,18 @@ for needle in '`X-Lkml-Add-Seats`' '`X-Lkml-Recheck-Seats`' 'A blocking verdict 
     has_flat "$sec" "$needle" "secretary.md pins: $needle"
 done
 
+# docs/cluster-panel.md documents the CI-source and operator-question
+# contract once: the new subsection, one table row per header, and the
+# no-timer limit.
+cluster_doc="$repo_dir/docs/cluster-panel.md"
+has "$cluster_doc" '#### Suite source, CI results and operator questions' "docs: the CI source subsection exists"
+for hdr in X-Lkml-Suite-Source X-Lkml-Question-Timeout X-Lkml-CI-Status X-Lkml-CI-Head X-Lkml-CI-Url; do
+    check_n="$(grep -cF -- "| \`$hdr\` |" "$cluster_doc")"
+    if [[ "$check_n" == 1 ]]; then ok "docs: $hdr has exactly one table row"
+    else no "docs: $hdr has exactly one table row" "found $check_n"; fi
+done
+has "$cluster_doc" 'Nothing wakes a thread when an operator question times out' "docs: the no-timer limit is named"
+
 # Contract header names: exactly nine X-Lkml-* names appear in fleet/, so
 # a typo'd header never ships, and push modes / tier focus live only in
 # the personas that own them.

@@ -44,6 +44,17 @@
 #              (never down: an escalate naming a lower tier is ignored),
 #              and push is the newest upstream-moved mail's mode and head.
 #              A thread with none of those headers prints no such line.
+#              Then, when the thread has CI mail (X-Lkml-CI-Status), one line
+#              from the newest mail From @operator:
+#                CI: <status> <sha8> (<id7>)[ <url>]
+#              or, with only untrusted CI mail, "CI: none from @operator
+#              (X-Lkml-CI-Status seen from <sender>)". Then, when a seated
+#              sender's message carries Question and names @operator in
+#              To/Cc, one line:
+#                Questions (timeout <N>h|no timeout): <seat> <id7> <age>[ timed out]; ...
+#              age is against SOURCE_DATE_EPOCH, else the clock; the timeout
+#              is the root's X-Lkml-Question-Timeout. Neither line is a
+#              judgment; lkml-panel-state.py owns both gates.
 #   versions   each v<N> found in a Subject, with the date it first
 #              appeared and how many messages carry it. Where no Subject
 #              carries a version the thread is not a patch series, and is
@@ -289,6 +300,7 @@ fs_body_tags() {
 MSG_FILE=(); MSG_NNN=(); MSG_ID=(); MSG_DATE=(); MSG_FROM=()
 MSG_TO=(); MSG_CC=(); MSG_SUBJ=(); MSG_IRT=(); MSG_HOPS=(); MSG_TAGS=()
 MSG_UPSTREAM=(); MSG_PUSH_MODE=(); MSG_RECHECK=(); MSG_ADD=(); MSG_TIER=(); MSG_TIER_REASON=()
+MSG_CI_STATUS=(); MSG_CI_HEAD=(); MSG_CI_URL=(); MSG_Q_TIMEOUT=()
 load_thread() {
     local t="$1" f base id
     local dir="$MAIL_ROOT/threads/$t"
@@ -312,6 +324,10 @@ load_thread() {
         MSG_ADD+=("$(fs_header "$f" X-Lkml-Add-Seats)")
         MSG_TIER+=("$(fs_header "$f" X-Lkml-Tier)")
         MSG_TIER_REASON+=("$(fs_header "$f" X-Lkml-Tier-Reason)")
+        MSG_CI_STATUS+=("$(fs_header "$f" X-Lkml-CI-Status)")
+        MSG_CI_HEAD+=("$(fs_header "$f" X-Lkml-CI-Head)")
+        MSG_CI_URL+=("$(fs_header "$f" X-Lkml-CI-Url)")
+        MSG_Q_TIMEOUT+=("$(fs_header "$f" X-Lkml-Question-Timeout)")
         MSG_FILE+=("$f")
     done
     (( ${#MSG_FILE[@]} > 0 )) || die "thread '$t' has no messages."
@@ -938,6 +954,69 @@ if (( saw_tier_header )); then
         "${tier_at:+ (escalated at $tier_at)}" "$push_text" "${tier_reason:--}"
 fi
 
+
+# The panel: the root's X-Seats plus what each valid escalate added.
+root_seats=" "
+for a in $(fs_header "${MSG_FILE[0]}" X-Seats | tr ',' ' '); do root_seats+="@${a#@} "; done
+root_seats+="${escalate_adds# }"
+
+# The CI line. A CI header counts only on a mail From @operator (the same
+# trust rule lkml-panel-state.py applies); the newest such result is shown
+# whatever its sha -- this screen reports, it does not match a head to the
+# gate. With only untrusted CI mail the line says so, naming the sender.
+ci_line=""; ci_untrusted=""
+for (( i = 1; i < n; i++ )); do
+    [[ -n "${MSG_CI_STATUS[$i]}${MSG_CI_HEAD[$i]}${MSG_CI_URL[$i]}" ]] || continue
+    if [[ "${MSG_FROM[$i]}" != "@operator" ]]; then
+        ci_untrusted="${ci_untrusted:-${MSG_FROM[$i]}}"
+        continue
+    fi
+    read -r -a ci_head <<< "${MSG_CI_HEAD[$i]}"
+    case "${MSG_CI_STATUS[$i]}" in success|failure|pending) ;; *) continue ;; esac
+    (( ${#ci_head[@]} == 2 )) && [[ "${ci_head[1]}" =~ ^[0-9a-fA-F]{7,64}$ ]] || continue
+    ci_line="CI: ${MSG_CI_STATUS[$i]} ${ci_head[1]:0:8} (${MSG_ID[$i]:0:7})${MSG_CI_URL[$i]:+ ${MSG_CI_URL[$i]}}"
+done
+if [[ -n "$ci_line" ]]; then
+    printf '%s\n' "$ci_line"
+elif [[ -n "$ci_untrusted" ]]; then
+    printf 'CI: none from @operator (X-Lkml-CI-Status seen from %s)\n' "$ci_untrusted"
+fi
+
+# The Questions line: each seated sender's Question mail that names
+# @operator in To or Cc, with its age against SOURCE_DATE_EPOCH (else the
+# clock) and "timed out" when the root's X-Lkml-Question-Timeout (<N>h,
+# N >= 1; a malformed one reads as absent -- lkml-panel-state.py reports
+# it) has passed. A reader, not a judge: the timeout is panel-state's.
+q_timeout=""
+[[ "${MSG_Q_TIMEOUT[0]}" =~ ^([0-9]{1,9})h$ ]] && (( 10#${BASH_REMATCH[1]} >= 1 )) && q_timeout="$(( 10#${BASH_REMATCH[1]} ))"
+q_now="${SOURCE_DATE_EPOCH:-}"
+[[ "$q_now" =~ ^[0-9]+$ ]] || q_now="$(date +%s)"
+q_items=()
+for (( i = 1; i < n; i++ )); do
+    [[ " ${MSG_TAGS[$i]} " == *" Question "* ]] || continue
+    [[ "$root_seats" == *" ${MSG_FROM[$i]} "* ]] || continue
+    to_operator=0
+    for a in ${MSG_TO[$i]//,/ } ${MSG_CC[$i]//,/ }; do
+        [[ "@${a#@}" == "@operator" ]] && to_operator=1
+    done
+    (( to_operator )) || continue
+    q_item="${MSG_FROM[$i]} ${MSG_ID[$i]:0:7}"
+    if asked="$(date -d "${MSG_DATE[$i]}" +%s 2>/dev/null)" && [[ "$asked" =~ ^[0-9]+$ ]]; then
+        age=$(( q_now - asked )); (( age < 0 )) && age=0
+        q_item+="$(printf ' %dh%02dm' $(( age / 3600 )) $(( age % 3600 / 60 )))"
+        [[ -n "$q_timeout" ]] && (( age >= q_timeout * 3600 )) && q_item+=" timed out"
+    else
+        q_item+=" ?"
+    fi
+    q_items+=("$q_item")
+done
+if (( ${#q_items[@]} > 0 )); then
+    if [[ -n "$q_timeout" ]]; then q_head="timeout ${q_timeout}h"; else q_head="no timeout"; fi
+    q_joined="${q_items[0]}"
+    for q_item in "${q_items[@]:1}"; do q_joined+="; $q_item"; done
+    printf 'Questions (%s): %s\n' "$q_head" "$q_joined"
+fi
+
 printf '\n== Versions ==\n'
 declare -A V_FIRST=() V_COUNT=()
 for (( i = 0; i < n; i++ )); do
@@ -986,10 +1065,6 @@ for (( i = 0; i < n; i++ )); do
     fi
     (( i > 0 )) && [[ -n "${MSG_UPSTREAM[$i]}" ]] && PUSHES+=("$i")
 done
-# The panel: the root's X-Seats plus what each valid escalate added.
-root_seats=" "
-for a in $(fs_header "${MSG_FILE[0]}" X-Seats | tr ',' ' '); do root_seats+="@${a#@} "; done
-root_seats+="${escalate_adds# }"
 # Version boundaries, with a trailing one for the synthetic version a stack
 # of carry pushes makes after the last cover. No such version when any push
 # after the last cover is not a carry: nothing carries into the current one.

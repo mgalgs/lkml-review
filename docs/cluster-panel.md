@@ -100,6 +100,8 @@ that is positive without a clean run (N of at least 1, M of 0) makes
 quiet, so an operator fixes the environment. The seat's `state` stays
 `positive`, since it has answered. The command comes from the repository under
 review, never from this repo, so the caller passes it on each kickoff.
+A root that says `X-Lkml-Suite-Source: ci` takes the suite's result from CI
+instead; see "Suite source, CI results and operator questions".
 
 ### Sizing the panel
 
@@ -307,6 +309,75 @@ How the gate reads a carry:
   (`false`) or carried (`true`), and `seats[].version` is the version it was
   given on, so a display can say "carried from v3".
 
+#### Suite source, CI results and operator questions
+
+A panel on a PR whose suite needs the preview environment's services cannot
+run that suite in a seat's sandbox, and a seat that cannot run it only ever
+reports its own environment. The thread can instead say that the PR's own CI
+run is the suite's source of truth, and that a seat's question for the human
+stops blocking after a set time. Three headers on the root and three on a CI
+result mail; the CI side that kicks off the thread and posts the results sets
+them, and this repo only reads them.
+
+On the root (kickoff) message:
+
+| Header | Value | Meaning |
+|---|---|---|
+| `X-Lkml-Suite-Source` | `ci` | the CI gate below replaces the per-seat `Suite-Run` gate for this thread; any other value is a reason and leaves the `Suite-Run` gate in force |
+| `X-Lkml-Question-Timeout` | `<N>h`, whole hours, N of at least 1 | an operator question stops blocking once it is that old; malformed is a reason and no timeout |
+
+On a CI result mail, one per result, `To: @operator` so that it wakes nobody,
+with a short human summary (failing jobs and tests) as the body:
+
+| Header | Value | Meaning |
+|---|---|---|
+| `X-Lkml-CI-Status` | `success`, `failure` or `pending` | what CI said |
+| `X-Lkml-CI-Head` | `<branch> <sha>`, the syntax of `X-Upstream-Head` | the commit CI ran on |
+| `X-Lkml-CI-Url` | a URL, optional | where a human can read the run |
+
+Rules for the CI gate (only under `X-Lkml-Suite-Source: ci`; without it the
+`Suite-Run` gate in the kickoff section is unchanged, byte for byte):
+
+- **Trust.** A CI header counts only on a mail `From: @operator`. Any seat can
+  set an `X-*` header, so on any other sender it is ignored and reported as a
+  reason. A mail from `@operator` with an unknown status, or a head that is not
+  exactly one `<branch> <sha>`, is ignored with a reason too.
+- **The gate.** `CONVERGED` needs the newest trusted CI mail whose head sha
+  equals the current frozen head's to say `success`. None, or `pending`, is
+  "CI has not reported on `<sha8>`"; `failure` is "CI failed on `<sha8>`". A
+  result on any other sha says nothing about this one: a carry version's
+  frozen head is the pushed head, so a rebase needs CI success on the new head.
+- **Seats.** No seat owes a `Suite-Run` line and none is read (every
+  `seats[].suite_run` is null); `Suite-Seats` is ignored for gating. The
+  personas follow: the tests seat reviews test code and reads the CI mail, and
+  the author does not run the full suite.
+- **The panel's own commits are never CI-tested.** A `RESPIN`'s bundle sits
+  above the frozen head CI ran on; `ci.covers_target` is false there, and the
+  cover says the author's commits are not CI-tested.
+
+A question for the human is a message from a panel seat that carries the
+`Question` tag and names `@operator` in `To:` or `Cc:`. The seat still gives
+its code verdict on the same message, so a question alone leaves the seat
+owing one. The gate lists every such question whatever the timeout, in
+`questions`, so a dashboard can show it. With `X-Lkml-Question-Timeout` set, a
+question at least that old stops blocking: the `Question` tag on that message
+is dropped before any seat is judged and the strongest remaining tag on the
+same message decides. A message whose only tag was the question leaves the seat
+with no verdict from it, so it still owes one and falls back to its earlier
+verdicts by the usual rules, carry included. **A timeout never manufactures a
+positive verdict.** A question an `@operator` reply answered is ordinary: the
+seat's next verdict decides.
+
+The gate's output gains `ci` (`{"source", "status", "sha", "branch", "url",
+"message_id", "covers_target"}`: the newest trusted result on the frozen head,
+reported on every thread, with `source` `ci` only when the root opted in),
+`question_timeout_hours`, `questions` (`{"seat", "message_id", "asked_at",
+"age_seconds", "timed_out", "subject"}`), and `now`. `lkml-panel-state.py`
+takes `--now <ISO-8601>` to pin the clock the ages are taken at; the display
+tools take theirs from `SOURCE_DATE_EPOCH`. `lkml-render.py` and
+`lkml-fleet-status.sh` show the newest trusted result and the questions with
+their ages as one compact line each.
+
 ### Closing
 
 The secretary verifies the panel's state from the thread itself; it does not
@@ -362,6 +433,9 @@ upstream-moved mail: its `mode`, `seats`, `malformed` text and whether it is
 `target.source` of `carry`. A carry version's frozen head is the pushed head,
 so a panel that carries to convergence is `SIGNED-OFF` at the new head. See
 "Tiers and push modes".
+
+It also has `ci`, `question_timeout_hours`, `questions` and `now`; see "Suite
+source, CI results and operator questions".
 
 The gate also compares the newest `X-Upstream-Head` on the thread with the
 resolved frozen head. When they differ, the human author's newest push has no
@@ -542,6 +616,14 @@ agents:
 
 ## Known limits
 
+- Nothing wakes a thread when an operator question times out: no mail
+  arrives, and the gate only reads the clock when it is asked. The secretary
+  and the author count a question to `@operator` given beside a positive
+  verdict as that verdict, so the secretary's on-target CONVERGED can stand
+  with the question open and the gate converges when the question is answered
+  or times out, on its next read. A message that is only a question leaves
+  the secretary writing IN-PROGRESS, and nothing revisits that after a
+  timeout; reviewers are told never to send one.
 - A reviewer that Cc's another seat can buy that seat an extra wake on the
   same version. The author and the secretary both read a seat's *latest*
   reply on vN, so an extra reply can replace the seat's earlier verdict.

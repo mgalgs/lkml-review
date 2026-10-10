@@ -68,6 +68,16 @@ headers alone, never a convergence judgment (lkml-panel-state.py owns
 that). A thread with none of those headers renders exactly as before, and
 the lkml-thread/1 block does not change.
 
+A fleet thread also shows, in the same two places, one 'ci <status> <sha8>
+[<url>]' line when a mail From @operator carries X-Lkml-CI-Status and
+X-Lkml-CI-Head (the newest such; a CI header on any other sender's mail
+is shown as 'ci none from @operator'), and one 'questions (...)' line
+listing each seated reviewer's Question mail addressed to @operator with
+its age and, past the root's X-Lkml-Question-Timeout, 'timed out'. Both
+are facts read from the mail; the contract is in docs/cluster-panel.md.
+A fleet thread with a question to @operator gains that line even with no
+other new header; otherwise the render is unchanged.
+
 --text --version N restricts the render to one version's own section
 (exactly what the whole-series --text render prints for that version,
 byte for byte) plus, only when any exist, a late-replies block:
@@ -98,8 +108,9 @@ cycle or orphan still fails loudly.
 
 SOURCE_DATE_EPOCH, when set, pins the 'rendered' stamp to that epoch (UTC)
 so repeated HTML renders are reproducible; without it the stamp is the
-local wall clock. It affects only the HTML backend; --text is
-unaffected.
+local wall clock. It also sets the clock the question ages in the fleet
+'questions' line are taken at, in --text and HTML alike; the rest of --text
+is unaffected.
 
 When a series dir holds results-v<N>.md (the per-version results file,
 written by the summarizer; a results-v<N>.json may sit next to it and
@@ -609,6 +620,10 @@ def read_fleet_msg(path, seq, attachment_root):
         "x_add_seats": hdr.get("X-Lkml-Add-Seats"),
         "x_tier": hdr.get("X-Lkml-Tier"),
         "x_tier_reason": hdr.get("X-Lkml-Tier-Reason"),
+        "x_question_timeout": hdr.get("X-Lkml-Question-Timeout"),
+        "x_ci_status": hdr.get("X-Lkml-CI-Status"),
+        "x_ci_head": hdr.get("X-Lkml-CI-Head"),
+        "x_ci_url": hdr.get("X-Lkml-CI-Url"),
     }
 
 
@@ -927,6 +942,105 @@ def fleet_tier_info(roots, msgs):
     return {"tier": tier, "reason": reason or None, "escalated_at": at,
             "push_mode": last["x_push_mode"].strip() if last else None,
             "push_sha": last["x_upstream_head"].split()[-1][:8] if last else None}
+
+
+FLEET_CI_STATUSES = ("success", "failure", "pending")
+FLEET_OPERATOR = "operator"
+
+
+def render_now():
+    """The clock the question ages are taken at: SOURCE_DATE_EPOCH when
+    set (so a render is reproducible), else the wall clock."""
+    sde = os.environ.get("SOURCE_DATE_EPOCH")
+    if sde and sde.isdigit():
+        return datetime.fromtimestamp(int(sde), timezone.utc)
+    return datetime.now(timezone.utc)
+
+
+def age_label(seconds):
+    """'<H>h<MM>m'; a negative age (a clock behind the mail) reads 0h00m."""
+    mins = max(seconds, 0) // 60
+    return f"{mins // 60}h{mins % 60:02d}m"
+
+
+def fleet_ci_info(roots, msgs):
+    """The CI line's facts, or None when the thread has no CI mail:
+    {"status", "sha", "url", "id", "untrusted_from"}. A CI header counts
+    only on a mail from @operator (lkml-panel-state.py's rule); the newest
+    trusted result is shown whatever its sha -- the display never judges
+    which head the gate wants, it names the sha it shows. With only
+    untrusted CI mail, status is None and untrusted_from names a sender."""
+    root = fleet_root(roots)
+    if root is None or not root.get("fleet"):
+        return None
+    trusted, untrusted = None, None
+    for m in sorted(msgs.values(), key=lambda m: m["seq"]):
+        if not (m.get("x_ci_status") or m.get("x_ci_head") or m.get("x_ci_url")):
+            continue
+        if m["persona"] != FLEET_OPERATOR:
+            untrusted = untrusted or m["persona"]
+            continue
+        status = (m.get("x_ci_status") or "").strip()
+        head = (m.get("x_ci_head") or "").split()
+        if status not in FLEET_CI_STATUSES or len(head) != 2 \
+                or not re.fullmatch(r"[0-9a-fA-F]{7,64}", head[1]):
+            continue
+        trusted = {"status": status, "sha": head[1].lower()[:8],
+                   "url": (m.get("x_ci_url") or "").strip() or None,
+                   "id": m["id"][:7], "untrusted_from": None}
+    if trusted:
+        return trusted
+    if untrusted:
+        return {"status": None, "sha": None, "url": None, "id": None,
+                "untrusted_from": untrusted}
+    return None
+
+
+def fleet_questions(roots, msgs, seated):
+    """The operator questions on the thread, or None when there are none:
+    {"timeout": N|None, "items": [{"seat","id","age","timed_out"}]}. A
+    message from a seated reviewer that carries Question and names
+    @operator in To/Cc. The timeout is the root's X-Lkml-Question-Timeout
+    (a malformed one is read as absent; lkml-panel-state.py reports it)."""
+    root = fleet_root(roots)
+    if root is None or not root.get("fleet") or not seated:
+        return None
+    mt = re.fullmatch(r"([0-9]{1,18})h", (root.get("x_question_timeout") or "").strip())
+    timeout = int(mt.group(1)) if mt and int(mt.group(1)) >= 1 else None
+    now = render_now()
+    items = []
+    for m in sorted(msgs.values(), key=lambda m: m["seq"]):
+        if not (m.get("fleet") and m["persona"] in seated
+                and "Question" in m["tags"]
+                and FLEET_OPERATOR in m["to"] + m["cc"]):
+            continue
+        age = None
+        if m["date"] is not None:
+            when = m["date"] if m["date"].tzinfo else m["date"].replace(tzinfo=timezone.utc)
+            age = int((now - when).total_seconds())
+        items.append({"seat": m["persona"], "id": m["id"][:7], "age": age,
+                      "timed_out": (timeout is not None and age is not None
+                                    and age >= timeout * 3600)})
+    return {"timeout": timeout, "items": items} if items else None
+
+
+def ci_summary(info):
+    if info is None:
+        return None
+    if info["status"] is None:
+        return f"ci none from @operator (header seen from @{info['untrusted_from']})"
+    return f"ci {info['status']} {info['sha']}" + (f" {info['url']}" if info["url"] else "")
+
+
+def questions_summary(info):
+    if info is None:
+        return None
+    head = f"timeout {info['timeout']}h" if info["timeout"] else "no timeout"
+    items = ", ".join(
+        f"@{q['seat']} {q['id']} "
+        f"{age_label(q['age']) if q['age'] is not None else '?'}"
+        f"{' timed out' if q['timed_out'] else ''}" for q in info["items"])
+    return f"questions ({head}): {items}"
 
 
 def fleet_carried(msgs, seated, author, covers):
@@ -1618,12 +1732,17 @@ def render_series(series_dir, assume_root_version=None):
             state = '<span class="chip pending">pending</span>'
     tier_info = fleet_tier_info(roots, msgs)
     tier_html = ""
+    bits = []
     if tier_info:
         bits = tier_summary(tier_info)
         if tier_info["reason"]:
             bits.append(tier_info["reason"])
-        if bits:
-            tier_html = " \u00b7 " + " \u00b7 ".join(esc(b) for b in bits)
+    bits += [b for b in (ci_summary(fleet_ci_info(roots, msgs)),
+                         questions_summary(fleet_questions(
+                             roots, msgs, fleet_seated(roots, msgs))))
+             if b]
+    if bits:
+        tier_html = " \u00b7 " + " \u00b7 ".join(esc(b) for b in bits)
     masthead = (f'<header class="masthead">\n'
                 f'  <div class="masthead-in">\n'
                 f'    <div class="grow">\n'
@@ -2307,7 +2426,8 @@ def compute_version_sections(series_dir, assume_root_version=None):
             "cover": cover, "version_roots": version_roots,
             "version_msgs": version_msgs, "rows": rows,
             "personas": personas, "reviewer_entries": reviewer_entries,
-            "pcols": pcols, "tier_line": None,
+            "pcols": pcols, "tier_line": None, "ci_line": None,
+            "questions_line": None,
         }
     # Tier and carried verdicts belong to the CURRENT version's section
     # only (the same facts render_series shows in the HTML). Applied
@@ -2326,6 +2446,9 @@ def compute_version_sections(series_dir, assume_root_version=None):
             if info["reason"]:
                 bits.append(info["reason"])
             cur["tier_line"] = " \u00b7 ".join(bits) or None
+        cur["ci_line"] = ci_summary(fleet_ci_info(roots, msgs))
+        cur["questions_line"] = questions_summary(
+            fleet_questions(roots, msgs, seated))
     return name, msgs, versions, version_data, fleet_cover_ids, rendered_ids
 
 
@@ -2348,6 +2471,9 @@ def render_text_version_lines(series_dir, name, v, d, fleet_cover_ids):
              f"{n_patches} patches · {n_replies} replies · {len(reviewer_entries)} reviewers"]
     if d.get("tier_line"):
         lines.append(d["tier_line"])
+    for key in ("ci_line", "questions_line"):
+        if d.get(key):
+            lines.append(d[key])
     lines.append("")
     render_text_tally(lines, rows, d["pcols"])
     lines.append("")

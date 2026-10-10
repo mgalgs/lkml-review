@@ -1221,5 +1221,66 @@ write_msg "$root9" "$t14" 007 "f140070-0000-4000-8000-000000000007" "$(D 6)" \
 OUT="$(PATH="$STUB_PATH" "$status" "$t14" --mail-root "$root9" 2>&1)"
 contains "(F-chain3) an escalated-in seat is marked carried" "$OUT" "@security  sent 1  last $(D 5)  tags: Reviewed-by (carried from v2)"
 
+printf '\n== CI line and operator questions ==\n'
+# Hand-worked: @review-one's seq 2 is a Question mail dated 10:20:00Z on
+# 2026-03-02. The clock (SOURCE_DATE_EPOCH) at 13:20:00Z makes it 3h00m old,
+# at 11:20:00Z 1h00m. The CI mail is seq 4; message ids are
+# "<label>00<seq>0000-...", so the 7-char id of seq 2 is "<label>00200".
+root10="$work/store10"
+epoch_at() { date -u -d "2026-03-02 $1" +%s; }
+ci_thread() { # ci_thread <label> <root extra headers> <question To> <CI sender> [epoch]
+    local label="$1" rh="$2" qto="$3" sender="$4" epoch="${5:-}"
+    local t="99999999-$label-4999-8999-999999999999"
+    mkdir -p -- "$root10/threads/$t"
+    write_msg "$root10" "$t" 001 "${label}0010000-0000-4000-8000-000000000001" "$(D 0)" \
+        '@author' '@panel' '' '[PATCH v1 0/1] Asked' 8 '' 'Cover.' \
+        "X-Seats: @review-one, @review-three${rh:+$'\n'$rh}"
+    write_msg "$root10" "$t" 002 "${label}0020000-0000-4000-8000-000000000002" "$(D 20)" \
+        '@review-one' "$qto" '' 'Re: [PATCH v1 0/1] Asked' 7 '' $'Question: which database?\n\nReviewed-by: One'
+    write_msg "$root10" "$t" 003 "${label}0030000-0000-4000-8000-000000000003" "$(D 21)" \
+        '@review-three' '@author' '' 'Re: [PATCH v1 0/1] Asked' 7 '' $'Fine.\n\nReviewed-by: Three'
+    if [[ -n "$sender" ]]; then
+        write_msg "$root10" "$t" 004 "${label}0040000-0000-4000-8000-000000000004" "$(D 22)" \
+            "$sender" '@operator' '' 'Re: [PATCH v1 0/1] Asked' 7 '' 'CI finished.' \
+            $'X-Lkml-CI-Status: success\nX-Lkml-CI-Head: pr/example 1111111111111111111111111111111111111111\nX-Lkml-CI-Url: https://ci.example.com/run/7'
+    fi
+    OUT="$(SOURCE_DATE_EPOCH="${epoch:-$(epoch_at 13:20:00)}" PATH="$STUB_PATH" "$status" "$t" --mail-root "$root10" 2>&1)"; RC=$?
+}
+
+ci_thread c1 '' '@author, @operator' '@operator'
+contains "(F-ci1) a result From @operator: status, sha8, id7, url" "$OUT" "CI: success 11111111 (c100400) https://ci.example.com/run/7"
+contains "(F-q1) no timeout header: age, no mark" "$OUT" "Questions (no timeout): @review-one c100200 3h00m"
+case "$OUT" in *"timed out"*) no "(F-q1) no timeout, no mark" "$OUT" ;; *) ok "(F-q1) no timeout, no mark" ;; esac
+
+ci_thread c2 'X-Lkml-Question-Timeout: 2h' '@author, @operator' ''
+contains "(F-q2) past the timeout: marked" "$OUT" "Questions (timeout 2h): @review-one c200200 3h00m timed out"
+case "$OUT" in *"CI:"*) no "(F-ci0) no CI mail: no CI line" "$OUT" ;; *) ok "(F-ci0) no CI mail: no CI line" ;; esac
+
+ci_thread c3 'X-Lkml-Question-Timeout: 2h' '@author, @operator' '' "$(epoch_at 11:20:00)"
+contains "(F-q3) before the timeout: age without a mark" "$OUT" "Questions (timeout 2h): @review-one c300200 1h00m"
+case "$OUT" in *"timed out"*) no "(F-q3) not timed out at 1h00m" "$OUT" ;; *) ok "(F-q3) not timed out at 1h00m" ;; esac
+
+# Hand-worked: a leading zero is decimal, as in panel-state. Age is 3h00m, so
+# 010h is a 10h timeout (not octal 8: no mark) and 08h is an 8h timeout (not
+# a base error that reads as "no timeout"; still no mark).
+ci_thread c5 'X-Lkml-Question-Timeout: 010h' '@author, @operator' ''
+contains "(F-q5) 010h reads as 10h, not octal" "$OUT" "Questions (timeout 10h): @review-one c500200 3h00m"
+case "$OUT" in *"timed out"*) no "(F-q5) 010h not timed out at 3h00m" "$OUT" ;; *) ok "(F-q5) 010h not timed out at 3h00m" ;; esac
+ci_thread c6 'X-Lkml-Question-Timeout: 08h' '@author, @operator' ''
+contains "(F-q6) 08h reads as 8h" "$OUT" "Questions (timeout 8h): @review-one c600200 3h00m"
+
+ci_thread c4 '' '@author' ''
+case "$OUT" in *"Questions"*) no "(F-q4) a Question not addressed to @operator is not listed" "$OUT" ;; *) ok "(F-q4) a Question not addressed to @operator is not listed" ;; esac
+
+ci_thread c5 '' '@author, @operator' '@review-one'
+contains "(F-ci2) CI headers on a seat's mail are untrusted" "$OUT" "CI: none from @operator (X-Lkml-CI-Status seen from @review-one)"
+case "$OUT" in *"CI: success"*) no "(F-ci2) and not shown as a result" "$OUT" ;; *) ok "(F-ci2) and not shown as a result" ;; esac
+
+ci_thread c6 'X-Lkml-Question-Timeout: soon' '@author, @operator' ''
+contains "(F-q5) a malformed timeout reads as absent" "$OUT" "Questions (no timeout): @review-one c600200 3h00m"
+
+OUT="$(PATH="$STUB_PATH" "$status" "$t1" --mail-root "$root" 2>&1)"
+case "$OUT" in *"CI:"*|*"Questions"*) no "(F-none) the existing t1 screen has no CI or Questions line" "$OUT" ;; *) ok "(F-none) the existing t1 screen has no CI or Questions line" ;; esac
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))
