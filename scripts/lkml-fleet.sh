@@ -11,7 +11,8 @@
 # A cluster postmaster deploy (`k8s install ... --postmaster`, or
 # `k8s upgrade-postmaster`) defaults to ~/.config/lkml/fleet-cluster.yaml
 # instead, since the cluster can run only k8s seats, and is refused when that
-# file is missing rather than falling back to the local fleet.
+# file is missing rather than falling back to the local fleet. This default is
+# interim: it goes away once a deploy repository's CI owns postmaster installs.
 #
 # The wrapper resolves its own location, so a symlink installed on PATH still
 # selects the personas from this checkout. It refuses a missing directory
