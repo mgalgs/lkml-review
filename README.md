@@ -75,7 +75,10 @@ Converging below.
 `fleet expand @all` works from the persona frontmatter alone. An optional
 `~/.config/lkml/fleet.yaml` (overridable with `LKML_FLEET_FILE`) can add a
 `@panel` list, `triage:` settings, and site-specific harness or model
-overrides; `fleet roster` and `fleet check` need that optional file. See
+overrides; `fleet roster` and `fleet check` need that optional file. A
+cluster postmaster deploy (`k8s install --postmaster`, `k8s
+upgrade-postmaster`) ships `~/.config/lkml/fleet-cluster.yaml` instead, and
+is refused when that file is missing. See
 `docs/RETIRED.md` for how each old script below maps onto the new
 transport, and where a gap still has no replacement.
 

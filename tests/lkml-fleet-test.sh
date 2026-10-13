@@ -70,6 +70,27 @@ check "LKML_FLEET_FILE overrides the default" "fleet=$override" "$(sed -n '2p' "
 check "fleet file remains exported when absent" "fleet=$override" "$(sed -n '2p' "$record")"
 check "all postmaster arguments pass through" "--project" "$(sed -n '6p' "$record")"
 
+printf '\n== cluster postmaster deploys default to fleet-cluster.yaml ==\n'
+cluster_fleet="$home_dir/.config/lkml/fleet-cluster.yaml"
+rm -f -- "$record"
+out="$(run_fleet "$fleet" k8s install --postmaster 2>&1)"; rc=$?
+if (( rc != 0 )); then ok "install --postmaster with no fleet-cluster.yaml exits non-zero"; else no "install --postmaster with no fleet-cluster.yaml exits non-zero" "exit 0"; fi
+contains "the refusal names fleet-cluster.yaml" "$out" "$cluster_fleet"
+if [[ -e "$record" ]]; then no "the refusal does not exec fork-sandbox" "stub record exists"; else ok "the refusal does not exec fork-sandbox"; fi
+mkdir -p -- "$(dirname "$cluster_fleet")"; : > "$cluster_fleet"
+run_fleet "$fleet" k8s install --dry-run --postmaster; rc=$?
+check "install --postmaster exits 0" "0" "$rc"
+check "install --postmaster ships fleet-cluster.yaml" "fleet=$cluster_fleet" "$(sed -n '2p' "$record")"
+run_fleet "$fleet" k8s upgrade-postmaster; rc=$?
+check "upgrade-postmaster ships fleet-cluster.yaml" "fleet=$cluster_fleet" "$(sed -n '2p' "$record")"
+run_fleet "$fleet" k8s install; rc=$?
+check "plain k8s install keeps the default fleet" "fleet=$home_dir/.config/lkml/fleet.yaml" "$(sed -n '2p' "$record")"
+run_fleet "$fleet" postmaster deliver --postmaster; rc=$?
+check "--postmaster outside k8s install keeps the default fleet" "fleet=$home_dir/.config/lkml/fleet.yaml" "$(sed -n '2p' "$record")"
+LKML_FLEET_FILE="$override" run_fleet "$fleet" k8s install --postmaster; rc=$?
+check "LKML_FLEET_FILE still wins for a cluster deploy" "fleet=$override" "$(sed -n '2p' "$record")"
+rm -f -- "$cluster_fleet"
+
 printf '\n== missing personas directory ==\n'
 missing_root="$work/missing"; mkdir -p -- "$missing_root/scripts"
 cp -- "$fleet" "$missing_root/scripts/lkml-fleet.sh"
