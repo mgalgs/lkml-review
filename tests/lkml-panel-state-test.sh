@@ -1333,6 +1333,68 @@ PY
 run_case fh_m
 check "no frozen head anywhere (no root value, no cover line): null" "null" "$(j .frozen_head)"
 
+printf '\n== a review target the postmaster re-froze in place ==\n'
+# A force-push orphaned v1 (A) before any seat replied, so the postmaster
+# re-froze v1 onto the pushed head B: its review_target says v1 is B,
+# set_by @postmaster, and no mail says so. Mail still says v1 is A.
+cat >> "$work/fx.py" <<'FX4'
+def refrozen(sha=B, ver=1):
+    return {"branch": "pr/example", "sha": sha, "version": ver,
+            "set_by": "@postmaster", "set_at": "2026-03-02T10:05:00Z"}
+
+def refrozen_thread(replies=True, up_head=B):
+    e = [root(body=ROOT_BODY.replace("f" * 40, A)), upstream(2, up_head)]
+    if replies:
+        e += panel_positive(sha=B, ver=1, start=3) + [sec(20, "CONVERGED", 1, "SIGNED-OFF", B, 1)]
+    return e
+FX4
+
+gen rf1 <<'PY'
+write(D, export(refrozen_thread()), status(target=refrozen()))
+PY
+run_case rf1
+check "(rf1) re-frozen v1 signed off: CONVERGED" "CONVERGED" "$(jr .status)"
+check "(rf1) SIGNED-OFF" "SIGNED-OFF" "$(jr .verdict)"
+check "(rf1) target is the re-frozen sha" "$(printf "b%.0s" $(seq 40))" "$(jr .target.sha)"
+check "(rf1) frozen_head is the re-frozen sha, upstream" "{\"sha\":\"$(printf "b%.0s" $(seq 40))\",\"source\":\"upstream\"}" "$(j .frozen_head)"
+check "(rf1) no reasons" "[]" "$(j .reasons)"
+
+gen rf2 <<'PY'
+# The seats are still running on B, so nothing is quiescent yet.
+write(D, export(refrozen_thread(replies=False)), status(target=refrozen(), runs=[run("r1", "live")]))
+PY
+run_case rf2
+check "(rf2) re-frozen v1, no replies yet: IN-PROGRESS" "IN-PROGRESS" "$(jr .status)"
+check "(rf2) frozen_head is the re-frozen sha, upstream" "{\"sha\":\"$(printf "b%.0s" $(seq 40))\",\"source\":\"upstream\"}" "$(j .frozen_head)"
+reason_lacks "(rf2) no disagreement reason" "disagrees"
+reason_lacks "(rf2) no frozen-head reason" "frozen head"
+reason_lacks "(rf2) no unanswered-push reason" "newest push"
+
+gen rf3 <<'PY'
+# set_by @postmaster alone vouches for nothing: no message stamps C.
+write(D, export(refrozen_thread(replies=False)), status(target=refrozen(sha=C)))
+PY
+run_case rf3
+check "(rf3) unvouched @postmaster target: root fallback" "{\"sha\":\"$(printf "a%.0s" $(seq 40))\",\"source\":\"root\"}" "$(j .frozen_head)"
+reason_has "(rf3) the disagreement is a reason" "disagrees with the newest X-Review-Target-Set in mail"
+check "(rf3) not IN-PROGRESS" "STALLED" "$(jr .status)"
+
+gen rf4 <<'PY'
+# The stamped head vouches for B, but only a set_by of @postmaster
+# re-freezes: the same target set by anyone else is still a disagreement.
+t = refrozen(); t["set_by"] = "@pr-author"
+write(D, export(refrozen_thread(replies=False)), status(target=t))
+PY
+run_case rf4
+reason_has "(rf4) a vouched sha not set by @postmaster still disagrees" "disagrees with the newest X-Review-Target-Set in mail"
+
+gen rf5 <<'PY'
+write(D, export(refrozen_thread()), status(target=refrozen(ver=2)))
+PY
+run_case rf5
+reason_has "(rf5) a re-freeze that moves the version still disagrees" "postmaster target v2 (bbbbbbbb) disagrees with the newest X-Review-Target-Set in mail v1 (aaaaaaaa)"
+check "(rf5) not CONVERGED" "STALLED" "$(jr .status)"
+
 printf '\n== postmaster facts: what counts as live and pending ==\n'
 gen p1 <<'PY'
 write(D, export(green()), status(runs=[run("r1", "live"), run("r2", "harvested"), run("r3", "live", "@docs")]))

@@ -178,6 +178,17 @@ target, resolved so:
      frozen head falls back to the root's (source "root").
   4. No candidate -> the root's value (source "root"), else null.
 
+Before any of that: a target the postmaster re-froze is its own frozen
+head (source "upstream"). When a force-push orphans a version before any
+seat has replied on it, the postmaster moves its review_target to the
+pushed head in place, keeps the version, sets set_by to @postmaster and
+sends no mail, so no cover names the new sha. Its say-so alone is not
+enough: the re-freeze counts only when a message's stamped
+X-Upstream-Head (parsed as in rule 3, at any seq) names the target's
+sha. Otherwise the rules above apply unchanged. The same vouched
+re-freeze is why the mail witness's older sha for that version is not a
+disagreement under "Current target" below.
+
 A version whose target IS its frozen head is the human's own head
 (v1, or a later human integration); a version whose target differs is
 the author persona's re-roll on top of it.
@@ -1039,6 +1050,22 @@ def target_label(target):
     return f"v{target['version']} ({sha8})"
 
 
+def refrozen(target, msgs):
+    """Whether `target` is a postmaster re-freeze vouched by the thread:
+    set by @postmaster, with a sha some message's stamped X-Upstream-Head
+    names. See the module docstring, "Frozen head"."""
+    if (target is None or target.get("source") != "postmaster"
+            or target.get("set_by") != "@postmaster"):
+        return False
+    for m in msgs:
+        if m["ok"]:
+            for v in header_values(m, "X-Upstream-Head"):
+                parsed = parse_target_value(v)
+                if parsed is not None and parsed[1] == target["sha"]:
+                    return True
+    return False
+
+
 def resolve_target(status, msgs):
     """The current review target -> (target|None, reasons). The
     postmaster's is authoritative; the newest X-Review-Target-Set in mail
@@ -1076,7 +1103,10 @@ def resolve_target(status, msgs):
                     "source": "mail"}
 
     if pm is not None:
-        if mail is not None and mail["sha"] != pm["sha"]:
+        # A re-freeze moves the sha in place and sends no mail; it keeps
+        # the version, so only a version mismatch is still a disagreement.
+        if (mail is not None and mail["sha"] != pm["sha"]
+                and not (refrozen(pm, msgs) and mail["version"] == pm["version"])):
             reasons.append(
                 f"postmaster target {target_label(pm)} disagrees with the "
                 f"newest X-Review-Target-Set in mail {target_label(mail)}")
@@ -1353,6 +1383,8 @@ def resolve_frozen_head(msgs, roster, target):
     author = roster["author"]
     if target is None or author is None:
         return fallback, []
+    if refrozen(target, msgs):
+        return {"sha": target["sha"], "source": "upstream"}, []
     covers = []
     for m in msgs:
         if m["ok"] and m["from"] == author:
