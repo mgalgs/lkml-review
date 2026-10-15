@@ -417,6 +417,11 @@ job or a dashboard, should read this object and nothing else.
 | `IN-PROGRESS` | work is still pending or running | wait |
 | `STALLED` | nothing is pending, but the panel has not converged | a human looks; `reasons` says why |
 | `NEEDS-OPERATOR` | the postmaster flagged the thread | a human looks; the flag reason is in `postmaster` |
+| `AWAITING-OPERATOR` | a seat asked @operator a question that is still open | answer it; `questions` lists them, open ones with `open: true` |
+
+`AWAITING-OPERATOR` ranks below `NEEDS-OPERATOR` and above the rest. A
+question is open until it times out, the seat gives a newer verdict, or an
+@operator mail replies to it or is addressed to the asking seat.
 
 Every string in `reasons` names a condition that blocks `CONVERGED`. A
 `CONVERGED` object has none. The script's `--help` documents the full field

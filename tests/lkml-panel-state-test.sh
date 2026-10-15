@@ -2698,16 +2698,16 @@ PY
 run_case q1 --now 2026-03-02T12:02:00Z
 # Hand-worked: asked 10:02:00Z, now 12:02:00Z: 7200 s. No timeout header, so
 # timed_out is null and the question blocks: @core is in state question,
-# the secretary's CONVERGED is contradicted, STALLED.
+# the secretary's CONVERGED is contradicted. It is open: AWAITING-OPERATOR.
 check "(q1) one operator question is listed" \
-    '{"seat":"@core","message_id":"m002","asked_at":"2026-03-02T10:02:00Z","age_seconds":7200,"timed_out":null,"subject":"Re: [PATCH v1] Fix the thing"}' \
+    '{"seat":"@core","message_id":"m002","asked_at":"2026-03-02T10:02:00Z","age_seconds":7200,"timed_out":null,"subject":"Re: [PATCH v1] Fix the thing","open":true}' \
     "$(j '.questions[0]')"
 check "(q1) exactly one" "1" "$(jr '.questions | length')"
 check "(q1) no timeout: null" "null" "$(j .question_timeout_hours)"
 check "(q1) now is the given clock" "2026-03-02T12:02:00Z" "$(jr .now)"
 check "(q1) the seat is in state question" "question" "$(seat @core state)"
 reason_has "(q1) it blocks as an unanswered Question" "@core: unanswered Question on v1"
-check "(q1) STALLED" "STALLED" "$(jr .status)"
+check "(q1) AWAITING-OPERATOR" "AWAITING-OPERATOR" "$(jr .status)"
 
 gen q2 <<'PY'
 write(D, export(qthread(Q, hours=None, to=("@pr-author",))), status())
@@ -2728,7 +2728,7 @@ check "(q3) age" "3480" "$(jr '.questions[0].age_seconds')"
 check "(q3) before the timeout: timed_out false" "false" "$(jr '.questions[0].timed_out')"
 check "(q3) the timeout is reported" "2" "$(jr .question_timeout_hours)"
 check "(q3) before the timeout it blocks" "question" "$(seat @core state)"
-check "(q3) STALLED" "STALLED" "$(jr .status)"
+check "(q3) still open: AWAITING-OPERATOR" "AWAITING-OPERATOR" "$(jr .status)"
 
 gen q4 <<'PY'
 write(D, export(qthread(Q + "\nReviewed-by: C <c@example.com>", hours="2h")), status())
@@ -2872,6 +2872,135 @@ run_case q10 --now 2026-03-02T13:00:00Z
 # blocks.
 check "(q10) an escalated-in seat's question is listed" "@security m043 null" "$(jr '"\(.questions[0].seat) \(.questions[0].message_id) \(.questions[0].timed_out)"')"
 check "(q10) it blocks" "question" "$(seat @security state)"
+check "(q10) open: AWAITING-OPERATOR" "true AWAITING-OPERATOR" "$(jr '"\(.questions[0].open) \(.status)"')"
+
+printf '\n== AWAITING-OPERATOR: when a question is open ==\n'
+# Shared shape: qthread() with no timeout unless stated; status() is
+# quiescent and unflagged, so a thread with no open question that is not
+# converged reads STALLED.
+run_case q2 --now 2026-03-02T12:02:00Z
+# Hand-worked: none: the only Question is not to @operator: nothing listed,
+# so nothing is open; the seat still blocks: STALLED.
+check "(aw-none) a Question to the author alone: STALLED" "STALLED" "$(jr .status)"
+
+gen aw_all <<'PY'
+e = [timeout_root(None)] + [question(2 + i, w, Q) for i, w in enumerate(("@core", "@tests", "@docs"))] + [sec(20)]
+write(D, export(e), status())
+PY
+run_case aw_all --now 2026-03-02T12:00:00Z
+# Hand-worked: every seat asks @operator; all three open.
+check "(aw-all) all three open" "true true true" "$(jr '[.questions[].open] | map(tostring) | join(" ")')"
+check "(aw-all) AWAITING-OPERATOR" "AWAITING-OPERATOR" "$(jr .status)"
+
+run_case q4 --now 2026-03-02T13:00:00Z
+# Hand-worked: timed out (10680 s >= 7200), Reviewed-by decides: not open.
+check "(aw-timeout) a timed-out question is not open" "false CONVERGED" "$(jr '"\(.questions[0].open) \(.status)"')"
+run_case q5 --now 2026-03-02T13:00:00Z
+# Hand-worked: timed out, only tag dropped: the seat is silent, not asking.
+check "(aw-timeout-only-tag) not open: STALLED" "false STALLED" "$(jr '"\(.questions[0].open) \(.status)"')"
+
+gen aw_reply <<'PY'
+e = qthread(Q, hours=None)
+r = msg(10, "@operator", "Ask @tests; they own the retry path.", to=["@pr-author"])
+r["in_reply_to"] = "m002"
+e.insert(2, r)
+write(D, export(e), status())
+PY
+run_case aw_reply --now 2026-03-02T12:00:00Z
+# Hand-worked: @operator replied directly to m002: answered. @core still
+# holds its Question (it owes the next verdict), so the seat blocks but the
+# panel no longer waits on the operator: STALLED (quiescent).
+check "(aw-reply) a direct @operator reply closes it" "false" "$(jr '.questions[0].open')"
+check "(aw-reply) the seat still holds its Question" "question" "$(seat @core state)"
+check "(aw-reply) STALLED" "STALLED" "$(jr .status)"
+
+gen aw_deep <<'PY'
+e = qthread(Q, hours=None)
+a = msg(10, "@tests", "It is the retry suite.", to=["@core"])
+a["in_reply_to"] = "m002"
+b = msg(11, "@operator", "Agreed.", to=["@tests"])
+b["in_reply_to"] = "m010"
+e[2:2] = [a, b]
+write(D, export(e), status())
+PY
+run_case aw_deep --now 2026-03-02T12:00:00Z
+# Hand-worked: @operator's m011 replies to m010, which replies to m002: in
+# the subtree, answered.
+check "(aw-deep) a reply deeper in the subtree closes it" "false STALLED" "$(jr '"\(.questions[0].open) \(.status)"')"
+
+gen aw_refs <<'PY'
+e = qthread(Q, hours=None)
+r = msg(10, "@operator", "Yes.", to=["@pr-author"], extra=[["References", "m001 m002"]])
+e.insert(2, r)
+write(D, export(e), status())
+PY
+run_case aw_refs --now 2026-03-02T12:00:00Z
+# Hand-worked: no In-Reply-To; References' last id is m002: answered.
+check "(aw-refs) References stands in for a missing In-Reply-To" "false" "$(jr '.questions[0].open')"
+
+gen aw_to_seat <<'PY'
+e = qthread(Q, hours=None)
+e.insert(2, msg(10, "@operator", "@core: the retry suite.", to=["@core"]))
+write(D, export(e), status())
+PY
+run_case aw_to_seat --now 2026-03-02T12:00:00Z
+# Hand-worked: a later @operator message To @core, outside the subtree: answered.
+check "(aw-to-seat) a later @operator mail to the asking seat closes it" "false" "$(jr '.questions[0].open')"
+
+gen aw_not_answer <<'PY'
+other = msg(10, "@operator", "Unrelated note.", to=["@tests"])
+other["in_reply_to"] = "m001"
+e = [timeout_root(None), msg(2, "@operator", "Kicking off.", to=["@core"]),
+     question(3, "@core", Q), msg(4, "@tests", "Reviewed-by: T", sha=A, ver=1),
+     msg(5, "@docs", "Reviewed-by: D", sha=A, ver=1), other, sec(20)]
+write(D, export(e), status())
+PY
+run_case aw_not_answer --now 2026-03-02T12:00:00Z
+# Hand-worked: @operator's m002 to @core predates the question (m003); its
+# m010 is to @tests, under the root, not the question: still open.
+check "(aw-not-answer) an earlier or unrelated @operator mail does not close it" "true AWAITING-OPERATOR" "$(jr '"\(.questions[0].open) \(.status)"')"
+
+gen aw_superseded <<'PY'
+e = qthread(Q, hours=None)
+e.insert(4, msg(5, "@core", "Reviewed-by: C <c@example.com>", sha=A, ver=1))
+write(D, export(e), status())
+PY
+run_case aw_superseded --now 2026-03-02T12:00:00Z
+# Hand-worked: @core asked at m002, then gave Reviewed-by at m005: its
+# verdict is no longer the question, so it is not open; everything is
+# positive and the secretary says CONVERGED.
+check "(aw-superseded) the seat's newer verdict closes it" "false CONVERGED" "$(jr '"\(.questions[0].open) \(.status)"')"
+
+gen aw_old_version <<'PY'
+e = [frozen_root(), question(2, "@core", Q, sha=F, ver=1), cover(10, T2, 2, "Re-roll after review.")]
+e += panel_positive(sha=T2, ver=2, start=11) + [sec(20, "CONVERGED", 2, "RESPIN", T2, 2)]
+write(D, export(e), status(sha=T2, ver=2))
+PY
+run_case aw_old_version --now 2026-03-02T12:00:00Z
+# Hand-worked: the question is on v1 (F); v2 (T2) is a re-roll every seat
+# reviewed positively. Listed, not open; CONVERGED RESPIN.
+check "(aw-old-version) a question on an older version is listed" "m002" "$(jr '.questions[0].message_id')"
+check "(aw-old-version) but not open" "false CONVERGED" "$(jr '"\(.questions[0].open) \(.status)"')"
+
+run_case q5c --now 2026-03-02T10:40:00Z
+# Hand-worked: @core's question on v1 carries onto v2 at H and still blocks
+# there: it is the seat's verdict on the current target, so it is open.
+check "(aw-carried) a carried question is open" "true AWAITING-OPERATOR" "$(jr '"\(.questions[0].open) \(.status)"')"
+
+gen aw_flagged <<'PY'
+write(D, export(qthread(Q, hours=None)), status(flag={"reason": "loop guard", "events": 1}))
+PY
+run_case aw_flagged --now 2026-03-02T12:00:00Z
+# Hand-worked: open, but the thread is flagged: the flag wins.
+check "(aw-flagged) a flag outranks an open question" "true NEEDS-OPERATOR" "$(jr '"\(.questions[0].open) \(.status)"')"
+
+gen aw_live <<'PY'
+write(D, export(qthread(Q, hours=None)), status(runs=[run("r1", "live", "@tests")]))
+PY
+run_case aw_live --now 2026-03-02T12:00:00Z
+# Hand-worked: open while another seat's run is live: the operator is still
+# who the panel waits on, so AWAITING-OPERATOR, not IN-PROGRESS.
+check "(aw-live) an open question outranks IN-PROGRESS" "AWAITING-OPERATOR" "$(jr .status)"
 
 printf '\n== invariants over every case above ==\n'
 inv_bad=""; inv_n=0; inv_conv=0; diff_bad=""; diff_n=0
@@ -2893,7 +3022,8 @@ for c in "${cases_run[@]}"; do
     if ! jq -e '
         (["schema","thread","subject","status","verdict","target","roster","tier","panel","push","frozen_head","ci","question_timeout_hours","questions","now","seats","secretary","postmaster","bundle","reasons"]
          - keys | length) == 0
-        and (.status | IN("CONVERGED","IN-PROGRESS","STALLED","NEEDS-OPERATOR"))
+        and (.status | IN("CONVERGED","IN-PROGRESS","STALLED","NEEDS-OPERATOR","AWAITING-OPERATOR"))
+        and ((.status == "AWAITING-OPERATOR") == (.postmaster.flagged != true and any(.questions[]; .open)))
         and ((.status == "CONVERGED") == (.reasons | length == 0))
         and (.verdict == null or .status == "CONVERGED")
         and (.bundle == null or .verdict == "RESPIN")
@@ -2911,7 +3041,7 @@ for c in "${cases_run[@]}"; do
         and (.ci | has("source") and has("trusted_from") and has("status") and has("sha") and has("branch") and has("url") and has("message_id") and has("covers_target"))
         and (.status != "CONVERGED" or .ci.source != "ci" or .ci.status == "success")
         and (.questions | type == "array")
-        and all(.questions[]; has("seat") and has("message_id") and has("asked_at") and has("age_seconds") and has("timed_out") and has("subject"))
+        and all(.questions[]; has("seat") and has("message_id") and has("asked_at") and has("age_seconds") and has("timed_out") and has("subject") and (.open | type == "boolean"))
         and (.now | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
         and (.tier | has("name") and has("reason") and has("source") and has("message_id"))
         and (.push == null or (.push | has("mode") and has("message_id") and has("seq") and has("sha") and has("seats") and has("tier") and has("malformed") and has("answered")))

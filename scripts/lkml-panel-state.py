@@ -311,7 +311,7 @@ its To/Cc recipients is an operator question. They are listed, whatever
 the timeout, so a dashboard can show them:
 
     "questions": [{"seat","message_id","asked_at","age_seconds",
-                   "timed_out","subject"}]    (every version, seq order)
+                   "timed_out","subject","open"}]  (every version, seq order)
 
 asked_at is the message's Date as an ISO UTC stamp, age_seconds is
 against `now` (--now <ISO-8601>, default the clock; the output carries it
@@ -329,6 +329,18 @@ verdicts by the usual rules (carry included). A timeout NEVER manufactures
 a positive verdict. A question answered by an @operator reply is ordinary:
 the seat's next verdict decides. Nothing wakes a thread when a question
 times out; the timeout is read, not scheduled.
+
+A question is open -- the panel waits on the operator -- when all hold:
+
+  - it is not timed out (timed_out false or null);
+  - it is still the asking seat's verdict on the current target: the
+    seat's entry is in state question with this message_id. A newer
+    verdict from the seat, or a question on an older version that did
+    not carry, closes it. A carried question stays open;
+  - @operator has not answered it: no later message from @operator is in
+    its reply subtree (In-Reply-To, else the last References id) or names
+    the asking seat in To/Cc. Once answered the seat owes the next move,
+    so the word falls through to IN-PROGRESS or STALLED.
 
 Secretary -- the roster's Secretary seat reports the panel's overall
 state in the LAST non-empty lines of a message body, in this order:
@@ -366,7 +378,10 @@ and change no status.
 Status -- precedence top to bottom, first match wins:
 
     NEEDS-OPERATOR  the thread is flagged
-    CONVERGED       usable roster; a current target; every panel seat
+    AWAITING-OPERATOR
+                    at least one operator question is open (see
+                    "Operator questions and the timeout")
+    CONVERGED      usable roster; a current target; every panel seat
                     positive; the secretary's message on target,
                     well-formed and saying CONVERGED; quiescent; the
                     target sources agree; no other reason. verdict is
@@ -591,7 +606,8 @@ def normalize_message(raw):
         raise InputError("export has a message without an integer seq")
     m = {"seq": raw["seq"], "ok": False, "id": None, "from": None,
          "subject": None, "date": None, "body": "", "headers": [],
-         "to": [], "cc": [], "sha": None, "version": None, "tags": []}
+         "to": [], "cc": [], "sha": None, "version": None, "tags": [],
+         "parent": None}
     if "error" in raw:
         return m
     if not (isinstance(raw.get("from"), str) and isinstance(raw.get("body"), str)
@@ -608,6 +624,12 @@ def normalize_message(raw):
     m["sha"] = tgt[1] if tgt else None
     m["version"] = int_header(m, "X-Version")
     m["tags"] = body_tags(raw["body"])
+    # The renderer's parent rule: In-Reply-To, else the last References id.
+    parent = raw.get("in_reply_to")
+    if not (isinstance(parent, str) and parent.strip()):
+        refs = " ".join(header_values(m, "References")).split()
+        parent = refs[-1] if refs else None
+    m["parent"] = parent.strip() if parent else None
     return m
 
 
@@ -832,6 +854,40 @@ def operator_questions(msgs, panel, hours, now):
                     "subject": first_line(m["subject"] or "",
                                           QUESTION_SUBJECT_MAX)})
     return out, reasons
+
+
+def operator_answered(q, msgs):
+    """True when @operator has replied to question q: a later message from
+    @operator either in the question's reply subtree or addressed to the
+    asking seat."""
+    by_id = {m["id"]: m for m in msgs if m["ok"] and m["id"]}
+    asked = by_id.get(q["message_id"])
+    if asked is None:
+        return False
+    for m in msgs:
+        if not (m["ok"] and m["from"] == OPERATOR and m["seq"] > asked["seq"]):
+            continue
+        if q["seat"] in m["to"] + m["cc"]:
+            return True
+        seen, cur = set(), m["parent"]
+        # `seen` guards a reply cycle in a malformed mailbox.
+        while cur and cur not in seen:
+            if cur == q["message_id"]:
+                return True
+            seen.add(cur)
+            cur = by_id[cur]["parent"] if cur in by_id else None
+    return False
+
+
+def mark_open_questions(questions, seats, msgs):
+    """Set each question's "open" flag in place. See the module docstring,
+    "Operator questions and the timeout"."""
+    holding = {(s["seat"], s["message_id"]) for s in seats
+               if s["state"] == "question"}
+    for q in questions:
+        q["open"] = (q["timed_out"] is not True
+                     and (q["seat"], q["message_id"]) in holding
+                     and not operator_answered(q, msgs))
 
 
 def seat_tokens(msg, name, reasons):
@@ -1667,6 +1723,8 @@ def build_state(export, status, now):
         if why:
             reasons.append(why)
 
+    mark_open_questions(questions, seats, msgs)
+
     secretary, sec_reasons = judge_secretary(msgs, roster, target, carry_from)
     reasons += sec_reasons
 
@@ -1703,6 +1761,8 @@ def build_state(export, status, now):
 
     if pm["flagged"]:
         status_word = "NEEDS-OPERATOR"
+    elif any(q["open"] for q in questions):
+        status_word = "AWAITING-OPERATOR"
     elif not reasons:
         status_word = "CONVERGED"
     elif pm["quiescent"]:
