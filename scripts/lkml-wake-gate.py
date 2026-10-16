@@ -58,7 +58,7 @@ one "lkml-wake-gate: ..." line on stderr naming the decision and rule:
        by an X-Lkml-Push-Mode: escalate push is a reviewer)
     e  no target, or the target has no sha        -> exit 0
        (nothing to wait for)
-    f  every seat is positive, blocking or question -> exit 0
+    f  every seat is positive, overruled, blocking or question -> exit 0
        (every reviewer has answered the current version; a verdict
        panel-state reports as carried forward is a verdict, so a recheck
        version waits only on the seats it listed and a carry version on
@@ -78,7 +78,7 @@ SCHEMA = "lkml-panel-state/1"
 TIMEOUT = 20
 REQUIRED = ("FS_HOOK_AGENT", "FS_HOOK_MESSAGE",
             "FS_HOOK_EXPORT_FILE", "FS_HOOK_STATUS_FILE")
-ANSWERED = frozenset(("positive", "blocking", "question"))
+ANSWERED = frozenset(("positive", "overruled", "blocking", "question"))
 
 
 class Done(Exception):

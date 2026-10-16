@@ -284,6 +284,15 @@ expect "all three on target: reviewed, changes-requested, question" 0 "f"
 run mixed FS_HOOK_MESSAGE=m003
 expect "same, triggered by the blocking reviewer" 0 "f"
 
+gen overruled <<'PY'
+write(D, export([root(), msg(2, "@tests", "Changes-requested", sha=A, ver=1),
+                 msg(3, "@core", "Overrule: m002\n\nReviewed-by: C", sha=A, ver=1),
+                 reviewed(4, "@docs")]),
+      status())
+PY
+run overruled FS_HOOK_MESSAGE=m003
+expect "@core's ruling overrules @tests: every seat answered" 0 "f"
+
 printf '\n== escalate: the effective roster ==\n'
 gen esc <<'PY'
 # The root's panel is core/tests/docs; the human's push escalated in

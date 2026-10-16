@@ -3044,6 +3044,168 @@ run_case un4
 # addresses it.
 reason_lacks "(un4) a later mail to the seat clears it" "@security: owed a verdict on v2"
 
+printf '\n== Overrule: a ruling on a held block ==\n'
+# Shared shape (the PR 2409 sidebar): v1 is the human's head A; @tests
+# blocks at m003, the author rebuts it in a sidebar at m005, @tests holds
+# at m006, and a ruling follows at m007. `extra` replaces or adds messages.
+gen_ov() {
+    gen "$1" <<PY
+body = ROOT_BODY.replace("f" * 40, A)
+e = [root(body=body),
+     msg(2, "@core", "Reviewed-by: C <c@example.com>", sha=A, ver=1),
+     msg(3, "@tests", "No test pins the value.\n\nChanges-requested", sha=A, ver=1),
+     msg(4, "@docs", "Reviewed-by: D <d@example.com>", sha=A, ver=1),
+     msg(5, "@pr-author", "> No test pins the value.\n\nA revert is not a bug.", sha=A, ver=1, to=["@tests"]),
+     msg(6, "@tests", "> A revert is not a bug.\n\nI hold it.\n\nChanges-requested", sha=A, ver=1)]
+e += [$2]
+e.append(sec(20))
+write(D, export([m for m in e if m]), status())
+PY
+}
+gen_ov ov1 'msg(7, "@core", "A revert is not a defect.\n\nOverrule: m006\n\nReviewed-by: C <c@example.com>", sha=A, ver=1)'
+run_case ov1
+# Hand-worked: @tests' verdict is m006 (blocking); @core's m007 names it:
+# overruled. Every seat is positive or overruled, secretary CONVERGED.
+check "(ov1) the held block is overruled" "overruled Changes-requested m006" "$(seat @tests state) $(seat @tests verdict) $(seat @tests message_id)"
+check "(ov1) overruled_by names the ruling" '{"seat":"@core","message_id":"m007"}' "$(jq -c '.seats[] | select(.seat == "@tests") | .overruled_by' <<<"$OUT")"
+check "(ov1) other seats have overruled_by null" "null" "$(jq -c '.seats[] | select(.seat == "@docs") | .overruled_by' <<<"$OUT")"
+check "(ov1) an overruled seat lets the panel converge" "CONVERGED SIGNED-OFF" "$(jr '"\(.status) \(.verdict)"')"
+
+gen_ov ov2 'msg(7, "@core", "Overrule: m003\n\nReviewed-by: C <c@example.com>", sha=A, ver=1)'
+run_case ov2
+# Hand-worked: the ruling names m003, but @tests' verdict is now m006: the
+# ruling binds to a message, not a seat, so it does nothing.
+check "(ov2) a ruling on a superseded block does nothing" "blocking STALLED" "$(seat @tests state) $(jr .status)"
+reason_lacks "(ov2) and raises no reason of its own" "Overrule in"
+reason_has "(ov2) the block is still named" "@tests: Changes-requested on v1"
+
+gen_ov ov3 'msg(7, "@tests", "> A revert is not a bug.\n\nFair; withdrawn.\n\nReviewed-by: T <t@example.com>", sha=A, ver=1)'
+run_case ov3
+# Hand-worked: the seat withdrew in the sidebar; no ruling is needed.
+check "(ov3) a seat that withdraws is positive" "positive CONVERGED" "$(seat @tests state) $(jr .status)"
+
+gen_ov ov4 'msg(7, "@core", "Overrule: m006\n\nReviewed-by: C", sha=A, ver=1), msg(8, "@tests", "New scenario: X.\n\nChanges-requested", sha=A, ver=1)'
+run_case ov4
+# Hand-worked: @tests blocked again at m008, after the ruling on m006.
+check "(ov4) a fresh block after a ruling blocks again" "blocking m008 null" "$(seat @tests state) $(seat @tests message_id) $(jq -c '.seats[] | select(.seat == "@tests") | .overruled_by' <<<"$OUT")"
+
+gen_ov ov5 'msg(7, "@docs", "Overrule: m006\n\nReviewed-by: D", sha=A, ver=1)'
+run_case ov5
+check "(ov5) a ruling from a seat that is not the arbiter is ignored" "blocking" "$(seat @tests state)"
+reason_has "(ov5) with a reason" "Overrule in m007 from @docs ignored: only @core or @operator may rule"
+
+gen_ov ov6 'msg(7, "@core", "Changes-requested", sha=A, ver=1), msg(8, "@core", "Overrule: m007\n\nChanges-requested", sha=A, ver=1)'
+run_case ov6
+check "(ov6) @core cannot overrule itself" "blocking" "$(seat @core state)"
+reason_has "(ov6) with a reason" "a seat cannot overrule its own verdict"
+
+gen_ov ov7 'msg(7, "@core", "I hold @tests right.\n\nChanges-requested", sha=A, ver=1), msg(8, "@operator", "Overrule: m007\nOverrule: m006", to=["@pr-author"])'
+run_case ov7
+# Hand-worked: @core's own block (m007) and @tests' (m006) both ruled by
+# @operator, who may rule on any panel seat, @core included.
+check "(ov7) @operator overrules @core" "overruled @operator" "$(seat @core state) $(jr '.seats[] | select(.seat == "@core") | .overruled_by.seat')"
+check "(ov7) one message may carry several rulings" "overruled CONVERGED" "$(seat @tests state) $(jr .status)"
+
+gen_ov ov8 'msg(7, "@core", "Overrule: <m006>\n\nReviewed-by: C", sha=A, ver=1)'
+run_case ov8
+check "(ov8) a malformed ruling does nothing" "blocking" "$(seat @tests state)"
+reason_has "(ov8) with a reason" "ignored: malformed 'Overrule: <m006>'"
+
+gen_ov ov9 'msg(7, "@core", "Overrule: m099\n\nReviewed-by: C", sha=A, ver=1)'
+run_case ov9
+reason_has "(ov9) a ruling naming no message has a reason" "ignored: no message m099 on the thread"
+
+gen_ov ov10 'msg(7, "@docs", "> Overrule: m006\n\nReviewed-by: D", sha=A, ver=1), msg(8, "@core", "  Overrule: m006\n\nReviewed-by: C", sha=A, ver=1)'
+run_case ov10
+# Hand-worked: a quoted ruling is body text, and an indented one is not at
+# the left margin: neither is a ruling, neither has a reason.
+check "(ov10) quoted and indented rulings are not rulings" "blocking" "$(seat @tests state)"
+reason_lacks "(ov10) and raise no reason" "Overrule in"
+
+gen_ov ov11 'msg(7, "@tests", "Which suite owns this?\n\nQuestion", sha=A, ver=1, to=["@operator"]), msg(8, "@core", "Overrule: m007\n\nReviewed-by: C", sha=A, ver=1)'
+run_case ov11
+check "(ov11) @core cannot overrule a question to @operator" "question AWAITING-OPERATOR" "$(seat @tests state) $(jr .status)"
+reason_has "(ov11) with a reason" "a question to @operator is the operator's to answer"
+
+gen ov12 <<'PY'
+body = ROOT_BODY.replace("f" * 40, A).replace("@core, @tests, @docs", "@tests, @docs")
+e = [root(body=body),
+     msg(2, "@tests", "Changes-requested", sha=A, ver=1),
+     msg(3, "@docs", "Reviewed-by: D", sha=A, ver=1),
+     msg(4, "@core", "Overrule: m002", sha=A, ver=1), sec(20)]
+write(D, export(e), status())
+PY
+run_case ov12
+check "(ov12) @core off the panel is no arbiter" "blocking" "$(seat @tests state)"
+reason_has "(ov12) only @operator may rule" "Overrule in m004 from @core ignored: only @operator may rule"
+
+gen ov13 <<'PY'
+body = "\n".join([ROOT_BODY.replace("f" * 40, A), "Suite: pytest -q", "Suite-Seats: @tests"])
+e = [root(body=body),
+     msg(2, "@core", "Reviewed-by: C", sha=A, ver=1),
+     msg(3, "@tests", "Changes-requested", sha=A, ver=1),
+     msg(4, "@docs", "Reviewed-by: D", sha=A, ver=1),
+     msg(5, "@core", "Overrule: m003\n\nReviewed-by: C", sha=A, ver=1), sec(20)]
+write(D, export(e), status())
+PY
+run_case ov13
+check "(ov13) an overruled suite seat is overruled" "overruled" "$(seat @tests state)"
+reason_has "(ov13) but still owes a clean suite run" "@tests signed off without a clean suite run (missing"
+
+gen ov14 <<'PY'
+body = ROOT_BODY.replace("f" * 40, A)
+e = [root(body=body),
+     msg(2, "@core", "Changes-requested", sha=A, ver=1),
+     msg(3, "@tests", "Reviewed-by: T", sha=A, ver=1),
+     msg(4, "@docs", "Reviewed-by: D", sha=A, ver=1),
+     msg(5, "@pr-author", "@core holds its block after a sidebar. Overrule it?\n\nQuestion", sha=A, ver=1, to=["@operator"])]
+write(D, export(e), status())
+PY
+run_case ov14 --now 2026-03-02T12:00:00Z
+# Hand-worked: the author's Question To @operator, on the current target,
+# unanswered: listed and open.
+check "(ov14) the author's operator question is listed" "@pr-author m005 true" "$(jr '"\(.questions[0].seat) \(.questions[0].message_id) \(.questions[0].open)"')"
+check "(ov14) AWAITING-OPERATOR" "AWAITING-OPERATOR" "$(jr .status)"
+
+gen ov15 <<'PY'
+body = ROOT_BODY.replace("f" * 40, A)
+q = msg(5, "@pr-author", "Overrule @core?\n\nQuestion", sha=A, ver=1, to=["@operator"])
+r = msg(6, "@operator", "Overrule: m002", to=["@pr-author"])
+r["in_reply_to"] = "m005"
+e = [root(body=body),
+     msg(2, "@core", "Changes-requested", sha=A, ver=1),
+     msg(3, "@tests", "Reviewed-by: T", sha=A, ver=1),
+     msg(4, "@docs", "Reviewed-by: D", sha=A, ver=1), q, r, sec(20)]
+write(D, export(e), status())
+PY
+run_case ov15 --now 2026-03-02T12:00:00Z
+# Hand-worked: @operator answered m005 with a ruling on @core's m002: the
+# question is closed and @core is overruled.
+check "(ov15) the operator's ruling answers the author" "false overruled CONVERGED" "$(jr '"\(.questions[0].open) "')$(seat @core state) $(jr .status)"
+
+gen ov16 <<'PY'
+e = [frozen_root(), msg(2, "@pr-author", "Overrule @core?\n\nQuestion", sha=F, ver=1, to=["@operator"]),
+     cover(10, T2, 2, "Re-roll after review.")]
+e += panel_positive(sha=T2, ver=2, start=11) + [sec(20, "CONVERGED", 2, "RESPIN", T2, 2)]
+write(D, export(e), status(sha=T2, ver=2))
+PY
+run_case ov16 --now 2026-03-02T12:00:00Z
+# Hand-worked: the author asked on v1; v2 is posted: the question is about
+# an old target, so it is not open.
+check "(ov16) an author question on an older version is not open" "false CONVERGED" "$(jr '"\(.questions[0].open) \(.status)"')"
+
+gen ov17 <<'PY'
+e = [frozen_root(), msg(2, "@docs", "Overrule: m099\n\nReviewed-by: D", sha=F, ver=1),
+     cover(10, T2, 2, "Re-roll after review.")]
+e += panel_positive(sha=T2, ver=2, start=11) + [sec(20, "CONVERGED", 2, "RESPIN", T2, 2)]
+write(D, export(e), status(sha=T2, ver=2))
+PY
+run_case ov17
+# Hand-worked: the stray ruling is on v1; v2 is posted and every seat is
+# positive on it: the stray line no longer holds the thread back.
+check "(ov17) a stray ruling on an older version raises no reason" "CONVERGED" "$(jr .status)"
+reason_lacks "(ov17) no Overrule reason" "Overrule in"
+
 printf '\n== invariants over every case above ==\n'
 inv_bad=""; inv_n=0; inv_conv=0; diff_bad=""; diff_n=0
 # Opt-in differential check: LKML_PANEL_STATE_BASELINE names an earlier copy
@@ -3074,7 +3236,8 @@ for c in "${cases_run[@]}"; do
              and has("budget") and has("budget_source") and has("spawns_total") and has("grant_mode"))
         and (.roster | has("author") and has("panel") and has("secretary") and has("version_limit") and has("frozen_head")
              and has("suite") and has("suite_seats"))
-        and all(.seats[]; has("seat") and has("state") and has("verdict") and has("message_id") and has("version") and has("sha") and has("suite_run") and has("carried"))
+        and all(.seats[]; has("seat") and has("state") and has("verdict") and has("message_id") and has("version") and has("sha") and has("suite_run") and has("carried") and has("overruled_by"))
+        and all(.seats[]; (.state == "overruled") == (.overruled_by != null))
         and all(.seats[]; (.suite_run == null) or (.suite_run | has("status") and has("passed") and has("failed") and has("detail")))
         and (.status != "CONVERGED" or all(.seats[]; .suite_run == null or .suite_run.status == "clean"))
         and (.roster.suite != null or .roster.suite_seats == [])
@@ -3089,13 +3252,13 @@ for c in "${cases_run[@]}"; do
         and (.push == null or (.push | has("mode") and has("message_id") and has("seq") and has("sha") and has("seats") and has("tier") and has("malformed") and has("answered")))
         and (.panel | type == "array") and (.panel[:(.roster.panel | length)] == .roster.panel)
         and (.target == null or (.target | has("branch") and has("sha") and has("version") and has("set_by") and has("set_at") and has("source")))
-        and (.status != "CONVERGED" or (.seats | length > 0 and all(.[]; .state == "positive")))
+        and (.status != "CONVERGED" or (.seats | length > 0 and all(.[]; .state == "positive" or .state == "overruled")))
         and (.status != "CONVERGED" or (.secretary.on_target == true and .secretary.status == "CONVERGED"))
         and (.status != "CONVERGED" or .postmaster.quiescent == true)
     ' <<<"$o" >/dev/null; then inv_bad+=" $c"; fi
     [[ "$(jq -r .status <<<"$o")" == CONVERGED ]] && inv_conv=$(( inv_conv + 1 ))
 done
-check "every case obeys the output invariants (keys present; reasons empty iff CONVERGED; CONVERGED implies every seat positive, secretary on target, quiescent)" "" "$inv_bad"
+check "every case obeys the output invariants (keys present; reasons empty iff CONVERGED; CONVERGED implies every seat positive or overruled, secretary on target, quiescent)" "" "$inv_bad"
 if [[ "$inv_n" -ge 60 ]]; then ok "the invariants ran over $inv_n cases"; else no "the invariants ran over too few cases" "$inv_n"; fi
 if [[ "$inv_conv" -ge 5 ]]; then ok "and $inv_conv of them were CONVERGED (the check is not vacuous)"
 else no "too few CONVERGED cases for the invariants to bite" "$inv_conv"; fi

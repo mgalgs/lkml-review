@@ -226,6 +226,27 @@ Changes-requested, Question, then the -by trailers). state is:
                X-Review-Target is NEWER than the on-target positive (it
                may retract it, so the positive is not trusted)
     silent     no tagged message from the seat at all
+    overruled  blocking or question, and a ruling names that very
+               message (see "Overrule"); verdict keeps the seat's tag
+
+Overrule -- a seat's block can be ruled on, never ignored. A ruling is a
+line `Overrule: <message-id>` on a line of its own at the left margin, not
+quoted, in a message from @core (while @core is on the effective panel)
+or from @operator. It names the blocking or Question message it overturns,
+which must be an earlier message from another panel seat. When that
+message is still the seat's verdict on the current target (carried
+included), the seat is "overruled", with overruled_by {"seat",
+"message_id"} naming the ruling; every other entry has overruled_by null.
+An overruled seat counts toward CONVERGED as a positive one does: the
+positive signal is the ruling, given explicitly about that message. A
+suite seat still owes a clean Suite-Run on the overruled message. A
+ruling binds to one message: a seat that blocks again afterwards is
+blocking again, and a ruling on a message that is no longer the seat's
+verdict does nothing. A ruling from anyone else, malformed, naming no
+message, a later one, the ruler's own, a non-panel seat's, or (from
+@core) a question to @operator, is ignored. It is also a reason when it
+was posted since the current version was: a new version clears it, so a
+stray line cannot hold a thread back for good.
 
 A seat with no on-target tagged message may, under Carry above, take its
 verdict from the nearest earlier version it gave one on. The entry then has
@@ -312,8 +333,9 @@ names it will never be woken: a reason says so. Not raised while the
 newest push is unanswered, since the author's cover is still owed.
 
 Operator questions and the timeout -- a message from a seat on the
-effective panel that carries the `Question` tag and names @operator among
-its To/Cc recipients is an operator question. They are listed, whatever
+effective panel, or from the roster's Author, that carries the `Question`
+tag and names @operator among its To/Cc recipients is an operator
+question. They are listed, whatever
 the timeout, so a dashboard can show them:
 
     "questions": [{"seat","message_id","asked_at","age_seconds",
@@ -342,7 +364,9 @@ A question is open -- the panel waits on the operator -- when all hold:
   - it is still the asking seat's verdict on the current target: the
     seat's entry is in state question with this message_id. A newer
     verdict from the seat, or a question on an older version that did
-    not carry, closes it. A carried question stays open;
+    not carry, closes it. A carried question stays open. The Author
+    holds no verdict: its question needs only an X-Review-Target sha
+    equal to the current target's, so a new version closes it;
   - @operator has not answered it: no later message from @operator is in
     its reply subtree (In-Reply-To, else the last References id) or names
     the asking seat in To/Cc. Once answered the seat owes the next move,
@@ -388,8 +412,8 @@ Status -- precedence top to bottom, first match wins:
                     at least one operator question is open (see
                     "Operator questions and the timeout")
     CONVERGED      usable roster; a current target; every panel seat
-                    positive; the secretary's message on target,
-                    well-formed and saying CONVERGED; quiescent; the
+                    positive or overruled; the secretary's message on
+                    target, well-formed and saying CONVERGED; quiescent; the
                     target sources agree; no other reason. verdict is
                     the secretary's Panel-Verdict -- but with a frozen
                     head known, SIGNED-OFF is valid only when the target
@@ -439,10 +463,13 @@ Output (null, never an omitted key, for what is unknown):
      "questions": [...],
      "now": "<ISO UTC>",                # the clock the ages were taken at
      "seats": [{"seat","state","verdict","message_id","version","sha",
-                "suite_run","carried"}],   # suite_run: null, or {"status",
+                "suite_run","carried","overruled_by"}],
+                                 # suite_run: null, or {"status",
                                  # "passed","failed","detail"}; see "Suite
                                  # run". carried: false = the verdict was
-                                 # given on this version
+                                 # given on this version. overruled_by:
+                                 # null, or {"seat","message_id"}; see
+                                 # "Overrule"
      "secretary": {"message_id","version","status","verdict",
                    "on_target","malformed","carried"},
      "postmaster": {"quiescent","flagged","flag_reason","live_runs",
@@ -500,6 +527,10 @@ RECHECK_HEADER = "X-Lkml-Recheck-Seats"
 ADD_SEATS_HEADER = "X-Lkml-Add-Seats"
 PUSH_MODES = ("carry", "recheck", "escalate")
 OPERATOR = "@operator"
+ARBITER = "@core"
+OVERRULE_PREFIX = "Overrule:"
+OVERRULE_RE = re.compile(r"Overrule:[ \t]*([A-Za-z0-9][A-Za-z0-9-]*)[ \t]*")
+SETTLED_STATES = frozenset(("positive", "overruled"))
 SUITE_SOURCE_HEADER = "X-Lkml-Suite-Source"
 CI_STATUS_HEADER = "X-Lkml-CI-Status"
 CI_HEAD_HEADER = "X-Lkml-CI-Head"
@@ -832,8 +863,8 @@ def stamp(when):
 
 def operator_questions(msgs, panel, hours, now):
     """Every operator question on the thread -> (list, reasons). A message
-    from a seat on the effective panel that carries the Question tag and
-    names @operator among its recipients is one. When a timeout is set and
+    from one of `panel` (the effective panel and the author) that carries
+    the Question tag and names @operator among its recipients is one. When a timeout is set and
     the question is at least that old, its `Question` tag is dropped IN
     PLACE, before any seat is judged: the strongest remaining tag decides,
     and a message left with none is not a verdict at all. A timeout never
@@ -885,15 +916,83 @@ def operator_answered(q, msgs):
     return False
 
 
-def mark_open_questions(questions, seats, msgs):
+def mark_open_questions(questions, seats, msgs, author=None, target=None):
     """Set each question's "open" flag in place. See the module docstring,
     "Operator questions and the timeout"."""
     holding = {(s["seat"], s["message_id"]) for s in seats
                if s["state"] == "question"}
+    by_id = {m["id"]: m for m in msgs if m["ok"] and m["id"]}
+    tsha = target["sha"] if target else None
     for q in questions:
-        q["open"] = (q["timed_out"] is not True
-                     and (q["seat"], q["message_id"]) in holding
+        if author is not None and q["seat"] == author:
+            # The author holds no verdict: its question stands while it
+            # is about the current target.
+            asked = by_id.get(q["message_id"])
+            current = (asked is not None and tsha is not None
+                       and asked["sha"] == tsha)
+        else:
+            current = (q["seat"], q["message_id"]) in holding
+        q["open"] = (q["timed_out"] is not True and current
                      and not operator_answered(q, msgs))
+
+
+def parse_overrules(msgs, panel, since=0):
+    """Every `Overrule: <message-id>` ruling -> ({overruled id: ruling
+    message}, reasons). See the module docstring, "Overrule". Only a
+    message at seq >= `since` raises a reason."""
+    by_id = {m["id"]: m for m in msgs if m["ok"] and m["id"]}
+    arbiters = {OPERATOR} | ({ARBITER} if ARBITER in panel else set())
+    rulings, out = {}, []
+    for m in msgs:
+        if not m["ok"]:
+            continue
+        reasons = out if m["seq"] >= since else []
+        for line in m["body"].split("\n"):
+            line = line.rstrip("\r")
+            if QUOTED_RE.match(line) or not line.startswith(OVERRULE_PREFIX):
+                continue
+            where = f"Overrule in {m['id']} from {m['from']}"
+            if m["from"] not in arbiters:
+                reasons.append(f"{where} ignored: only "
+                               f"{' or '.join(sorted(arbiters))} may rule")
+                continue
+            mt = OVERRULE_RE.fullmatch(line)
+            if not mt:
+                reasons.append(f"{where} ignored: malformed {clip(line, 80)!r}")
+                continue
+            ruled = by_id.get(mt.group(1))
+            if ruled is None:
+                reasons.append(f"{where} ignored: no message {mt.group(1)} "
+                               f"on the thread")
+            elif ruled["seq"] >= m["seq"]:
+                reasons.append(f"{where} ignored: it rules on a later message")
+            elif ruled["from"] == m["from"]:
+                reasons.append(f"{where} ignored: a seat cannot overrule "
+                               f"its own verdict")
+            elif ruled["from"] not in panel:
+                reasons.append(f"{where} ignored: {ruled['id']} is not "
+                               f"a panel seat's")
+            elif (m["from"] != OPERATOR and "Question" in ruled["tags"]
+                  and OPERATOR in ruled["to"] + ruled["cc"]):
+                reasons.append(f"{where} ignored: a question to {OPERATOR} "
+                               f"is the operator's to answer")
+            else:
+                rulings.setdefault(ruled["id"], m)
+    return rulings, out
+
+
+def apply_overrule(entry, why, rulings, suite_seats):
+    """-> (entry, reason|None): a blocking or question verdict that a
+    ruling names is overruled. A suite seat still owes a clean Suite-Run
+    on the overruled message, as a positive one does."""
+    ruling = rulings.get(entry["message_id"])
+    if ruling is None or entry["state"] not in ("blocking", "question"):
+        return entry, why
+    entry.update(state="overruled",
+                 overruled_by={"seat": ruling["from"], "message_id": ruling["id"]})
+    if entry["suite_run"] is not None and entry["seat"] in suite_seats:
+        return entry, suite_run_reason(entry["seat"], entry["suite_run"])
+    return entry, None
 
 
 def seat_tokens(msg, name, reasons):
@@ -1355,7 +1454,7 @@ def judge_seat(seat, msgs, target, suite_seats=(), carry_chain=(),
     entry = {"seat": seat, "state": "silent", "verdict": None,
              "message_id": None, "version": None, "sha": None,
              "suite_run": suite_run("missing") if seat in suite_seats else None,
-             "carried": False}
+             "carried": False, "overruled_by": None}
     if on:
         return judge_on(entry, seat, on[-1], tagged, target, suite_seats)
     fallback = dict(entry)
@@ -1385,7 +1484,7 @@ def judge_seat(seat, msgs, target, suite_seats=(), carry_chain=(),
 
 SEAT_PHRASE = {"blocking": "is blocking", "question": "has an open Question",
                "stale": "is stale", "silent": "is silent",
-               "positive": "is positive"}
+               "positive": "is positive", "overruled": "is overruled"}
 
 
 def plural(n, one, many=None):
@@ -1701,7 +1800,8 @@ def build_state(export, status, now):
     reasons += ci_mail_reasons
     timeout, timeout_reasons = parse_question_timeout(root)
     reasons += timeout_reasons
-    questions, question_reasons = operator_questions(msgs, panel, timeout, now)
+    askers = panel + ([roster["author"]] if roster["author"] else [])
+    questions, question_reasons = operator_questions(msgs, askers, timeout, now)
     reasons += question_reasons
 
     bad = [str(m["seq"]) for m in msgs if not m["ok"]]
@@ -1734,6 +1834,9 @@ def build_state(export, status, now):
     # Under `ci` the suite's truth is CI's result, not a seat's claim: no
     # seat owes a Suite-Run line, and none is read.
     suite_seats = () if source == "ci" else roster["suite_seats"]
+    rulings, overrule_reasons = parse_overrules(
+        msgs, panel, versions[cur]["seq"] if cur is not None else 0)
+    reasons += overrule_reasons
 
     seats = []
     for seat in panel:
@@ -1741,11 +1844,12 @@ def build_state(export, status, now):
                                        cur, carry_from is not None)
         entry, why = judge_seat(seat, msgs, target, suite_seats,
                                 chain, rechecked)
+        entry, why = apply_overrule(entry, why, rulings, suite_seats)
         seats.append(entry)
         if why:
             reasons.append(why)
 
-    mark_open_questions(questions, seats, msgs)
+    mark_open_questions(questions, seats, msgs, roster["author"], target)
 
     secretary, sec_reasons = judge_secretary(msgs, roster, target, carry_from)
     reasons += sec_reasons
@@ -1760,12 +1864,12 @@ def build_state(export, status, now):
     if cur is not None and (push is None or push["answered"]):
         reasons += unaddressed_seats(seats, msgs, target, versions[cur]["seq"])
 
-    seats_ok = bool(seats) and all(s["state"] == "positive" for s in seats)
+    seats_ok = bool(seats) and all(s["state"] in SETTLED_STATES for s in seats)
     sec_says_converged = (secretary is not None and secretary["on_target"]
                           and secretary["status"] == "CONVERGED")
     if sec_says_converged:
         for s in seats:
-            if s["state"] != "positive":
+            if s["state"] not in SETTLED_STATES:
                 reasons.append(
                     f"secretary says CONVERGED but {s['seat']} {SEAT_PHRASE[s['state']]}")
         if not pm["quiescent"]:
