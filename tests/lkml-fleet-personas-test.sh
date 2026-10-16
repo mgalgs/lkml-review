@@ -657,6 +657,20 @@ has_flat "$pra" 'the first 12 hex digits of the Message-ID of the upstream-moved
     "pr-author.md derives head-<12 hex> after removing the Message-ID's hyphens"
 has "$pra" 'header shows as an `Upstream-Head: <branch> <sha>` line directly after' \
     "pr-author.md names the render's unquoted Upstream-Head line"
+# fork-sandbox's --text view renders each X-* header as an unquoted line
+# under its real name. The persona once told the author headers were
+# readable when the view showed none, and an escalate went unseen.
+has_flat "$pra" 'every `X-*` header shows under its real name as its own unquoted line after `Hops:`' \
+    "pr-author.md says how the render shows X-* headers"
+has_flat "$pra" 'an unquoted `X-Lkml-Push-Mode: <mode>` line among that mail'"'"'s header lines' \
+    "pr-author.md names the rendered push-mode line"
+has_flat "$pra" 'The mode is absent only when the mail shows no such line' \
+    "pr-author.md treats the mode as absent only when no line shows"
+if grep -qF 'may spell it `Lkml-Push-Mode`' "$pra"; then
+    no "pr-author.md drops the guessed Lkml-Push-Mode spelling" "still present"
+else ok "pr-author.md drops the guessed Lkml-Push-Mode spelling"; fi
+has_flat "$personas_dir/secretary.md" 'each `X-*` header is its own unquoted line after `Hops:`' \
+    "secretary.md says how the render shows X-* headers"
 has "$pra" 'A push never aborts a round.' \
     "pr-author.md never lets a push abort a round"
 has "$pra" 'the local branch `upstream`' \

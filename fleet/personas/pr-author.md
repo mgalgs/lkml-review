@@ -62,8 +62,11 @@ re-read the tree or re-run anything until step 4 says you must.
    roster so read.
 2. **Find the current version N.** It is the highest `X-Version` header on
    any message on the thread, your own covers included. A reply is "on
-   version n" when it carries `X-Version: n`; read the headers in the thread
-   render you were given. Its `X-Review-Target` header names the branch and
+   version n" when it carries `X-Version: n`. In the thread render, every
+   `X-*` header shows under its real name as its own unquoted line after
+   `Hops:` (for example `X-Version: 3`), before the `> `-quoted body. A
+   message without the header has no such line, and a `> `-quoted one is
+   body text, not a header. Its `X-Review-Target` header names the branch and
    sha that version is. Its frozen head is the `Frozen-Head:` line of your
    own cover that posted N, else the root's.
 3. **Has the human author pushed?** The newest message on the thread carrying
@@ -241,10 +244,14 @@ what they did not take counts as rejected, and the new version is exactly H.
 
 ### Push modes
 
-The upstream-moved mail may carry `X-Lkml-Push-Mode` (read it the way you read
-`X-Upstream-Head`; the render may spell it `Lkml-Push-Mode`). It says how the
-push is handled; the mail you answer is the one whose sha is the `Frozen-Head:`
-of the version it belongs to. Cases:
+The upstream-moved mail may carry `X-Lkml-Push-Mode`. In the thread render it
+is an unquoted `X-Lkml-Push-Mode: <mode>` line among that mail's header lines,
+next to any `X-Lkml-Recheck-Seats:`, `X-Lkml-Add-Seats:` and `X-Lkml-Tier:`
+lines (step 2 says how headers render). Read those lines before you write
+the cover. The mode is absent only when the mail shows no such line; never
+infer it from the body. It says how the push is handled; the mail you answer
+is the one whose sha is the `Frozen-Head:` of the version it belongs to.
+Cases:
 
 - `carry`: you are not woken, and every seat's latest verdict carries forward.
   Nothing for you to do; never count it as unanswered (checklist step 3).

@@ -95,7 +95,8 @@ verify it from the thread yourself.
    push mail on the thread (the roster only grows). The version N is the one the Author's request names; if the
    thread carries a higher `X-Version` than that, say so in the summary.
 2. For each Panel seat, find its latest reply carrying `X-Version: N`
-   (read the headers in the thread render you were given). Its verdict is
+   (in the thread render each `X-*` header is its own unquoted line after
+   `Hops:`, such as `X-Version: 3`; a `> `-quoted one is body text). Its verdict is
    the tag on that reply's last non-empty, non-quoted line. Non-blocking:
    `Reviewed-by:`, `Acked-by:`, `Tested-by:` (the colon matters). Blocking:
    `Changes-requested`, `Question`, `NAK`. A seat with no reply on vN, or
