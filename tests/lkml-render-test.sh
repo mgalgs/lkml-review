@@ -190,7 +190,7 @@ then
 else
     no "one mrow per reviewer (core, ci, newcomer), none for the author"
 fi
-contains "reviewer row carries the display name and a role small" "$html" '<span class="who">Core<small>core</small></span>'
+contains "reviewer row carries the display name and a role small" "$html" '<span class="who">Core<small>core · test · fixture</small></span>'
 contains "reviewer row carries a stable-colour monogram badge" "$html" '<span class="mono-badge p-color-'
 contains "core's verdict chip is reviewed-by" "$html" '<span class="chip reviewed">reviewed-by</span>'
 contains "ci's verdict chip is tested-by" "$html" '<span class="chip tested">tested-by</span>'
@@ -341,7 +341,7 @@ contains "tagged reply's verdict chip rides on the from line" "$html" \
 contains "trace gist is the prefixed subject" "$html" '<span class="gist">[PATCH v1 1/2] demo: add one</span>'
 contains "second patch gist is prefixed too" "$html" '<span class="gist">[PATCH v1 2/2] demo: add two</span>'
 contains "orphaned reply is in the trace" "$html" 'orphan body'
-contains "the model stamp shows the harness model" "$html" '<span class="model">fixture</span>'
+contains "the model stamp shows the harness model" "$html" '<span class="model">test · fixture</span>'
 contains "message bodies are collapsed: the CSS styles the summary hover" "$html" '.msg > summary:hover'
 
 printf '\n== patch bodies: commit message, diffstat, the diff fold ==\n'
@@ -370,7 +370,7 @@ python3 "$renderer" "$LKML_MAILBOX_ROOT/render-fixture" -o "$persona_html"
 phtml="$(<"$persona_html")"
 case "$phtml" in *'Core reviewer brief.'*) no "the brief itself is not inlined into the page" ;; *) ok "the brief itself is not inlined into the page" ;; esac
 case "$phtml" in *'<script>alert(2)</script>'*|*'harness: claude'*) no "brief payload and frontmatter never reach the page" ;; *) ok "brief payload and frontmatter never reach the page" ;; esac
-contains "the persona role feeds the reviewer row's small line" "$phtml" '<span class="who">Core<small>highest bar</small></span>'
+contains "the persona role feeds the reviewer row's small line" "$phtml" '<span class="who">Core<small>highest bar · test · fixture</small></span>'
 # A standing NAK blocks: the critical banner, the state chip and the
 # counts panel all agree.
 contains "standing NAK: the critical banner appears" "$phtml" '<div class="banner crit">'
@@ -433,7 +433,7 @@ python3 "$renderer" "$LKML_MAILBOX_ROOT/render-fixture" -o "$contain_html"
 chtml="$(<"$contain_html")"
 case "$chtml" in *'TRAVERSAL LEAK CANARY'*) no "traversal persona does not leak a brief" ;; *) ok "traversal persona does not leak a brief" ;; esac
 case "$chtml" in *'ABSOLUTE LEAK CANARY'*) no "absolute-path persona does not leak a brief" ;; *) ok "absolute-path persona does not leak a brief" ;; esac
-contains "the legit role still renders alongside" "$chtml" '<span class="who">Core<small>highest bar</small></span>'
+contains "the legit role still renders alongside" "$chtml" '<span class="who">Core<small>highest bar · test · fixture</small></span>'
 
 printf '\n== fresh series: no panels of its own, honest zeros ==\n'
 # A freshly init-ed series (no replies yet) must not render an empty
@@ -1912,6 +1912,10 @@ printf '%s\n' \
     'To: @author' \
     'Date: Wed, 17 Sep 2025 01:00:00 +0000' \
     'Subject: Re: [PATCH v1 0/2] fleet demo series' \
+    'X-AI-Persona: core' \
+    'X-AI-Harness: pi' \
+    'X-AI-Model: example/model-27b' \
+    'X-AI-Network: sealed' \
     '' \
     'Looks solid, one nit below.' \
     '' \
@@ -1955,7 +1959,7 @@ contains "fleet thread renders its own series wrapper" "$combo" '<div class="ser
 contains "old-layout series still renders on the same page" "$combo" '<div class="series" id="ser-card">'
 contains "fleet series title comes from its cover subject" "$combo" '<h1>fleet demo series</h1>'
 
-contains "core seat row shows the stripped name" "$fhtml" '<span class="who">core<small>core</small></span>'
+contains "core seat row shows the stripped name" "$fhtml" '<span class="who">core<small>core · pi, sealed · example/model-27b</small></span>'
 contains "scout seat row shows the stripped name" "$fhtml" '<span class="who">scout<small>scout</small></span>'
 if python3 - "$fleet_html" <<'PY'
 import re
@@ -2001,6 +2005,10 @@ case "$fhtml" in *'attachments/design-notes.txt'*) no "fleet attachment line str
 contains "present fleet attachments render a download link" "$fhtml" '<a download'
 contains "the missing fleet attachment is marked unavailable, not linked" "$fhtml" 'gone.patch <span class="attachment-missing">(unavailable)</span>'
 case "$fhtml" in *'model unknown'*) no "fleet messages suppress the model-unknown chip (uniform, not an anomaly)" ;; *) ok "fleet messages suppress the model-unknown chip (uniform, not an anomaly)" ;; esac
+# The postmaster stamps X-AI-* on a harvested seat reply; the page shows
+# harness and model together, on the message and on the reviewer row.
+contains "a fleet reply's X-AI-* headers render as the harness and model chip" "$fhtml" '<span class="model">pi, sealed · example/model-27b</span>'
+contains "the reviewer row names the seat's harness and model" "$fhtml" 'pi, sealed · example/model-27b</small>'
 
 if [[ "$(grep -o '<details class="msg"' "$fleet_html" | wc -l)" -eq 4 ]]; then
     ok "exactly 4 messages rendered; attachments/ and 005.seq/ produced no phantom 5th"

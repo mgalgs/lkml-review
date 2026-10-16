@@ -511,6 +511,13 @@ def monogram(persona):
     return letters.upper()
 
 
+def seat_meta(r):
+    """'pi, sealed · <model>' for a message or reviewer entry: the same
+    spelling the text view's meta lines use. "" when neither is known."""
+    harness = f"{r['harness']}, sealed" if r["harness"] and r["network"] == "sealed" else r["harness"]
+    return " · ".join(x for x in (harness, r["model"]) if x)
+
+
 def badge(persona):
     cls = "" if persona else " mono-none"
     return f'<span class="mono-badge{cls} p-color-{mono_color(persona)}">{esc(monogram(persona))}</span>'
@@ -572,9 +579,10 @@ def read_fleet_msg(path, seq, attachment_root):
     compared as-is -- no angle brackets to strip). From is '@name'; the
     leading '@' is stripped into the seat name build() and who_of() both
     key off (stored in both 'from' and 'persona' so who_of needs no
-    change). No X-AI-Persona/Harness/Model/Network headers exist in this
-    format -- render_message's fleet branch covers the model chip.
-    X-Tags does not exist either -- tags come from the body via
+    change). Harness/network/model come from the X-AI-* headers the
+    postmaster stamps on a harvested seat reply; mail from outside the
+    fleet has none, and render_message's fleet branch then shows no chip.
+    X-Tags does not exist -- tags come from the body via
     fleet_body_tags, the same trailers lkml-fleet-status.sh reads.
     depth and version are filled in by build_fleet_layout (depth needs
     the whole tree; version reads the subject via fleet_version).
@@ -613,7 +621,9 @@ def read_fleet_msg(path, seq, attachment_root):
         "parent": hdr.get("In-Reply-To", "").strip(),
         "seq": seq, "date": date,
         "from": who, "subject": subject,
-        "persona": who, "harness": "", "network": "", "model": "",
+        "persona": who, "harness": hdr.get("X-AI-Harness", "").strip(),
+        "network": hdr.get("X-AI-Network", "").strip(),
+        "model": hdr.get("X-AI-Model", "").strip(),
         "version": fleet_version(subject),
         "depth": 0, "tags": fleet_body_tags(body), "body": body,
         "attachments": attachments, "children": [], "fleet": True,
@@ -1444,7 +1454,7 @@ def render_reviewer_panel(series_dir, version, reviewer_entries, strongest):
     rows = []
     for r in reviewer_entries:
         role = persona_role(series_dir, r["persona"]) or r["persona"]
-        small = f'<small>{esc(role)}</small>'
+        small = f'<small>{esc(" · ".join(x for x in (role, seat_meta(r)) if x))}</small>'
         tag = strongest.get(r["persona"])
         chip = chip_html(tag) if tag else '<span class="chip pending">pending</span>'
         if r.get("carried"):
@@ -1551,9 +1561,8 @@ def render_message(m, depth=0, series_name=""):
     'model unknown' in the warning colour: surfacing a real defect,
     deliberately, not hiding it."""
     chip = chip_html(strongest_tag(m["tags"]))
-    model = m["model"]
-    if model:
-        model_chip = f'<span class="model">{esc(model)}</span>'
+    if m["model"]:
+        model_chip = f'<span class="model">{esc(seat_meta(m))}</span>'
     elif m.get("fleet"):
         model_chip = ""
     else:
