@@ -120,6 +120,14 @@ last non-empty, non-quoted line of the body; here it goes last.
 converged only when every seat's latest verdict on the current version
 is non-blocking.
 
+## Arguing a block
+
+The Author argues a block that names no concrete failure. It replies
+`To:` you on the same version, and you owe that rebuttal an answer:
+withdraw, or hold with a concrete failure scenario. A block you hold goes
+to `@core` for a ruling. A block a ruling overrules counts as
+non-blocking. Your persona says how.
+
 ## Running the suite
 
 If the root above carries `X-Lkml-Suite-Source: ci`, skip this section:

@@ -159,6 +159,8 @@ mean, and how the gate reads them, is under "Tiers and push modes" below.
 3. **The author decides.** With every reply in:
    - if every panel seat's verdict on vN is non-blocking, it asks the
      secretary for the panel verdict (`To: @secretary` only);
+   - if it disputes a block, it argues the block first and does not re-roll
+     (see "Arguing a block" below);
    - if some seat still blocks and the version count has reached
      `Version-Limit`, it asks the secretary to close the panel as it stands,
      naming what still blocks. The count is the version number: every
@@ -173,6 +175,32 @@ mean, and how the gate reads them, is under "Tiers and push modes" below.
    to them. The panel wakes on the cover, each seat checked out at the new
    sha, and the round repeats. A verdict on an old version does not carry
    forward, except as a human push's push mode says (below).
+
+### Arguing a block
+
+The author is expected to argue a block that names no concrete failure,
+rather than comply to reach convergence. The argument happens in a
+**sidebar** on the current version, not in a new version:
+
+1. The author replies to the seat's blocking message, `To:` that seat
+   alone, with no `Version:` key. A rebuttal costs nothing against
+   `Version-Limit`.
+2. The seat answers. It either withdraws, with a non-blocking verdict, or
+   holds with a concrete failure scenario and its blocking verdict again.
+3. A held block goes to `@core`, which rules as maintainer. A block that is
+   `@core`'s own goes to the operator as a `Question` `To: @operator` from
+   the author, which shows as `AWAITING-OPERATOR`.
+4. A ruling that overturns a block is a line `Overrule: <message-id>`,
+   alone and unquoted at the left margin, naming the seat's blocking
+   message. Only `@core` (while on the panel) and `@operator` can rule,
+   and `@core` never rules on its own block. A ruling without that line
+   upholds the block, and the author fixes it.
+
+The gate reads the ruling: the overruled seat's state is `overruled`, and
+it counts toward `CONVERGED` as a positive one does. A ruling binds to one
+message, so a seat that blocks again afterwards is blocking again. The
+secretary reports each dispute under "Disputes", with both sides, and
+never as a defect unless a ruling upheld it.
 
 ### The human author pushes
 
@@ -413,15 +441,16 @@ job or a dashboard, should read this object and nothing else.
 
 | `status` | Meaning | What to do |
 |---|---|---|
-| `CONVERGED` | every panel seat holds a positive verdict on the current target, the secretary agrees, and the postmaster is quiet | act on `verdict`; for `RESPIN`, `bundle` gives the base (the frozen head), tip and branch |
+| `CONVERGED` | every panel seat holds a positive verdict on the current target, or a block a ruling overruled; the secretary agrees, and the postmaster is quiet | act on `verdict`; for `RESPIN`, `bundle` gives the base (the frozen head), tip and branch |
 | `IN-PROGRESS` | work is still pending or running | wait |
 | `STALLED` | nothing is pending, but the panel has not converged | a human looks; `reasons` says why |
 | `NEEDS-OPERATOR` | the postmaster flagged the thread | a human looks; the flag reason is in `postmaster` |
-| `AWAITING-OPERATOR` | a seat asked @operator a question that is still open | answer it; `questions` lists them, open ones with `open: true` |
+| `AWAITING-OPERATOR` | a seat or the author asked @operator a question that is still open | answer it; `questions` lists them, open ones with `open: true` |
 
 `AWAITING-OPERATOR` ranks below `NEEDS-OPERATOR` and above the rest. A
-question is open until it times out, the seat gives a newer verdict, or an
-@operator mail replies to it or is addressed to the asking seat.
+question is open until it times out, the seat gives a newer verdict (for
+the author's question, a new version is posted), or an @operator mail
+replies to it or is addressed to the asking seat.
 
 Every string in `reasons` names a condition that blocks `CONVERGED`. A
 `CONVERGED` object has none. The script's `--help` documents the full field

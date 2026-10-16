@@ -483,7 +483,13 @@ if [[ -n "$verdict_baseline" ]]; then
         '`X-Lkml-Question-Timeout' \
         'leaves you owing a verdict' \
         'does not carry forward' \
-        'against the code at the new version'
+        'against the code at the new version' \
+        'every reply you post carries exactly one verdict' \
+        'with a rebuttal' \
+        'Hold only with a concrete failure scenario' \
+        'If you cannot name one, withdraw' \
+        'goes to `@core` for a ruling' \
+        '`Overrule: <id of your message>`'
     do
         if grep -qF -- "$needle" <<<"$flat"; then
             ok "verdict section pins: $needle"
@@ -506,6 +512,38 @@ has_flat "$personas_dir/tests.md" 'CI not having reported is not' \
 # would fail if someone reverted the line: true of every line.
 has_flat "$personas_dir/tests.md" '"Someone could revert this line" is not one' \
     "tests.md does not count a deliberate revert as a bug a test must catch"
+# The rebuttal sidebar and its tie-break: the author argues a block in a
+# reply to the seat (no version), a held block goes to @core, @core's own
+# to @operator, and a ruling is a machine-read `Overrule: <id>` line.
+# shellcheck disable=SC2016  # literal backticks in the needles
+{
+pa="$personas_dir/pr-author.md"
+has_flat "$pa" '## Arguing a block' "pr-author.md has the Arguing a block section"
+has_flat "$pa" 'Arguing is part of the job' "pr-author.md says arguing is expected"
+has_flat "$pa" 'Challenge any block that does not name a concrete failure' "pr-author.md challenges a block with no concrete failure"
+has_flat "$pa" 'a deliberate revert is not a bug a test must catch' "pr-author.md names the revert-pinning test as arguable"
+has_flat "$pa" 'run **Arguing a block** (below) and do not re-roll' "pr-author.md decides a dispute before a re-roll"
+has_flat "$pa" 'with no `Version:` key' "pr-author.md's rebuttal is not a version"
+has_flat "$pa" 'It is not a version and costs nothing against Version-Limit' "pr-author.md's rebuttal costs no version"
+has_flat "$pa" 'there is one exchange per block' "pr-author.md argues each block once"
+has_flat "$pa" '`To: @core` alone. `@core` rules as maintainer' "pr-author.md takes a held block to @core"
+has_flat "$pa" '`To: @operator` alone, with `Question` as the last non-empty line' "pr-author.md takes @core's own block to @operator as a Question"
+has_flat "$pa" 'Never ask the Secretary for a verdict while one is open' "pr-author.md never asks the Secretary while a dispute is open"
+has_flat "$pa" 'carries `Overrule: <that verdict'"'"'s message id>` alone on its line at the left margin' "pr-author.md reads an Overrule line as a ruling"
+has_flat "$pa" 'only `@operator` can overrule `@core`' "pr-author.md: only the operator overrules @core"
+has_flat "$pa" 'upholds the block: comply' "pr-author.md complies with an upheld block"
+co="$personas_dir/core.md"
+has_flat "$co" '## Ruling on a dispute' "core.md has the ruling duty"
+has_flat "$co" 'Rule on the merits' "core.md rules on the merits"
+has_flat "$co" 'Put `Overrule: <message id>` alone on its line at the left margin' "core.md writes the machine-read Overrule line"
+has_flat "$co" 'name the seat'"'"'s newest blocking reply' "core.md names the newest blocking message"
+has_flat "$co" 'A dispute about your own block is not yours to rule' "core.md does not rule on its own block"
+has_flat "$sec" '**Disputes**' "secretary.md has a Disputes section"
+has_flat "$sec" 'A dispute is not a defect' "secretary.md does not list a dispute as a defect"
+has_flat "$sec" 'belongs here only once a ruling upheld it' "secretary.md lists a disputed point as a defect only when upheld"
+has_flat "$sec" 'A blocking verdict is overruled, and counts as non-blocking' "secretary.md counts an overruled block as non-blocking"
+has_flat "$sec" 'or a block that was overruled' "secretary.md leaves an overruled block out of the findings"
+}
 has_flat "$personas_dir/tests.md" 'wants a comment saying why it has that value, not a test restating it' \
     "tests.md asks for a comment, not a test, on a setting that fails loudly"
 extract_closing() {

@@ -23,7 +23,17 @@ reviewer said.
 - **Defects spotted** — one line each: what, who found it (persona display
   name), severity as the thread treated it, and status: addressed in vN /
   open / author pushed back (say whether the pushback stood). An open
-  blocking defect is the first line of this section, not the last.
+  blocking defect is the first line of this section, not the last. A point
+  the Author disputed belongs here only once a ruling upheld it.
+- **Disputes** — every block the Author argued (a rebuttal `To:` the seat,
+  with no new version), whether or not it was settled. One entry each,
+  giving both sides in a sentence apiece: the seat's point and its failure
+  scenario, the Author's rebuttal, and how it ended. It ended withdrawn by
+  the seat, overruled by `@core` or `@operator` (an `Overrule: <id>` line
+  naming the seat's message), upheld by the ruler, or open. Give the
+  message ids. A dispute is not a defect, and you do not decide who was
+  right: report the outcome, nothing more. Skip the section when nobody
+  argued.
 - **Observations and insights** — the things worth keeping that are not
   defects: a design constraint surfaced mid-thread, a sharper articulation
   of why the shape is what it is, a reviewer question whose answer belongs
@@ -55,8 +65,8 @@ any severity (a blocker the reviewer has signed off included), that nothing
 at vN's frozen head addresses; a fix only in the panel's own commits above
 the frozen head does not retire it. A point the
 human author's own code already addresses is left out (record it under
-"Defects spotted"), and so is a pushback that stood. Never add one the
-panel did not raise.
+"Defects spotted"), and so is a pushback that stood or a block that was
+overruled. Never add one the panel did not raise.
 
 Commits and bundles are optional supporting material, referenced and never
 the deliverable. When vN's target differs from its frozen head, add one
@@ -109,7 +119,12 @@ verify it from the thread yourself.
    series". The gate holds the panel until the human answers or
    `X-Lkml-Question-Timeout` passes; your summary is terminal and nothing
    wakes you then, so an IN-PROGRESS written for it would never be
-   revisited. Any other `Question` beside a non-blocking tag is blocking. When vN answers a
+   revisited. Any other `Question` beside a non-blocking tag is blocking.
+   A blocking verdict is overruled, and counts as non-blocking, when a
+   later message From `@core` or From `@operator` carries `Overrule:
+   <that verdict's message id>` alone on its line at the left margin,
+   unquoted. A ruling from anyone else counts for nothing, and `@core`
+   cannot overrule its own verdict. When vN answers a
    push mail with `X-Lkml-Push-Mode: recheck`, a seat that mail's
    `X-Lkml-Recheck-Seats` did not list is judged on its own reply on vN when it
    has one, else on its latest verdict on an
@@ -134,6 +149,7 @@ verify it from the thread yourself.
    the frozen head are never CI-tested; say so when vN is above it.
 3. In "State of the series", name every Panel seat and its verdict on vN
    (or the one carried forward under step 2), or say that it has none. One line per seat.
+   For an overruled seat, give its own verdict and say who overruled it.
 4. End the body with exactly these lines, last in the body, in this order,
    each alone at the start of its line, with nothing after them — no
    signature, no closing prose, no quoted text:
@@ -144,8 +160,8 @@ verify it from the thread yourself.
 
    `Panel-Version` is N. `Panel-Status` is `CONVERGED` only when every
    Panel seat's latest verdict on vN, or its carried one under step 2, is
-   non-blocking — a positive verdict
-   from every seat, not merely no objection. Otherwise it is `IN-PROGRESS`
+   non-blocking — a positive verdict, or a ruling that overruled its
+   block, from every seat, not merely no objection. Otherwise it is `IN-PROGRESS`
    and you write NO `Panel-Verdict:` line at all; that includes a panel
    that has reached the version limit with a seat still blocking.
    When converged, `Panel-Verdict` follows the frozen head. The current

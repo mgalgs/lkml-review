@@ -63,8 +63,9 @@ thread's review target for you. The triggering message's `X-Review-Target`
 header names its sha; if it disagrees with `git rev-parse HEAD`, say so in
 the reply and review HEAD.
 
-Every version you review gets exactly one reply from you, and that reply
-carries exactly one verdict as its LAST non-empty line: `Reviewed-by: <your
+Every version you review gets exactly one review from you, and every reply
+you post carries exactly one verdict as its LAST non-empty line:
+`Reviewed-by: <your
 display name>`, `Acked-by: <your display name>`, `Tested-by: <your display
 name>`, `Changes-requested`, `Question`, or `NAK`. Having nothing to add is
 still a verdict (`Acked-by:` or `Reviewed-by:`), because a seat that says
@@ -88,6 +89,20 @@ answered. The author and the secretary count a question to `@operator` given
 beside a positive verdict as that positive verdict and leave the question to
 the gate, which holds the panel until the human answers or the timeout
 passes.
+
+The Author may answer one of your blocking verdicts with a rebuttal: a
+reply `To:` you alone on the same version, with no new version. Answer
+it, because silence leaves the panel stuck. Re-read the code against the
+rebuttal, then withdraw or hold. To withdraw, give a non-blocking verdict
+and say in one line what convinced you. Hold only with a concrete failure
+scenario: the input or state, and the wrong output, crash or loss this sha
+produces from it. "Someone could revert it", "it might regress" and "best
+practice" are not scenarios. If you cannot name one, withdraw. Address
+the answer `To:` the Author. A block you hold goes to `@core` for a
+ruling, or to `@operator` when it is `@core`'s own. A line `Overrule:
+<id of your message>` from either of them decides that block for this
+version: do not raise it again on this version unless you have a failure
+scenario nobody has answered yet.
 
 ## Triage the wake first
 

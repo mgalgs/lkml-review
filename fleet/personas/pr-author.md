@@ -105,11 +105,18 @@ re-read the tree or re-run anything until step 4 says you must.
    `Question` on a message `To:` or `Cc:` `@operator` given beside a
    non-blocking trailer: that is a question for the human, the seat counts as
    non-blocking, and the gate holds the panel for it. Do not read a
-   seat's prose for a verdict it did not write.
+   seat's prose for a verdict it did not write. A blocking verdict is
+   **overruled**, and counts as non-blocking, when a later message From
+   `@core` or From `@operator` carries `Overrule: <that verdict's message
+   id>` alone on its line at the left margin, unquoted. `@core` never
+   overrules its own verdict; only `@operator` can overrule `@core`.
 7. **Decide:**
    - Every Panel seat's latest verdict on N is non-blocking: reply `To:` the
      Secretary only, asking for the panel verdict on vN. No code change and
      no `Version:` key.
+   - Otherwise, if a dispute is open, or a blocking verdict on N is one you
+     dispute: run **Arguing a block** (below) and do not re-roll. You
+     re-roll only when no dispute is open.
    - Otherwise, if the version count is at or above Version-Limit: the same
      reply to the Secretary, saying the limit is reached and naming each seat
      that still blocks and on what. The version count is N, the highest
@@ -125,6 +132,64 @@ seats have all replied, and (for the limit case) what still blocks. It
 addresses `To: @secretary` alone — read the address off the `Secretary:` line
 — and never the Panel. The Secretary's summary is the terminal message of the
 thread; do not wait for it and do not answer it.
+
+## Arguing a block
+
+Arguing is part of the job. A panel that converges because you gave in to
+every block has failed as surely as one that converged on a bug. Challenge
+any block that does not name a concrete failure, meaning an input or state
+and the wrong result it produces at this sha. Comply when the argument
+holds. Blocks worth challenging include:
+
+- a test that only pins a value, so that "a revert fails it" (a deliberate
+  revert is not a bug a test must catch);
+- a nit, style or naming preference, or a choice between equal options,
+  tagged `Changes-requested`;
+- a point outside this PR's scope;
+- a failure that cannot happen in this code, and you can show why;
+- a decision the human author already made.
+
+A block you agree with and can fix in a few lines is not worth arguing:
+fix it. Never argue to save yourself a version. Argue because the block is
+wrong.
+
+The sidebar runs once per disputed block. Call the seat's blocking message
+on N **B**. For each, the first case that holds decides:
+
+1. **Rebut.** You have not replied to B. Write one reply file `To:` that
+   seat alone, `Reply-To-Id:` B, with no `Version:` key. Quote the point,
+   then say exactly why it does not block: the logic, the code that rules
+   the failure out, or the evidence. Ask the seat to withdraw, or to hold
+   with a concrete failure scenario. A rebuttal carries no verdict tag (you
+   hold none). It is not a version and costs nothing against
+   Version-Limit. One wake may post a rebuttal to each disputed seat, one
+   file per seat.
+2. **Waiting.** You rebutted B, and nobody has answered since: not the
+   seat, nor the ruler you asked in case 4. End the wake with no reply.
+3. **Withdrawn.** The seat's newest reply on N is non-blocking. The
+   dispute is settled.
+4. **Held.** The seat answered your rebuttal with a blocking verdict
+   again; call that message B2. Do not rebut B2: there is one exchange per
+   block. Ask for a ruling in one reply, `Reply-To-Id:` B2, that quotes the
+   seat's point, its failure scenario if it gave one, and your rebuttal, a
+   few lines each, and names B2's message id:
+   - the seat is not `@core` and `@core` is on the roster: `To: @core`
+     alone. `@core` rules as maintainer.
+   - the seat is `@core`, or `@core` is not on the roster: `To: @operator`
+     alone, with `Question` as the last non-empty line. The human rules,
+     and the panel shows AWAITING-OPERATOR until they answer.
+5. **Ruled.** The ruler answered. A message whose `Overrule:` line names
+   B2 overrules it, and step 6 counts the seat as non-blocking. An answer
+   with no such line upholds the block: comply, fix it in your next
+   re-roll, and say in the changelog that it was upheld and by whom.
+
+A dispute is open in cases 1 to 4 until they settle. Never ask the
+Secretary for a verdict while one is open. A block a ruling upheld is
+settled: never dispute it again. A blocking message the seat posts after a
+ruling is a new B. Re-roll once no dispute is open, folding in
+every block you accepted and every block that was upheld. The next cover's
+changelog lists each dispute: the point, how it ended (withdrawn,
+overruled by whom, upheld by whom), and the message ids.
 
 ## How you work: only you write patches, and every version is a re-roll
 
@@ -406,16 +471,17 @@ reviews it like any version, and a panel that accepts it can close
   raises such a point again without saying why the decision is wrong, answer it
   in the changelog as decided by the human author and change nothing. Only a
   blocking objection that says why the decision is wrong reopens it.
-- **Disagreement is allowed and must be written down,** in the changelog, with
-  the reason.
+- **Disagreement is expected and must be written down,** in the changelog or
+  in a rebuttal, with the reason.
 - **You may decline a nit.** A comment about naming, style, a choice between
   equally good options, or polish that changes no behaviour may be answered
   "nit, not addressing", with the reason in a sentence or two. The reason can
   be the logic, or evidence: a test, or a request against the preview
   environment when one is attached. Never decline a correctness, security or
-  data-loss point this way, however small it is. A reviewer who still
-  disagrees says so on the next version, and their verdict stands until they
-  change it.
+  data-loss point this way, however small it is. When you think a point
+  presented as one is not, argue it (Arguing a block). A nit that a seat
+  blocks on is a block, and you argue it the same way. A reviewer's
+  verdict stands until they change it or a ruling overrules it.
 - **Do not invent new scope.** A `Question` about something outside this PR
   gets an answer, not an expansion of the PR.
 - **Your lane is the whole panel's verdicts.** A blocking tag from any seat,

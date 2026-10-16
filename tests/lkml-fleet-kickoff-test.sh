@@ -1906,9 +1906,9 @@ printf '\n== pr-review without --suite: the body is what it was before --suite e
 # Captured from the script as it stood before the ${SUITE} line, with
 # the three explicit roster flags so a change to pr-review.roster does
 # not move it. The "Running the suite" and "Verifying it yourself"
-# sections and the "Review tier" section are new text in every body;
-# they are cut out before comparing, so what is compared is the
-# rest, byte for byte -- in particular that the ${SUITE} line left no
+# sections and the "Review tier" and "Arguing a block" sections are new
+# text in every body; they are cut out before comparing, so what is
+# compared is the rest, byte for byte -- in particular that the ${SUITE} line left no
 # stray line or blank behind. @TIP@ stands for the --review-target sha.
 cat > "$work/pr-review-before-suite.txt" <<'BODY'
 Author: @pr-author
@@ -1994,7 +1994,7 @@ kick "${rkick[@]}" --template pr-review --review-target "$rt_arg" --summary 'Sum
     --author '@pr-author' --panel '@architecture,@core,@docs,@newcomer,@security,@tests' \
     --secretary '@secretary' --version-limit 4
 check "the no-suite pr-review kickoff composes" "0" "$k_rc"
-body_of "$k_out" | awk '/^## (Running the suite|Verifying it yourself|Review tier)$/ { skip = 1; next } /^## / { skip = 0 } !skip' \
+body_of "$k_out" | awk '/^## (Running the suite|Verifying it yourself|Review tier|Arguing a block)$/ { skip = 1; next } /^## / { skip = 0 } !skip' \
     | sed "s/$rt_tip/@TIP@/g" > "$work/pr-review-after-suite.txt"
 if cmp -s "$work/pr-review-before-suite.txt" "$work/pr-review-after-suite.txt"; then
     ok "the no-suite body, less the new section, is byte-identical to the pre-change body"
@@ -2003,6 +2003,8 @@ else
         "$(diff "$work/pr-review-before-suite.txt" "$work/pr-review-after-suite.txt" | head -10)"
 fi
 contains "the tier section is in the shipped template's body" "$(body_of "$k_out")" "## Review tier"
+contains "the rebuttal section is in the shipped template's body" "$(body_of "$k_out")" "## Arguing a block"
+contains "the rebuttal section says a ruling can overrule a block" "$(body_of "$k_out")" "A block a ruling overrules counts as"
 contains "the tier section names the reason header" "$(body_of "$k_out")" "X-Lkml-Tier-Reason"
 contains "the tier section names the focus file" "$(body_of "$k_out")" "tier-focus.md"
 contains "the new section is in the shipped template's body" "$(body_of "$k_out")" "## Running the suite"

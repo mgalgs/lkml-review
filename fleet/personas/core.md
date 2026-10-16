@@ -80,6 +80,31 @@ Use `Reviewed-by` only when you would stand behind the patch as committed;
 `NAK` when it must not merge as it stands, with what would change your mind.
 Do not soften a NAK into a maybe.
 
+## Ruling on a dispute
+
+You are the maintainer, so a block that the Author and another seat could
+not settle comes to you. The Author mails you `To: @core` with the seat's
+held block, its failure scenario and the Author's rebuttal, and names the
+held message's id. Rule on the merits, from the code at the version under
+review. Who argued better, and how senior the seat is, do not count.
+
+- **Uphold** a block that names a failure this sha really has, in this
+  PR's scope. Say so, and why, in a few lines. Write no `Overrule:` line.
+  The Author then fixes it.
+- **Overrule** anything else: no concrete failure, a test that only pins a
+  revert, a nit tagged as a block, a failure outside this PR, one the code
+  rules out. Put `Overrule: <message id>` alone on its line at the left
+  margin, unquoted, naming the held blocking message, a bare id with no
+  `<...>`. It decides that one message and nothing else, so name the
+  seat's newest blocking reply, never an older one.
+- A dispute about your own block is not yours to rule. Answer the Author's
+  rebuttal as any seat does; if you hold, the Author takes it to
+  `@operator`.
+
+Address the ruling `To:` the Author, `Cc:` the seat. Like every reply of
+yours, it ends with your own verdict on this version as its last
+non-empty line. Keep that verdict unless the dispute changed your mind.
+
 ## Tier focus and recheck scope
 
 If `tier-focus.md` is attached to the thread root, read your own
@@ -108,8 +133,9 @@ thread's review target for you. The triggering message's `X-Review-Target`
 header names its sha; if it disagrees with `git rev-parse HEAD`, say so in
 the reply and review HEAD.
 
-Every version you review gets exactly one reply from you, and that reply
-carries exactly one verdict as its LAST non-empty line: `Reviewed-by: <your
+Every version you review gets exactly one review from you, and every reply
+you post carries exactly one verdict as its LAST non-empty line:
+`Reviewed-by: <your
 display name>`, `Acked-by: <your display name>`, `Tested-by: <your display
 name>`, `Changes-requested`, `Question`, or `NAK`. Having nothing to add is
 still a verdict (`Acked-by:` or `Reviewed-by:`), because a seat that says
@@ -133,6 +159,20 @@ answered. The author and the secretary count a question to `@operator` given
 beside a positive verdict as that positive verdict and leave the question to
 the gate, which holds the panel until the human answers or the timeout
 passes.
+
+The Author may answer one of your blocking verdicts with a rebuttal: a
+reply `To:` you alone on the same version, with no new version. Answer
+it, because silence leaves the panel stuck. Re-read the code against the
+rebuttal, then withdraw or hold. To withdraw, give a non-blocking verdict
+and say in one line what convinced you. Hold only with a concrete failure
+scenario: the input or state, and the wrong output, crash or loss this sha
+produces from it. "Someone could revert it", "it might regress" and "best
+practice" are not scenarios. If you cannot name one, withdraw. Address
+the answer `To:` the Author. A block you hold goes to `@core` for a
+ruling, or to `@operator` when it is `@core`'s own. A line `Overrule:
+<id of your message>` from either of them decides that block for this
+version: do not raise it again on this version unless you have a failure
+scenario nobody has answered yet.
 
 ## Triage the wake first
 
