@@ -3002,6 +3002,48 @@ run_case aw_live --now 2026-03-02T12:00:00Z
 # who the panel waits on, so AWAITING-OPERATOR, not IN-PROGRESS.
 check "(aw-live) an open question outranks IN-PROGRESS" "AWAITING-OPERATOR" "$(jr .status)"
 
+printf '\n== a seat owed a verdict that nothing addresses ==\n'
+# Shared shape (the PR 2411 incident): v1 converged with @core/@tests/@docs;
+# an escalate push at seq 30 adds @security; the author's v2 cover at seq 31
+# is addressed to `to`. The postmaster wakes only addressed seats.
+gen_unaddr() {
+    gen "$1" <<PY
+e = [tier_root()] + panel_positive() + [sec(20)]
+e.append(upstream(30, H, mode="escalate",
+                  extra=[["X-Lkml-Tier", "full"], ["X-Lkml-Add-Seats", "security"]]))
+if $2:
+    c = cover(31, H, 2, "Human integration.\n\nFrozen-Head: " + H)
+    c["to"] = $3
+    e.append(c)
+e += [$4]
+write(D, export([m for m in e if m]), status(sha=H if $2 else A, ver=2 if $2 else 1))
+PY
+}
+gen_unaddr un1 True '["@core", "@tests", "@docs"]' None
+run_case un1
+# Hand-worked: @security owes v2 and no message since the v2 cover (seq 31)
+# names it; the others were addressed by the cover.
+reason_has "(un1) the unaddressed seat is named" "@security: owed a verdict on v2, but nothing since v2 was posted is addressed to it, so nothing will wake it"
+reason_lacks "(un1) addressed seats are not" "@core: owed a verdict"
+check "(un1) quiescent and unconverged: STALLED" "STALLED" "$(jr .status)"
+
+gen_unaddr un2 True '["@core", "@tests", "@docs", "@security"]' None
+run_case un2
+# Hand-worked: the cover names @security: it will be woken.
+reason_lacks "(un2) a cover addressed to the added seat" "owed a verdict on v2, but"
+
+gen_unaddr un3 False None None
+run_case un3
+# Hand-worked: the escalate is unanswered (no v2 cover yet): the author
+# owes the cover, so not being addressed yet is no fault.
+reason_lacks "(un3) an unanswered push raises no addressing reason" "owed a verdict on"
+
+gen_unaddr un4 True '["@core", "@tests", "@docs"]' 'msg(40, "@operator", "Please review v2.", to=["@security"])'
+run_case un4
+# Hand-worked: a later @operator mail To @security (the manual unstick)
+# addresses it.
+reason_lacks "(un4) a later mail to the seat clears it" "@security: owed a verdict on v2"
+
 printf '\n== invariants over every case above ==\n'
 inv_bad=""; inv_n=0; inv_conv=0; diff_bad=""; diff_n=0
 # Opt-in differential check: LKML_PANEL_STATE_BASELINE names an earlier copy

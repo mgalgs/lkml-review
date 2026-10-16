@@ -305,6 +305,12 @@ false when the target sits above the frozen head.
 The `ci` object reports the newest trusted result on the frozen head on
 every thread, gated or not; reasons are raised only under `ci`.
 
+Unaddressed seats -- the postmaster wakes only seats a message names in
+To/Cc. A seat that owes a fresh verdict on the current version (no verdict
+on it, nothing carried) while no message since that version was posted
+names it will never be woken: a reason says so. Not raised while the
+newest push is unanswered, since the author's cover is still owed.
+
 Operator questions and the timeout -- a message from a seat on the
 effective panel that carries the `Question` tag and names @operator among
 its To/Cc recipients is an operator question. They are listed, whatever
@@ -1319,6 +1325,22 @@ def judge_on(entry, seat, m, tagged, target, suite_seats, source=None):
     return entry, f"{seat}: {what} on {where}{carried}"
 
 
+def unaddressed_seats(seats, msgs, target, since):
+    """A reason per seat that owes a fresh verdict on `target` but that no
+    message since seq `since` (the version's posting) names in To/Cc: the
+    postmaster wakes only addressed seats, so nothing will ever wake it."""
+    out = []
+    for s in seats:
+        if s["sha"] == target["sha"] or s["carried"]:
+            continue
+        if not any(m["ok"] and m["seq"] >= since and s["seat"] in m["to"] + m["cc"]
+                   for m in msgs):
+            out.append(f"{s['seat']}: owed a verdict on {ver_label(target)}, but "
+                       f"nothing since {ver_label(target)} was posted is "
+                       f"addressed to it, so nothing will wake it")
+    return out
+
+
 def judge_seat(seat, msgs, target, suite_seats=(), carry_chain=(),
                recheck=False):
     """-> (seat entry, reason|None) for one panel seat. `carry_chain` is
@@ -1735,6 +1757,8 @@ def build_state(export, status, now):
     if pushes:
         push = dict(pushes[-1], answered=(frozen_head is not None
                                           and frozen_head["sha"] == pushes[-1]["sha"]))
+    if cur is not None and (push is None or push["answered"]):
+        reasons += unaddressed_seats(seats, msgs, target, versions[cur]["seq"])
 
     seats_ok = bool(seats) and all(s["state"] == "positive" for s in seats)
     sec_says_converged = (secretary is not None and secretary["on_target"]
