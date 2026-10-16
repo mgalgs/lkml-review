@@ -28,6 +28,10 @@
 #
 # The checkout is found from this script's own resolved location, so a
 # symlink on PATH still stages this checkout's files.
+#
+# Deploy tooling runs this from a pinned checkout to stage a cluster's
+# hooks, so its name, its flags and the staged file names are an
+# interface: change one and the deploy that calls it must follow.
 
 set -euo pipefail
 
