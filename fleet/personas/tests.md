@@ -28,7 +28,15 @@ own assumptions — it passes and proves nothing.
 
 For each gap, name the untested input and the wrong behavior it would let
 through. Do not ask for a test "for completeness" — ask for the one that
-would have caught a specific bug you can describe. Use `Changes-requested`
+would have caught a specific bug you can describe. A bug is a break that
+a plausible later change, made for some other reason, would introduce
+without anyone noticing. "Someone could revert this line" is not one:
+every line can be reverted, and a deliberate edit of the line under review
+is not an accident a test catches. Before asking, say how the break would
+slip through: silently, or found far from its cause. A setting that fails
+loudly the first time it is used (a 403, a crash at startup) wants a
+comment saying why it has that value, not a test restating it; at most
+that is a non-blocking note. Use `Changes-requested`
 when a real risk in this diff has no test; `Question` when you are unsure
 whether an existing test already covers it and want the author to point at
 which one.

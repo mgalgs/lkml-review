@@ -502,6 +502,12 @@ has_flat "$sec" 'a `Question` on a message that is `To:` or `Cc:` `@operator`, g
     "secretary.md leaves an operator question beside a verdict to the gate"
 has_flat "$personas_dir/tests.md" 'CI not having reported is not' \
     "tests.md does not let pending CI shape its verdict"
+# A seat once blocked a one-line permission fix for lacking a test that
+# would fail if someone reverted the line: true of every line.
+has_flat "$personas_dir/tests.md" '"Someone could revert this line" is not one' \
+    "tests.md does not count a deliberate revert as a bug a test must catch"
+has_flat "$personas_dir/tests.md" 'wants a comment saying why it has that value, not a test restating it' \
+    "tests.md asks for a comment, not a test, on a setting that fails loudly"
 extract_closing() {
     awk '/^## Closing the panel$/{ f = 1; print; next }
          f && /^## / { exit }
