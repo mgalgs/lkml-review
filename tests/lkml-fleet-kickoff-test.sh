@@ -1698,8 +1698,8 @@ case "$r_body" in
 esac
 kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --send
 check "--send with a roster template exits 0" "0" "$k_rc"
-contains "the sent cover: To: is the panel, X-Seats follows it, then the review target" "$k_argv" \
-    "mail send --from @ci-example --to @rev-a,@rev-b,@rev-c --header X-Seats: @rev-a, @rev-b, @rev-c --review-target $rt_arg --subject"
+contains "the sent cover: To: is the panel, the roster's hop budget, X-Seats, then the review target" "$k_argv" \
+    "mail send --from @ci-example --to @rev-a,@rev-b,@rev-c --hops 14 --header X-Seats: @rev-a, @rev-b, @rev-c --review-target $rt_arg --subject"
 kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --patches --send
 case "$(grep -- '^mail reply' <<<"$k_argv")" in
     *"X-Seats"*|*"rev-a"*) no "no per-patch reply carries the roster" "$k_argv" ;;
@@ -1901,6 +1901,27 @@ printf 'Panel: ${PANEL}\n' > "$rdir/bad-suite-key.md"
 printf 'PANEL=@rev-a\nSUITE_SEAT=@rev-a\n' > "$rdir/bad-suite-key.roster"
 kick "${rkick[@]}" --template "$rdir/bad-suite-key.md" --send
 refused "a misspelled suite roster key" "known: AUTHOR, PANEL, SECRETARY, VERSION_LIMIT, SUITE, SUITE_SEATS"
+
+printf '\n== a roster template sizes --hops from its VERSION_LIMIT ==\n'
+# The transport's default of 8 hops ran out at v4 on a real five-version
+# PR (each round spends two hops), so a roster kickoff with no --hops
+# derives the budget from the limit: 4 * limit + 2.
+kick "${rkick[@]}" --template pr-review --review-target "$rt_arg"
+check "the pr-review kickoff composes" "0" "$k_rc"
+contains "pr-review's VERSION_LIMIT 4 defaults --hops to 18" "$k_out" "--hops 18"
+kick "${rkick[@]}" --template pr-review --review-target "$rt_arg" --version-limit 2
+contains "--version-limit 2 defaults --hops to 10" "$k_out" "--hops 10"
+kick "${rkick[@]}" --template pr-review --review-target "$rt_arg" --hops 5
+contains "an explicit --hops wins over the roster default" "$k_out" "--hops 5"
+case "$k_out" in
+    *"--hops 18"*) no "an explicit --hops leaves no roster default behind" "$k_out" ;;
+    *) ok "an explicit --hops leaves no roster default behind" ;;
+esac
+kick "${kick_base[@]}"
+case "$k_out" in
+    *"--hops"*) no "a kickoff with no roster still sends no --hops" "$k_out" ;;
+    *) ok "a kickoff with no roster still sends no --hops" ;;
+esac
 
 printf '\n== pr-review without --suite: the body is what it was before --suite existed ==\n'
 # Captured from the script as it stood before the ${SUITE} line, with

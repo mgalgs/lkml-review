@@ -104,7 +104,10 @@
 #              refused. Both flags are refused with a template that has no
 #              ${SUITE}, since they would silently do nothing, and each
 #              may be given once.
-# --hops       non-negative mail reply-hop budget. Omit it to retain the
+# --hops       non-negative mail reply-hop budget. Omitted, a roster
+#              template with a VERSION_LIMIT gets 4 * VERSION_LIMIT + 2
+#              (18 for a limit of 4): two hops per version round and room
+#              for rebuttal sidebars. Without a VERSION_LIMIT it retains the
 #              transport's own default.
 # --ci-first   address the kickoff to this CI seat alone, then have its
 #              reply wake the --to panel with test results. This adds a hop,
@@ -759,6 +762,13 @@ fi
 if [[ -n "$hops" && ! "$hops" =~ ^[0-9]+$ ]]; then
     echo "Error: --hops must be a non-negative integer. See --help." >&2
     exit 1
+fi
+# A version round spends two hops (cover, then the review that wakes the
+# author), and a rebuttal sidebar about four more. The author's cover takes
+# its hops from that review, never from a fresh push mail, so the
+# transport's default of 8 stops review at about v4 however the PR moves.
+if [[ -z "$hops" && -n "$roster_version_limit_value" ]]; then
+    hops=$(( 4 * 10#$roster_version_limit_value + 2 ))
 fi
 if (( version_given )) && [[ ! "$version" =~ ^[1-9][0-9]*$ ]]; then
     echo "Error: --version must be a positive integer, got '$version'. v0 is not a thing on a mailing list. See --help." >&2
