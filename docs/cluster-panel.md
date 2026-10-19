@@ -110,42 +110,14 @@ instead; see "Suite source, CI results and operator questions".
 
 ### Sizing the panel
 
-Not every PR needs six reviewers. `lkml-pr-tier.py` reads a PR (a git range
-plus a metadata file) and decides skip, tier, roster and per-seat focus
-before the kickoff; CI passes its output straight through. The vocabulary is
-a **tier**: `quick`, `standard` or `full`, each a named roster in
-`~/.config/lkml/tiers.yaml` (`fleet/tiers.yaml` is the commented example).
-Rules over the diff (paths, size, dependency manifests, docs-only,
-tests-only) pick the tier; the highest tier any matching rule names wins,
-and the configured default applies when none does. Draft PRs, bot authors
-and a skip label are skipped; a force-full label gives `full` regardless of
-rules. An optional LLM tie-break may raise an ambiguous result, never lower
-it, and falls back to the rules on any failure.
-
-```bash
-dir=$(mktemp -d)
-args=$(lkml-pr-tier.py "$WORKSPACE" "$BASE_SHA..$HEAD_SHA" --meta "$META" \
-  --kickoff-args --focus-file "$dir/tier-focus.md") || exit   # 3 means skip
-eval "lkml-fleet-kickoff.sh \"$WORKSPACE\" \"$BASE_SHA..$HEAD_SHA\" \
-  --template pr-review ... $args"
-```
-
-`$META` is JSON with `title`, `draft`, `author-is-bot` and `labels`. PR text
-is attacker-controlled and is only ever data: the printed headers are one
-line, length-capped and stripped of control characters. Without
-`--kickoff-args` the script prints a JSON object instead (decision, tier,
-roster, needs-env, budget, reason, the signals that fired, and the LLM
-status). `--corpus <file>` runs a list of `{repo, range, meta, expected}`
-cases and prints mismatches, for checking a site's rules against real PRs.
-
-`--kickoff-args` stamps the root's `X-Lkml-Tier` and `X-Lkml-Tier-Reason`
-and attaches `tier-focus.md`. On a push to a PR that already has a panel,
-`lkml-pr-tier.py <repo> <range> --meta <file> --previous-head <sha>
---current-tier <tier> [--current-roster <a,b,c>]` classifies the push and
-prints the headers for the upstream-moved mail in `push.headers`; pass
-`--current-roster` when the thread's real roster differs from the tier's
-configured one (an `add-seat` rule fired at kickoff). What those headers
-mean, and how the gate reads them, is under "Tiers and push modes" below.
+Not every PR needs six reviewers. Sizing is the caller's job: whatever kicks
+off the panel picks a **tier** (`quick`, `standard` or `full`) and the
+roster that goes with it, and passes them to `lkml-fleet-kickoff.sh` as the
+roster flags, `--header "X-Lkml-Tier: <tier>"`, `--header
+"X-Lkml-Tier-Reason: <why>"` and `--attach-file tier-focus.md`. On a push to
+a PR that already has a panel, it also decides the push mode. This repo only
+reads the result; what the headers mean, and how the gate reads them, is
+under "Tiers and push modes" below.
 
 ### One round
 
