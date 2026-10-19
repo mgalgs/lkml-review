@@ -84,7 +84,8 @@ key at a time. The panel becomes the cover's `To:` and its `X-Seats` header,
 so the recipients and the roster cannot drift apart. `--remote` sends through
 the mail API; the client reads `FORK_SANDBOX_MAIL_API_URL` and
 `FORK_SANDBOX_MAIL_API_TOKEN_FILE` from the environment. The grant flags
-(`--allow-namespace`, `--reach-probe`, `--context-secret`) attach to the new
+(`--allow-namespace`, `--reach-probe`, `--host-alias`, `--seat-resources`,
+`--context-secret`) attach to the new
 thread, as do `--no-grant` (open the thread with no environment; refused with
 any grant flag) and `--budget <n>` (the thread's own cap on seat spawns).
 `--header` adds headers of the caller's own; the headers the mail

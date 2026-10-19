@@ -1482,9 +1482,36 @@ done
 kick "${kick_base[@]}" --budget 3 --budget 4 --send
 refused "a second --budget" "--budget may only be given once"
 
+printf '\n== --host-alias/--seat-resources: forwarded to the cover only ==\n'
+kick "${kick_base[@]}" --allow-namespace example-ns \
+    --host-alias '192.0.2.10=api.example.com,www.example.com' --host-alias '192.0.2.11=cdn.example.com' \
+    --seat-resources '@tests=cpu=2,memory=4Gi' --seat-resources '@core=cpu=1' --patches --send
+check "--send with --host-alias and --seat-resources exits 0" "0" "$k_rc"
+contains "the sent cover carries both flags, repeated in order, after the other grants" \
+    "$(grep -m1 -- '^mail send' <<<"$k_argv")" \
+    "--allow-namespace example-ns --host-alias 192.0.2.10=api.example.com,www.example.com --host-alias 192.0.2.11=cdn.example.com --seat-resources @tests=cpu=2,memory=4Gi --seat-resources @core=cpu=1 --subject"
+case "$(grep -- '^mail reply' <<<"$k_argv")" in
+    *"--host-alias"*|*"--seat-resources"*) no "no per-patch reply carries --host-alias or --seat-resources" "$k_argv" ;;
+    *) ok "no per-patch reply carries --host-alias or --seat-resources" ;;
+esac
+kick "${kick_base[@]}" --host-alias '192.0.2.10=api.example.com'
+contains "the printed cover carries --host-alias" "$k_out" "--host-alias 192.0.2.10=api.example.com"
+kick "${kick_base[@]}" --send --host-alias
+refused "--host-alias with no value" "--host-alias requires a value"
+kick "${kick_base[@]}" --send --seat-resources
+refused "--seat-resources with no value" "--seat-resources requires a value"
+for focus_flag in --host-alias --seat-resources; do
+    kick "${kick_base[@]}" --focus 'patch 2 only' --template "$focused_template" "$focus_flag" 'x=y' --send
+    refused "a focused template with $focus_flag" "fork-sandbox mail grant"
+done
+
 printf '\n== --no-grant refuses against the grant flags ==\n'
 kick "${kick_base[@]}" --no-grant --allow-namespace example-ns --send
 refused "--no-grant with --allow-namespace" "cannot be combined"
+kick "${kick_base[@]}" --no-grant --host-alias '192.0.2.10=api.example.com' --send
+refused "--no-grant with --host-alias" "cannot be combined"
+kick "${kick_base[@]}" --no-grant --seat-resources '@tests=cpu=2' --send
+refused "--no-grant with --seat-resources" "cannot be combined"
 kick "${kick_base[@]}" --no-grant --reach-probe 'svc-a.example-ns.svc.cluster.local:8001' --send
 refused "--no-grant with --reach-probe" "cannot be combined"
 kick "${kick_base[@]}" --no-grant --context-ro "$grant_ctx_dir" --send

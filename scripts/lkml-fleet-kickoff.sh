@@ -9,6 +9,8 @@
 #            [--allow-ambiguous-version] [--patches] [--attach-file <path>]...
 #            [--seats <addr-list>]
 #            [--allow-namespace <ns[:port]>]... [--reach-probe <host:port>]...
+#            [--host-alias <ip>=<host>[,<host>...]]...
+#            [--seat-resources <seat>=cpu=<q>[,memory=<q>]]...
 #            [--context-ro <dir>] [--context-secret <name>]
 #            [--no-grant] [--budget <n>]
 #            [--review-target <branch>:<sha>] [--header "Name: value"]...
@@ -278,6 +280,12 @@
 # --reach-probe HOST:PORT
 #              same forwarding, repeatability, and restrictions as
 #              --allow-namespace.
+# --host-alias IP=HOST[,HOST...]
+# --seat-resources SEAT=cpu=QTY[,memory=QTY]
+#              same forwarding, repeatability, and restrictions as
+#              --allow-namespace: a pod host alias for every k8s seat on
+#              the thread, and one seat's cpu/memory. fork-sandbox
+#              validates both values.
 # --context-ro DIR
 #              same forwarding and restrictions as --allow-namespace, but
 #              a single value: a second --context-ro is a usage error.
@@ -299,7 +307,8 @@
 #              thread with no environment (X-Grant: none), so a seat
 #              that would otherwise need grant flags spawns without
 #              them. Refused together with --allow-namespace,
-#              --reach-probe, --context-ro or --context-secret. Same
+#              --reach-probe, --host-alias, --seat-resources, --context-ro
+#              or --context-secret. Same
 #              restrictions as --allow-namespace otherwise: cover only,
 #              never a per-patch reply, refused alongside a focused
 #              (${FOCUS}) template.
@@ -435,6 +444,8 @@ allow_ambiguous_version=0
 seats=""
 allow_namespace=()
 reach_probe=()
+host_alias=()
+seat_resources=()
 context_ro=""
 context_ro_given=0
 context_secret=""
@@ -456,7 +467,7 @@ unless_exists=0
 
 while (( $# > 0 )); do
     case "$1" in
-        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats|--header|--author|--panel|--secretary|--version-limit|--suite|--suite-seats|--allow-namespace|--reach-probe|--context-ro|--context-secret|--budget|--review-target|--attach-file)
+        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats|--header|--author|--panel|--secretary|--version-limit|--suite|--suite-seats|--allow-namespace|--reach-probe|--host-alias|--seat-resources|--context-ro|--context-secret|--budget|--review-target|--attach-file)
             (( $# >= 2 )) || { echo "Error: $1 requires a value. See --help." >&2; exit 1; }
             ;;
     esac
@@ -474,6 +485,8 @@ while (( $# > 0 )); do
         --seats) seats="$2"; shift 2 ;;
         --allow-namespace) allow_namespace+=("$2"); shift 2 ;;
         --reach-probe) reach_probe+=("$2"); shift 2 ;;
+        --host-alias) host_alias+=("$2"); shift 2 ;;
+        --seat-resources) seat_resources+=("$2"); shift 2 ;;
         --context-ro)
             (( ! context_ro_given )) || { echo "Error: --context-ro may only be given once. See --help." >&2; exit 1; }
             context_ro="$2"; context_ro_given=1; shift 2 ;;
@@ -790,8 +803,8 @@ if (( context_secret_given && context_ro_given )); then
     echo "Error: --context-secret and --context-ro are mutually exclusive: a run's context is either a Secret or a host directory, not both. See --help." >&2
     exit 1
 fi
-if (( no_grant && (${#allow_namespace[@]} > 0 || ${#reach_probe[@]} > 0 || context_ro_given || context_secret_given) )); then
-    echo "Error: --no-grant opens a thread with no environment and cannot be combined with --allow-namespace, --reach-probe, --context-ro or --context-secret. See --help." >&2
+if (( no_grant && (${#allow_namespace[@]} > 0 || ${#reach_probe[@]} > 0 || ${#host_alias[@]} > 0 || ${#seat_resources[@]} > 0 || context_ro_given || context_secret_given) )); then
+    echo "Error: --no-grant opens a thread with no environment and cannot be combined with --allow-namespace, --reach-probe, --host-alias, --seat-resources, --context-ro or --context-secret. See --help." >&2
     exit 1
 fi
 context_ro_abs=""
@@ -1080,7 +1093,7 @@ fi
 # --attach-file is refused for the same reason: the "Attached context"
 # section would be appended to the leftover body file, and the manual
 # `mail reply` bridge does not carry the attachments it lists.
-if [[ "$body" == *'${FOCUS}'* ]] && { (( ${#allow_namespace[@]} > 0 )) || (( ${#reach_probe[@]} > 0 )) || (( context_ro_given )) || (( context_secret_given )) || (( no_grant )) || (( budget_given )) || (( review_target_given )) || (( ${#headers[@]} > 0 )) || (( ${#attach_files[@]} > 0 )); }; then
+if [[ "$body" == *'${FOCUS}'* ]] && { (( ${#allow_namespace[@]} > 0 )) || (( ${#reach_probe[@]} > 0 )) || (( ${#host_alias[@]} > 0 )) || (( ${#seat_resources[@]} > 0 )) || (( context_ro_given )) || (( context_secret_given )) || (( no_grant )) || (( budget_given )) || (( review_target_given )) || (( ${#headers[@]} > 0 )) || (( ${#attach_files[@]} > 0 )); }; then
     echo "Error: grant, budget, target, header and --attach-file flags apply to the thread a new \`mail send\` creates, but a focused round is a reply inside an existing thread, and the body would list attachments the manual \`mail reply\` bridge does not send. Set the grant on that thread with \`fork-sandbox mail grant <thread-id> ...\` and compose without these flags." >&2
     exit 1
 fi
@@ -1549,6 +1562,12 @@ for grant_ns in "${allow_namespace[@]}"; do
 done
 for grant_probe in "${reach_probe[@]}"; do
     cover_cmd+=(--reach-probe "$grant_probe")
+done
+for grant_alias in "${host_alias[@]}"; do
+    cover_cmd+=(--host-alias "$grant_alias")
+done
+for grant_res in "${seat_resources[@]}"; do
+    cover_cmd+=(--seat-resources "$grant_res")
 done
 (( context_ro_given )) && cover_cmd+=(--context-ro "$context_ro_abs")
 (( context_secret_given )) && cover_cmd+=(--context-secret "$context_secret")
