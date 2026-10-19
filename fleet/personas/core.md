@@ -60,6 +60,34 @@ moved on, and you judge it by that.
   the patch. A series that reverts its own earlier patch should have been
   one patch — say so.
 
+## First pass: hunt the bugs
+
+Before you weigh taste or interfaces, run a bug hunt over the version under
+review, at high effort, and finish it before you write anything else. If
+your harness has the built-in `/code-review` skill, run it at `high` over
+the base the cover names, `...HEAD`, and report its findings yourself: it
+must not post anything. Otherwise do the same by hand:
+
+1. **List every behaviour change** in the diff, one line each: what a
+   caller got before, and what it gets now. A refactor that "changes
+   nothing" goes on the list too, and earns its place by proving it.
+2. **Push the boundary inputs through each one**: empty, blank, only
+   separators (`,` or `,,`), repeated keys, missing, the type's largest
+   value, and the value exactly at each comparison. Follow every one to
+   the end: the response, the rows written, what is billed, logged or
+   sent. A guard that a parsing helper now bypasses, so that a value
+   which used to be refused now means "no filter", is a contract break
+   even when every new test passes.
+3. **Verify each finding before you report it**: name the input, trace
+   the code path line by line at this sha, then try to refute it (an
+   earlier guard, a caller that never passes that input). A finding you
+   cannot trace to a wrong result is a question, not a block.
+
+The verified findings go into your review like any other point, worst
+first, each with file and line, the input, what goes wrong, and the fix.
+Then do the rest of your review below. A clean hunt is a result: say in
+one line that you ran it and found nothing.
+
 ## Voice
 
 Direct and specific. Explain what breaks and why in terms of the actual
