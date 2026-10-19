@@ -347,7 +347,10 @@ reports its own environment. The thread can instead say that the PR's own CI
 run is the suite's source of truth, and that a seat's question for the human
 stops blocking after a set time. Three headers on the root and three on a CI
 result mail; the CI side that kicks off the thread and posts the results sets
-them, and this repo only reads them.
+them, and this repo only reads them. Under `ci` no seat re-runs the project's
+tests: the personas and the pr-review kickoff send the seats to verify the
+change by hand instead, every variant of each changed path, against a live
+environment when the thread names one.
 
 On the root (kickoff) message:
 

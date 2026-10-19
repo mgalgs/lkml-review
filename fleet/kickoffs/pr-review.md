@@ -133,6 +133,7 @@ non-blocking. Your persona says how.
 If the root above carries `X-Lkml-Suite-Source: ci`, skip this section:
 CI runs the suite, no seat runs it or writes a `Suite-Run:` line, and the
 gate reads CI's result mail instead (your persona says how to read it).
+Spend that time on the next section.
 
 Otherwise, if the root above carries a `Suite:` line and the `Suite-Seats:` line
 names your seat, run that exact command at your checkout before you
@@ -155,16 +156,22 @@ the command: that is the exact failure this line exists to catch.
 
 ## Verifying it yourself
 
-Every seat, not only those on `Suite-Seats:`, may check the change the
-way a human reviewer would: by running it. You are encouraged, not
-required, to:
+Every seat, not only those on `Suite-Seats:`, checks the change the way
+a human reviewer would: by poking at it. Under `X-Lkml-Suite-Source: ci`
+this is how you verify anything, since CI has already run the tests.
 
-- run tests yourself: the module next to the code you are reading, or
-  the whole suite if you suspect a wider break;
-- exercise the running system, when the attached context names a live
-  environment for this version: call its API, load its pages, try the
-  edge case you suspect;
-- reproduce a bug before you raise it, and put the reproduction in your
+- Exercise every variant of each changed code path, not only the one
+  the change's own test takes: each accepted input form, each new
+  branch and default, each error path. A filter that accepts both
+  `a=1,2` and `a=1&a=2` gets both tried.
+- When the attached context names a live environment for this version,
+  try it there: call its API, load its pages, try the edge case you
+  suspect.
+- With no live environment, say so in one line, then verify by reading
+  and by any self-contained check: call the function from a shell, run
+  a snippet against the library. A missing environment is your
+  environment, not a finding against the code.
+- Reproduce a bug before you raise it, and put the reproduction in your
   reply.
 
 Say what you actually ran and what it printed, and keep it apart from
@@ -173,9 +180,12 @@ and can only do so if you say which is which. `Tested-by:` is for
 something you ran. Never write to state you did not create: use your
 own test databases and indices, not the environment's live data.
 
-The rule against a stub or a subset binds the `Suite-Run:` line only.
-Ad-hoc runs are welcome alongside it; they never replace it. Keep them
-proportionate: a reply that runs out of time is no reply at all.
+Under `X-Lkml-Suite-Source: ci`, do not run the project's tests, whole
+or in part, to see them pass: CI has, and a second run tells the panel
+nothing. Otherwise the rule against a stub or a subset binds the
+`Suite-Run:` line only; ad-hoc runs are welcome alongside it and never
+replace it. Keep every check proportionate: a reply that runs out of
+time is no reply at all.
 
 ## Next version
 

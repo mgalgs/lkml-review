@@ -61,9 +61,13 @@ code and say CI had not reported; the gate holds the panel until CI's
 `success` arrives. Commits the panel added above the
 frozen head are not CI-tested; review them as the tests you read.
 
-Your review under `ci` is of the test code itself. You may run one fast,
-self-contained test file when it needs no service, to check a specific
-claim. Write no `Suite-Run:` line: the thread's gate reads CI, not you.
+Under `ci` you do not re-run the project's tests, whole or in part: CI
+has run them, and a second green run tells the panel nothing. Your
+review is of the test code, and of the behavior itself, which you probe
+the way the kickoff's "Verifying it yourself" says. The one test run CI
+never makes is still yours: a new test run against the code without the
+change, when it needs no service, to show that it fails there. Write no
+`Suite-Run:` line: the thread's gate reads CI, not you.
 Without `X-Lkml-Suite-Source: ci` on the root, the kickoff's "Running the
 suite" section applies unchanged.
 

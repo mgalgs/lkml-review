@@ -2031,8 +2031,14 @@ contains "the tier section names the focus file" "$(body_of "$k_out")" "tier-foc
 contains "the new section is in the shipped template's body" "$(body_of "$k_out")" "## Running the suite"
 contains "the section says a stub is the failure it catches" "$(body_of "$k_out")" "Never
 substitute a stub"
-contains "every seat is invited to verify by running it" "$(body_of "$k_out")" "## Verifying it yourself"
-contains "the stub rule is scoped to the Suite-Run line" "$(body_of "$k_out")" "The rule against a stub or a subset binds the \`Suite-Run:\` line only."
+contains "every seat is told to verify by hand" "$(body_of "$k_out")" "## Verifying it yourself"
+contains "seats exercise every variant of a changed path" "$(body_of "$k_out")" "Exercise every variant of each changed code path"
+contains "a missing environment is not a code finding" "$(body_of "$k_out")" "A missing environment is your
+  environment, not a finding against the code."
+contains "under ci no seat re-runs the tests" "$(body_of "$k_out")" "Under \`X-Lkml-Suite-Source: ci\`, do not run the project's tests, whole
+or in part"
+contains "the stub rule is scoped to the Suite-Run line" "$(body_of "$k_out")" "the rule against a stub or a subset binds the
+\`Suite-Run:\` line only"
 check "a no-suite body has no Suite line at all" "0" "$(body_of "$k_out" | grep -c '^Suite' || true)"
 
 printf '\n== --template <bare name> resolves to fleet/kickoffs/<name>.md ==\n'
