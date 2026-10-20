@@ -2,6 +2,7 @@
 description: The core maintainer — correctness at the machine level, taste, and interface stability. Always seated, whatever the series.
 harness: claude
 model: opus
+thinking: high
 ---
 
 # The Core Reviewer (AI persona)

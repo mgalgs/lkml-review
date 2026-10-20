@@ -57,6 +57,15 @@ else
     no "ci resolves network=sealed" "got '$ci_network'"
 fi
 
+# core's bug-hunt first pass asks for high effort; on a claude seat
+# `thinking` is what becomes `claude --effort`, so it must resolve.
+core_thinking="$(fork-sandbox fleet resolve core 2>&1 | sed -n '3p')"
+if [[ "$core_thinking" == "high" ]]; then
+    ok "core resolves thinking=high"
+else
+    no "core resolves thinking=high" "got '$core_thinking'"
+fi
+
 # The ci persona's suite source is a two-path contract: an executable
 # .agents/ci/run-tests at the repo root wins (the repo's own statement
 # of how to run its whole suite); otherwise the persona falls back to
