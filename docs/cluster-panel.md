@@ -625,7 +625,10 @@ agents:
   version waits only on the seats it lists and a `carry` version on nobody;
   a seat escalated in by a push is a panel reviewer like any other. A human
   push, mail from anyone not on the panel, and a thread with no target always
-  wake the author.
+  wake the author. So does a reviewer's block or question once every seat
+  still waited on has run on the current target and posted nothing, with no
+  retry pending (the postmaster re-runs a deferred gate after each zero-reply
+  harvest): no reply is coming, and waiting would strand the author.
 - **`budget-reserve`** names both seats because the author's final post
   comes before the secretary's verdict. A reserve held for the secretary
   alone would refuse that post, and the secretary would never be woken.

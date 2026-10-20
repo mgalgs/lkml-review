@@ -109,6 +109,27 @@ def reviewed(seq, who, sha=A, ver=1):
     return msg(seq, who, "Reviewed-by: %s <%s@example.com>" % (who, who[1:]),
                sha=sha, ver=ver)
 
+def run_rec(agent, rid, sha=A, replies=0, state="harvested",
+            at="2026-03-02T10:30:00Z", trigger="m003"):
+    # One postmaster status runs[] entry: agent is the bare fleet name.
+    live = state == "live"
+    return {"run_id": rid, "agent": agent, "state": state,
+            "run_dir": "/runs/" + rid, "resumed": None, "trigger": trigger,
+            "review_target_sha": sha, "review_target_version": 1,
+            "harvested_at": None if live else at,
+            "replies": None if live else replies,
+            "reply_files": None if live else max(replies, 1),
+            "outcome": None if live else "clean", "retry_of": None}
+
+def retry_rec(agent, state="pending", reason="malformed"):
+    return {"agent": agent, "state": state, "attempt": 0, "due_s": 0,
+            "reason": reason}
+
+# core reviewed, tests requested changes (m003), docs has not answered.
+def objecting(verdict="Changes-requested: the loop leaks."):
+    return export([root(), reviewed(2, "@core"),
+                   msg(3, "@tests", verdict, sha=A, ver=1)])
+
 def write(d, exp, st):
     with open(os.path.join(d, "export.json"), "w") as f:
         json.dump(exp, f)
@@ -250,23 +271,23 @@ PY
 run notargetsha
 expect "target without a sha" 0 "e"
 
-printf '\n== rules f-g: the reviewers decide ==\n'
+printf '\n== rules f and h: the reviewers decide ==\n'
 run silent
-expect "one reviewer answered, two silent" 1 "g" \
+expect "one reviewer answered, two silent" 1 "h" \
     "defer @pr-author" "@tests (silent)" "@docs (silent)"
 case "$ERR" in
     *@core*) no "the answered reviewer is not named as waited on" "$ERR" ;;
     *) ok "the answered reviewer is not named as waited on" ;;
 esac
 run silent FS_HOOK_AGENT=@pr-author
-expect "author seat given in '@' form also defers" 1 "g" "defer @pr-author"
+expect "author seat given in '@' form also defers" 1 "h" "defer @pr-author"
 
 gen stale <<'PY'
 write(D, export([root(), reviewed(2, "@core"), reviewed(3, "@tests"),
                  reviewed(4, "@docs", sha=B)]), status())
 PY
 run stale
-expect "@docs only tagged an older target, @tests replied" 1 "g" \
+expect "@docs only tagged an older target, @tests replied" 1 "h" \
     "@docs (stale)"
 case "$ERR" in
     *@tests*) no "the answered @tests is not named" "$ERR" ;;
@@ -293,6 +314,104 @@ PY
 run overruled FS_HOOK_MESSAGE=m003
 expect "@core's ruling overrules @tests: every seat answered" 0 "f"
 
+printf '\n== rule g: a silent waiting seat does not strand the author ==\n'
+gen gsilent <<'PY'
+write(D, objecting(), status(runs=[run_rec("docs", "r-docs")]))
+PY
+run gsilent FS_HOOK_MESSAGE=m003
+expect "a seat blocks, the waiting seat's run at the target posted nothing" 0 "g" \
+    "@docs (run r-docs)"
+# The re-gate after a zero-reply harvest passes the deferred message.
+run gsilent FS_HOOK_MESSAGE=m002
+expect "same, re-gated with an earlier deferred message" 0 "g"
+
+gen gquestion <<'PY'
+write(D, objecting("Question: why a new flag?"),
+      status(runs=[run_rec("docs", "r-docs")]))
+PY
+run gquestion FS_HOOK_MESSAGE=m003
+expect "a question counts as an objection" 0 "g"
+
+gen gatform <<'PY'
+write(D, objecting(), status(runs=[run_rec("@docs", "r-docs")]))
+PY
+run gatform FS_HOOK_MESSAGE=m003
+expect "a runs[] agent given in '@' form still matches" 0 "g"
+
+gen gnorun <<'PY'
+write(D, objecting(), status(runs=[run_rec("core", "r-core", replies=1)]))
+PY
+run gnorun FS_HOOK_MESSAGE=m003
+expect "the waiting seat has no run at all: keep waiting" 1 "h" "@docs (silent)"
+
+gen goldsha <<'PY'
+write(D, objecting(), status(runs=[run_rec("docs", "r-docs", sha=B)]))
+PY
+run goldsha FS_HOOK_MESSAGE=m003
+expect "the silent run was on an older target: keep waiting" 1 "h"
+
+gen glive <<'PY'
+write(D, objecting(), status(runs=[
+    run_rec("docs", "r-docs-1", at="2026-03-02T10:30:00Z"),
+    run_rec("docs", "r-docs-2", state="live")]))
+PY
+run glive FS_HOOK_MESSAGE=m003
+expect "a live run at the target may still reply: keep waiting" 1 "h"
+
+gen gnewest <<'PY'
+write(D, objecting(), status(runs=[
+    run_rec("docs", "r-docs-2", replies=1, at="2026-03-02T10:40:00Z"),
+    run_rec("docs", "r-docs-1", replies=0, at="2026-03-02T10:30:00Z")]))
+PY
+run gnewest FS_HOOK_MESSAGE=m003
+expect "the newest run replied (to no verdict): keep waiting" 1 "h"
+
+gen gnewestsilent <<'PY'
+write(D, objecting(), status(runs=[
+    run_rec("docs", "r-docs-1", replies=1, at="2026-03-02T10:30:00Z"),
+    run_rec("docs", "r-docs-2", replies=0, at="2026-03-02T10:40:00Z")]))
+PY
+run gnewestsilent FS_HOOK_MESSAGE=m003
+expect "the newest run is the silent one" 0 "g" "@docs (run r-docs-2)"
+
+gen gprehistory <<'PY'
+r = run_rec("docs", "r-docs")
+r.update(harvested_at=None, replies=None, reply_files=None, outcome=None)
+write(D, objecting(), status(runs=[r]))
+PY
+run gprehistory FS_HOOK_MESSAGE=m003
+expect "a record from before replies existed proves nothing: keep waiting" 1 "h"
+
+gen gretry <<'PY'
+write(D, objecting(), status(runs=[run_rec("docs", "r-docs")],
+                             retries=[retry_rec("docs")]))
+PY
+run gretry FS_HOOK_MESSAGE=m003
+expect "a pending retry will run the seat again: keep waiting" 1 "h"
+
+gen gretrydone <<'PY'
+write(D, objecting(), status(runs=[run_rec("docs", "r-docs")],
+                             retries=[retry_rec("docs", state="exhausted", reason="failed"),
+                                      retry_rec("core")]))
+PY
+run gretrydone FS_HOOK_MESSAGE=m003
+expect "an exhausted retry, or another seat's, does not hold the author" 0 "g"
+
+gen gtwo <<'PY'
+e = export([root(), msg(2, "@tests", "Changes-requested: the loop leaks.", sha=A, ver=1)])
+write(D, e, status(runs=[run_rec("docs", "r-docs")]))
+PY
+run gtwo
+expect "one waiting seat silent, the other never ran: keep waiting" 1 "h" \
+    "@core (silent)" "@docs (silent)"
+
+gen gpositive <<'PY'
+e = export([root(), reviewed(2, "@core"), reviewed(3, "@tests")])
+write(D, e, status(runs=[run_rec("docs", "r-docs")]))
+PY
+run gpositive FS_HOOK_MESSAGE=m003
+expect "no seat objects: the author has nothing to answer, keep waiting" 1 "h"
+
 printf '\n== escalate: the effective roster ==\n'
 gen esc <<'PY'
 # The root's panel is core/tests/docs; the human's push escalated in
@@ -304,7 +423,7 @@ write(D, export([root(), upstream(2, D1, mode="escalate",
       status())
 PY
 run esc FS_HOOK_MESSAGE=m003
-expect "an escalated-in seat's reply is reviewer chatter, not rule d" 1 "g" \
+expect "an escalated-in seat's reply is reviewer chatter, not rule d" 1 "h" \
     "@core (silent)" "@tests (silent)" "@docs (silent)"
 
 printf '\n== carry and recheck versions ==\n'
@@ -321,7 +440,7 @@ e = [root(sha=F, body=ROOT_BODY.replace("f" * 40, F)),
 write(D, export(e), status(sha=D1, ver=2))
 PY
 run re FS_HOOK_MESSAGE=m040
-expect "recheck version: only the listed seat is waited on" 1 "g" "@core (stale)"
+expect "recheck version: only the listed seat is waited on" 1 "h" "@core (stale)"
 case "$ERR" in
     *@tests*|*@docs*) no "carried seats are not named as waited on" "$ERR" ;;
     *) ok "carried seats are not named as waited on" ;;

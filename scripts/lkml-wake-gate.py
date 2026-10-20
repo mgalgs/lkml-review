@@ -42,7 +42,8 @@ green this tooling exists to avoid.
 The seat states come from the SIBLING lkml-panel-state.py, run as a
 subprocess (argv list, no shell, 20 s timeout). It is the single
 authority on what a seat's verdict is; nothing of its logic is copied
-here. This script only reads the export to find the trigger message.
+here. This script reads the export only to find the trigger message,
+and the status only for rule g's runs[] and retries[].
 
 Rules, in order; the first match decides, and every path prints exactly
 one "lkml-wake-gate: ..." line on stderr naming the decision and rule:
@@ -63,7 +64,15 @@ one "lkml-wake-gate: ..." line on stderr naming the decision and rule:
        panel-state reports as carried forward is a verdict, so a recheck
        version waits only on the seats it listed and a carry version on
        nobody)
-    g  otherwise                                  -> exit 1
+    g  some seat is blocking or question, and every seat still waiting
+       ran on the current target and went silent  -> exit 0
+       (the postmaster status's runs[]: the seat's newest harvested run
+       with review_target_sha = the target sha posted replies == 0, it
+       has no live run there, and no retries[] entry of state pending.
+       Waiting on it would strand the author: nothing else will reply.
+       A waiting seat with no run at the target sha keeps the author
+       waiting)
+    h  otherwise                                  -> exit 1
        (some seat is still stale or silent)
 
 Python 3 stdlib only.
@@ -79,6 +88,7 @@ TIMEOUT = 20
 REQUIRED = ("FS_HOOK_AGENT", "FS_HOOK_MESSAGE",
             "FS_HOOK_EXPORT_FILE", "FS_HOOK_STATUS_FILE")
 ANSWERED = frozenset(("positive", "overruled", "blocking", "question"))
+OBJECTING = frozenset(("blocking", "question"))
 
 
 class Done(Exception):
@@ -129,6 +139,43 @@ def find_trigger(export_file, message_id):
     raise fail("trigger message %s is not in the export" % message_id)
 
 
+def read_status(status_file):
+    try:
+        with open(status_file) as f:
+            status = json.load(f)
+    except (OSError, ValueError) as e:
+        raise fail("cannot read the status %s: %s" % (status_file, e))
+    if not isinstance(status, dict):
+        raise fail("the status %s is not an object" % status_file)
+    return status
+
+
+def bare(name):
+    return str(name or "").strip().lstrip("@")
+
+
+def silent_run(status, seat, sha):
+    """The run id of seat's newest harvested, zero-reply run at sha, or
+    None when the seat may still reply there."""
+    name = bare(seat)
+    for r in status.get("retries") or []:
+        if (isinstance(r, dict) and bare(r.get("agent")) == name
+                and r.get("state") == "pending"):
+            return None
+    runs = [r for r in status.get("runs") or []
+            if isinstance(r, dict) and bare(r.get("agent")) == name
+            and r.get("review_target_sha") == sha]
+    if not runs or any(r.get("state") != "harvested" for r in runs):
+        return None
+    # ISO-8601 UTC strings order correctly as text; a record from before
+    # harvested_at existed sorts first and so never decides.
+    newest = max(runs, key=lambda r: str(r.get("harvested_at") or ""))
+    replies = newest.get("replies")
+    if isinstance(replies, bool) or replies != 0:
+        return None
+    return newest.get("run_id") or "?"
+
+
 def has_header(msg, name):
     want = name.lower()
     headers = msg.get("headers")
@@ -174,9 +221,19 @@ def decide(env):
     if not waiting:
         raise Done(0, "wake: every reviewer has answered "
                       "the current version (rule f)")
+    waiting.sort(key=lambda s: str(s.get("seat")))
+    if any(s.get("state") in OBJECTING for s in seats):
+        status = read_status(env["FS_HOOK_STATUS_FILE"])
+        silent = [(s, silent_run(status, s.get("seat"), target["sha"]))
+                  for s in waiting]
+        if all(rid for _, rid in silent):
+            names = ", ".join("%s (run %s)" % (s.get("seat"), rid)
+                              for s, rid in silent)
+            raise Done(0, "wake: a reviewer objects and every waiting seat "
+                          "ran silent on the target: %s (rule g)" % names)
     names = ", ".join("%s (%s)" % (s.get("seat"), s.get("state"))
-                      for s in sorted(waiting, key=lambda s: str(s.get("seat"))))
-    raise Done(1, "defer %s: waiting on %s (rule g)" % (agent, names))
+                      for s in waiting)
+    raise Done(1, "defer %s: waiting on %s (rule h)" % (agent, names))
 
 
 def main(argv):
