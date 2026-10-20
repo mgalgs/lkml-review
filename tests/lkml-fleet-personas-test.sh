@@ -1039,6 +1039,22 @@ for hdr in X-Lkml-Suite-Source X-Lkml-Question-Timeout X-Lkml-CI-Status X-Lkml-C
 done
 has "$cluster_doc" 'Nothing wakes a thread when an operator question times out' "docs: the no-timer limit is named"
 
+# fork-sandbox skips a malformed reply and flags the thread; it does not
+# respawn the seat. A persona that promises a retry tells the seat its
+# broken stanza is recoverable when it is not.
+if respawn_files="$(grep -rlE 'respawns? the seat' "$personas_dir")"; then
+    no "no persona promises a respawn after a malformed reply" "$respawn_files"
+else
+    ok "no persona promises a respawn after a malformed reply"
+fi
+stanza_count="$(grep -rlF 'nothing retries. A complete review in a broken stanza' "$personas_dir" | wc -l)"
+check_count="$(grep -rlF 'A complete review in a broken stanza' "$personas_dir" | wc -l)"
+if (( stanza_count == check_count && check_count > 0 )); then
+    ok "every persona with the stanza warning says nothing retries"
+else
+    no "every persona with the stanza warning says nothing retries" "$stanza_count of $check_count"
+fi
+
 # Contract header names: exactly nine X-Lkml-* names appear in fleet/, so
 # a typo'd header never ships, and push modes / tier focus live only in
 # the personas that own them.

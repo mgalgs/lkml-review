@@ -176,7 +176,7 @@ Hard constraints on the stanza:
 
 A malformed stanza is not degraded, it is **discarded entirely**: the
 router harvests zero replies, flags the thread for the operator, and
-respawns the seat. A complete review in a broken stanza is a review
+nothing retries. A complete review in a broken stanza is a review
 that never happened. Check your stanza before you finish.
 
 A correct file:
