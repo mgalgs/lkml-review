@@ -1505,6 +1505,28 @@ for focus_flag in --host-alias --seat-resources; do
     refused "a focused template with $focus_flag" "fork-sandbox mail grant"
 done
 
+printf '\n== --services-env: forwarded to the cover only, refused with --remote ==\n'
+kick "${kick_base[@]}" --seat-resources '@tests=cpu=2' \
+    --services-env 'SVC_MODE=preview' --services-env 'SVC_SLOT=slot-07' --patches --send
+check "--send with --services-env exits 0" "0" "$k_rc"
+contains "the sent cover carries --services-env, repeated in order, after the other grants" \
+    "$(grep -m1 -- '^mail send' <<<"$k_argv")" \
+    "--seat-resources @tests=cpu=2 --services-env SVC_MODE=preview --services-env SVC_SLOT=slot-07 --subject"
+case "$(grep -- '^mail reply' <<<"$k_argv")" in
+    *"--services-env"*) no "no per-patch reply carries --services-env" "$k_argv" ;;
+    *) ok "no per-patch reply carries --services-env" ;;
+esac
+kick "${kick_base[@]}" --services-env 'SVC_MODE=preview'
+contains "the printed cover carries --services-env" "$k_out" "--services-env SVC_MODE=preview"
+kick "${kick_base[@]}" --send --services-env
+refused "--services-env with no value" "--services-env requires a value"
+kick "${kick_base[@]}" --remote --services-env 'SVC_MODE=preview' --send
+refused "--services-env with --remote" "--remote and --services-env cannot be combined"
+kick "${kick_base[@]}" --remote --services-env 'SVC_MODE=preview'
+refused "--services-env with --remote, print-only" "--remote and --services-env cannot be combined"
+kick "${kick_base[@]}" --focus 'patch 2 only' --template "$focused_template" --services-env 'SVC_MODE=preview' --send
+refused "a focused template with --services-env" "fork-sandbox mail grant"
+
 printf '\n== --no-grant refuses against the grant flags ==\n'
 kick "${kick_base[@]}" --no-grant --allow-namespace example-ns --send
 refused "--no-grant with --allow-namespace" "cannot be combined"

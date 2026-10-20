@@ -88,6 +88,8 @@ the mail API; the client reads `FORK_SANDBOX_MAIL_API_URL` and
 `--context-secret`) attach to the new
 thread, as do `--no-grant` (open the thread with no environment; refused with
 any grant flag) and `--budget <n>` (the thread's own cap on seat spawns).
+`--services-env KEY=VALUE` stores a services-hook setting on the thread for
+its local seats (refused with `--remote`).
 `--header` adds headers of the caller's own; the headers the mail
 layer or this script owns are refused. `lkml-fleet-kickoff.sh --help` has
 the full rules.
