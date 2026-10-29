@@ -34,7 +34,7 @@ The kickoff mail is the thread root. Its body opens with the roster, one key
 per line:
 
     Author: @pr-author
-    Panel: @architecture, @core, @docs, @newcomer, @security, @tests
+    Panel: @architecture, @core, @devils-advocate, @docs, @newcomer, @operability, @second-opinion, @security, @tests
     Secretary: @secretary
     Version-Limit: 4
     Frozen-Head: <40-hex sha of the PR's head>
@@ -110,7 +110,7 @@ instead; see "Suite source, CI results and operator questions".
 
 ### Sizing the panel
 
-Not every PR needs six reviewers. Sizing is the caller's job: whatever kicks
+Not every PR needs nine reviewers. Sizing is the caller's job: whatever kicks
 off the panel picks a **tier** (`quick`, `standard` or `full`) and the
 roster that goes with it, and passes them to `lkml-fleet-kickoff.sh` as the
 roster flags, `--header "X-Lkml-Tier: <tier>"`, `--header
@@ -542,6 +542,16 @@ agents:
     review-target: follow        # reads code only; no grant needed
   # architecture, newcomer and security follow the same shape as docs,
   # with grant: required on any seat that must reach the preview environment.
+  # devils-advocate keeps claude/opus from its frontmatter, like core.
+  # operability and second-opinion are pi in their frontmatter but name no
+  # model, so the fleet entry supplies the model and the endpoint.
+  operability:
+    model: example-coder-medium
+    network: pinned
+    backend: k8s
+    endpoint: gpu-pool-a
+    review-target: follow
+  # second-opinion: the same shape as operability.
   # author, ci and distiller are not on the roster; see below.
   author:
     harness: pi
@@ -580,10 +590,13 @@ What each key does here:
   subscription.
 
 The fleet entry wins over the persona frontmatter field by field, and it
-cannot unset a field. Every persona except `ci` names `harness: claude`,
-with `model: opus` for the author, core, security and secretary and
-`sonnet` for the rest. So a seat moved to pi must name a model its endpoint
-serves, or it inherits a claude model name.
+cannot unset a field. `ci`, `operability` and `second-opinion` name
+`harness: pi` and no model; every other persona names `harness: claude`,
+with `model: opus` for the authors, core, devils-advocate, security and
+secretary and `sonnet` for the rest. So a seat moved to pi must name a
+model its endpoint serves, or it inherits a claude model name; and a pi
+persona with no model gets both its `model` and its `endpoint` from the
+fleet entry, or it has nothing to run on.
 
 A claude seat in the cluster needs a claude credential installed with the
 postmaster. See "Claude seats in a cluster postmaster" in fork-sandbox's

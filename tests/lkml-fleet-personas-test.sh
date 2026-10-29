@@ -66,6 +66,26 @@ else
     no "core resolves thinking=high" "got '$core_thinking'"
 fi
 
+# The pi reviewers name the harness and nothing else: which model and
+# endpoint they run on is site config, carried by the fleet entry. A
+# model in the frontmatter would pin a backend into a public persona.
+for name in operability second-opinion; do
+    resolved="$(fork-sandbox fleet resolve "$name" 2>&1)"
+    harness="$(sed -n '1p' <<<"$resolved")"
+    model="$(sed -n '2p' <<<"$resolved")"
+    if [[ "$harness" == "pi" && -z "$model" ]]; then
+        ok "$name resolves harness=pi with no model"
+    else
+        no "$name resolves harness=pi with no model" "got harness '$harness', model '$model'"
+    fi
+done
+da="$(fork-sandbox fleet resolve devils-advocate 2>&1 | sed -n '1,3p' | tr '\n' ' ')"
+if [[ "$da" == "claude opus high " ]]; then
+    ok "devils-advocate resolves claude/opus/thinking=high"
+else
+    no "devils-advocate resolves claude/opus/thinking=high" "got '$da'"
+fi
+
 # The ci persona's suite source is a two-path contract: an executable
 # .agents/ci/run-tests at the repo root wins (the repo's own statement
 # of how to run its whole suite); otherwise the persona falls back to
@@ -154,10 +174,10 @@ for f in "$personas_dir"/*.md; do
         no "$name's Reply format section matches $baseline_name's" "section text diverges"
     fi
 done
-if (( count == 11 )); then
-    ok "fleet/personas holds exactly eleven personas"
+if (( count == 14 )); then
+    ok "fleet/personas holds exactly fourteen personas"
 else
-    no "fleet/personas holds exactly eleven personas" "found $count"
+    no "fleet/personas holds exactly fourteen personas" "found $count"
 fi
 if [[ -n "$baseline" && -n "${pr_author_reply_format:-}" ]]; then
     if [[ "$pr_author_reply_format" == "$baseline"* ]]; then
@@ -264,7 +284,7 @@ has "$personas_dir/author.md" 'Your lane is the whole series' \
 # by mirroring the kickoff's own Cc, plus a map sent To: @panel that
 # spawned the whole panel before wave one's promised ordering had
 # played out. The Addressing the distiller section is the fix, pinned
-# the same way as Triage: present and byte-identical across the nine
+# the same way as Triage: present and byte-identical across the thirteen
 # non-distiller personas, and absent from distiller.md, which carries
 # the opposite-direction rule instead.
 extract_addressing_distiller() {
@@ -306,14 +326,14 @@ for f in "$personas_dir"/*.md; do
         no "$name's Addressing the distiller section matches $addressing_baseline_name's" "section text diverges"
     fi
 done
-if (( addressing_count == 10 )); then
-    ok "Addressing the distiller section appears in exactly the ten non-distiller personas"
+if (( addressing_count == 13 )); then
+    ok "Addressing the distiller section appears in exactly the thirteen non-distiller personas"
 else
-    no "Addressing the distiller section appears in exactly the ten non-distiller personas" "found in $addressing_count"
+    no "Addressing the distiller section appears in exactly the thirteen non-distiller personas" "found in $addressing_count"
 fi
 
-# The byte-identity comparison above only proves the nine copies agree
-# with each other -- it would pass just as green if all nine were
+# The byte-identity comparison above only proves the thirteen copies agree
+# with each other -- it would pass just as green if all thirteen were
 # edited to say nothing at once. Pin the load-bearing content itself,
 # the same way the Reply format and Triage sections are backed by
 # content assertions above, not just mutual comparison.
@@ -424,7 +444,7 @@ else
     ok "author.md no longer instructs inlining the whole series into one reply"
 fi
 
-# The six reviewer seats carry one byte-identical section on who hears
+# The nine reviewer seats carry one byte-identical section on who hears
 # their review and what verdict they cast. The panel protocol has no
 # orchestrator: the author acts only once every Panel seat has replied on
 # the current version, so a reviewer that does not reply -- or replies
@@ -436,7 +456,7 @@ extract_verdict_section() {
          f && /^## / { exit }
          f { print }' "$1"
 }
-reviewers="architecture core docs newcomer security tests"
+reviewers="architecture core devils-advocate docs newcomer operability second-opinion security tests"
 verdict_baseline=""
 for name in $reviewers; do
     f="$personas_dir/$name.md"
@@ -894,7 +914,7 @@ for f in skills/lkml-mode/personas/author.md skills/lkml-mode/personas/pr-author
 done
 
 # Tier focus and recheck scope: the same byte-identical section in the
-# six reviewers, right before the verdict section, and in no one else.
+# nine reviewers, right before the verdict section, and in no one else.
 # Needles are matched on the flattened section so they may span a wrap.
 extract_tier_scope() {
     awk '/^## Tier focus and recheck scope$/{ f = 1; print; next }
@@ -1072,10 +1092,10 @@ else
     no "push modes appear only in pr-author.md and secretary.md" "got: $push_files"
 fi
 focus_files="$(grep -rlF 'tier-focus.md' "$repo_dir/fleet" | xargs -n1 basename | sort | tr '\n' ' ')"
-if [[ "$focus_files" == 'architecture.md core.md docs.md newcomer.md pr-review.md security.md tests.md ' ]]; then
-    ok "tier-focus.md appears only in the six reviewers and the pr-review kickoff"
+if [[ "$focus_files" == 'architecture.md core.md devils-advocate.md docs.md newcomer.md operability.md pr-review.md second-opinion.md security.md tests.md ' ]]; then
+    ok "tier-focus.md appears only in the nine reviewers and the pr-review kickoff"
 else
-    no "tier-focus.md appears only in the six reviewers and the pr-review kickoff" "got: $focus_files"
+    no "tier-focus.md appears only in the nine reviewers and the pr-review kickoff" "got: $focus_files"
 fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

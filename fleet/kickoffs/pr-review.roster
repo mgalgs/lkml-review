@@ -1,6 +1,6 @@
 # Default roster for fleet/kickoffs/pr-review.md.
 AUTHOR=@pr-author
-PANEL=@architecture,@core,@docs,@newcomer,@security,@tests
+PANEL=@architecture,@core,@devils-advocate,@docs,@newcomer,@operability,@second-opinion,@security,@tests
 SECRETARY=@secretary
 VERSION_LIMIT=4
 SUITE_SEATS=@tests

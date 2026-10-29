@@ -2117,10 +2117,10 @@ kick "${rkick[@]}" --template "$real_dir/pr-review.md" --review-target "$rt_arg"
 check "the shipped pr-review.roster is accepted by the kickoff parser" "0" "$k_rc"
 real_body="$(cat "$(grep -o -- '--body [^ ]*' <<<"$k_out" | awk '{print $2}')" 2>/dev/null)"
 contains "the shipped roster's author" "$real_body" "Author: @pr-author"
-contains "the shipped roster's panel" "$real_body" "Panel: @architecture, @core, @docs, @newcomer, @security, @tests"
+contains "the shipped roster's panel" "$real_body" "Panel: @architecture, @core, @devils-advocate, @docs, @newcomer, @operability, @second-opinion, @security, @tests"
 contains "the shipped roster's secretary" "$real_body" "Secretary: @secretary"
 contains "the shipped roster's version limit" "$real_body" "Limit: 4"
-contains "the shipped roster stamps its panel as X-Seats" "$k_out" 'X-Seats:\ @architecture\,\ @core\,\ @docs\,\ @newcomer\,\ @security\,\ @tests'
+contains "the shipped roster stamps its panel as X-Seats" "$k_out" 'X-Seats:\ @architecture\,\ @core\,\ @devils-advocate\,\ @docs\,\ @newcomer\,\ @operability\,\ @second-opinion\,\ @security\,\ @tests'
 
 printf '\n== kickoff templates keep the no-attachment guard on the author reply ==\n'
 # A wake's harvested reply carries no attachment path (the postmaster
