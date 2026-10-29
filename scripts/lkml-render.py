@@ -5,6 +5,7 @@ single-file HTML page, or as plain text for agents.
 Usage: lkml-render.py <series-dir> [<series-dir> ...] > out.html
        lkml-render.py --text <series-dir> [<series-dir> ...] > out.txt
        lkml-render.py --text --version N <series-dir> > out.txt
+       lkml-render.py --export-dir DIR <series-dir> [<series-dir> ...]
 
 The HTML is one file: all markup and styles are inlined. The only
 external dependency is the typefaces, loaded from the Google Fonts
@@ -80,6 +81,23 @@ its age and, past the root's X-Lkml-Question-Timeout, 'timed out'. Both
 are facts read from the mail; the contract is in docs/cluster-panel.md.
 A fleet thread with a question to @operator gains that line even with no
 other new header; otherwise the render is unchanged.
+
+--export-dir DIR is the per-message view, the way a plain-text mail
+client exports a thread, and a stable interface like --text and the
+lkml-thread/1 block. It writes DIR/<short-id>.txt for every message
+(short id: the first 8 characters of the Message-ID; two messages that
+share one both fall back to the full id) and a mutt-style DIR/index.txt
+-- index-<series>.txt per series when given several -- with one line per
+message in --text order: file id, UTC date, sender, verdict tags, and
+the subject indented by reply depth. A message file is its header block
+(From, To and Cc when present, Date, Subject, Message-ID, In-Reply-To
+when present, Verdict when it carries tags), a blank line, then every
+ancestor up to the root quoted parent first, one more '>' per level,
+each with its From/Date/Subject, then a blank line and the message's own
+body. Bodies follow --text's rules ([PATCH] bodies cut at the first diff
+--git line), and a body cannot forge a header: the header block ends at
+the first blank line and every quoted line is prefixed. Thread selection
+and the coverage refusal are --text's own.
 
 --text --version N restricts the render to one version's own section
 (exactly what the whole-series --text render prints for that version,
@@ -242,7 +260,7 @@ def read_msg(path, attachment_root):
         "model": hdr.get("X-AI-Model", ""), "version": int(hdr.get("X-Version", "1") or 1),
         "depth": int(hdr.get("X-Depth", "0") or 0), "tags": tags, "body": body,
         "attachments": rendered_attachments,
-        "children": [],
+        "children": [], "headers": hdr,
     }
 
 
@@ -641,6 +659,7 @@ def read_fleet_msg(path, seq, attachment_root):
         "x_ci_head": hdr.get("X-Lkml-CI-Head"),
         "x_ci_url": hdr.get("X-Lkml-CI-Url"),
         "x_ci_from": ci_from,
+        "headers": hdr,
     }
 
 
@@ -2732,6 +2751,154 @@ def render_thread_json_block(series_list, rendered_at):
     return f'<script type="application/json" id="lkml-thread">{raw}</script>'
 
 
+# A message or series name used as an --export-dir file name: no path
+# separator, no leading dot, nothing a shell or a reader would trip on.
+EXPORT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+
+
+def export_thread(series_dir, assume_root_version=None):
+    """One series dir's messages for --export-dir, as (message, depth)
+    pairs in --text order: compute_version_sections' selection, walked
+    the way render_text_version_lines numbers it (pre-order from each
+    version's roots, stopping at every other version's cover), depth
+    the same 'depth N' --text prints. Refuses a dropped message the
+    same way --text does. Returns (name, msgs, order)."""
+    name, msgs, versions, version_data, fleet_cover_ids, rendered_ids = \
+        compute_version_sections(series_dir, assume_root_version)
+    require_full_coverage(series_dir, msgs, rendered_ids)
+    order = []
+
+    def walk(m, depth):
+        order.append((m, depth))
+        for c in m["children"]:
+            if c["id"] not in fleet_cover_ids:
+                walk(c, depth + 1)
+
+    for v in versions:
+        for root in version_data[v]["version_roots"]:
+            walk(root, 0)
+    return name, msgs, order
+
+
+def export_sender(m):
+    """The index's sender column: the persona slug, else the From:
+    name part -- the same choice message_json makes for 'from'."""
+    return m["persona"] or m["from"].split(" (AI persona)")[0].split(" <")[0]
+
+
+def export_message(m, msgs):
+    """One message as a mutt-style plain-text export: its own header
+    block, a blank line, its ancestors quoted parent first (one more
+    '>' per level, each with its From/Date/Subject), a blank line, then
+    its body. Bodies are text_body's, so a [PATCH] body is cut at its
+    first diff --git line whether it is the message or a quote. A body
+    cannot forge a header: the header block ends at the first blank
+    line, and every quoted line carries its '>' prefix."""
+    h = m["headers"]
+
+    def hv(k):
+        return h.get(k, "").strip()
+
+    out = [f"From: {hv('From')}"]
+    for k in ("To", "Cc"):
+        if hv(k):
+            out.append(f"{k}: {hv(k)}")
+    out += [f"Date: {hv('Date')}", f"Subject: {hv('Subject')}",
+            f"Message-ID: {hv('Message-ID')}"]
+    if hv("In-Reply-To"):
+        out.append(f"In-Reply-To: {hv('In-Reply-To')}")
+    if m["tags"]:
+        out.append("Verdict: " + ", ".join(m["tags"]))
+    out.append("")
+    # The structural parent chain (a fleet patch posted as its cover's
+    # sibling is re-parented under the cover by build_fleet_layout),
+    # guarded against a cycle the coverage check would not see here.
+    quoted = []
+    seen = {m["id"]}
+    p = msgs.get(m["parent"]) if m["parent"] else None
+    while p is not None and p["id"] not in seen:
+        seen.add(p["id"])
+        q = ">" * (len(quoted) + 1)
+        ph = p["headers"]
+        block = [f"{q} {k}: {ph.get(k, '').strip()}" for k in ("From", "Date", "Subject")]
+        body = text_body(p)
+        if body:
+            block.append(q)
+            block += [f"{q} {ln}" if ln else q for ln in body.split("\n")]
+        quoted.append(block)
+        p = msgs.get(p["parent"]) if p["parent"] else None
+    if quoted:
+        for i, block in enumerate(quoted):
+            if i:
+                out.append(">" * i)
+            out += block
+        out.append("")
+    body = text_body(m)
+    if body:
+        out.append(body)
+    return "\n".join(out).rstrip("\n") + "\n"
+
+
+def export_index(order, file_ids):
+    """The mutt-style index: one line per message in thread order --
+    file id, UTC date, sender, verdict tags, then the subject indented
+    two spaces per reply depth. Columns are padded to the widest entry;
+    the verdict column is left out when no message carries one."""
+    rows = []
+    for m, depth in order:
+        iso = utc_iso(m["date"])
+        date = iso[:16].replace("T", " ") if iso else "-"
+        rows.append((file_ids[m["id"]], date, export_sender(m), ", ".join(m["tags"]),
+                     "  " * depth + m["subject"]))
+    widths = [max((len(r[i]) for r in rows), default=0) for i in range(4)]
+    lines = []
+    for r in rows:
+        cells = [r[i].ljust(widths[i]) for i in range(4) if widths[i]] + [r[4]]
+        lines.append("  ".join(cells).rstrip())
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def export_dirs(series_dirs, out_dir, assume_root_version=None):
+    """--export-dir: every message of every series dir as
+    <short-id>.txt in out_dir, plus one index per series (index.txt for
+    one dir, index-<series>.txt for several). A short id (the first 8
+    characters of the Message-ID) that two exported messages share
+    falls back to the full id for both, so no file is overwritten. All
+    files are built before any is written: a series that fails to
+    render leaves nothing half-exported."""
+    threads = [export_thread(d, assume_root_version) for d in series_dirs]
+    seen_ids = {}
+    for (name, _msgs, order), d in zip(threads, series_dirs):
+        for m, _depth in order:
+            if m["id"] in seen_ids:
+                raise ValueError(f"{d}: message {m['id']} is also in {seen_ids[m['id']]}; "
+                                 "cannot export both to one directory")
+            seen_ids[m["id"]] = d
+    shorts = {}
+    for mid in seen_ids:
+        shorts[mid[:8]] = shorts.get(mid[:8], 0) + 1
+    file_ids = {mid: mid[:8] if shorts[mid[:8]] == 1 else mid for mid in seen_ids}
+    for mid, fid in file_ids.items():
+        if not EXPORT_NAME_RE.match(fid) or fid == "index" or fid.startswith("index-"):
+            raise ValueError(f"{seen_ids[mid]}: message id {mid!r} cannot name an export file")
+    files = {}
+    names = [t[0] for t in threads]
+    for name, msgs, order in threads:
+        if len(threads) == 1:
+            index_name = "index.txt"
+        else:
+            if not EXPORT_NAME_RE.match(name) or names.count(name) > 1:
+                raise ValueError(f"series name {name!r} cannot name a distinct index file")
+            index_name = f"index-{name}.txt"
+        files[index_name] = export_index(order, file_ids)
+        for m, _depth in order:
+            files[file_ids[m["id"]] + ".txt"] = export_message(m, msgs)
+    os.makedirs(out_dir, exist_ok=True)
+    for fn, text in files.items():
+        with open(os.path.join(out_dir, fn), "w", encoding="utf-8") as f:
+            f.write(text)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("series_dirs", nargs="+", metavar="SERIES_DIR",
@@ -2756,7 +2923,18 @@ def main(argv=None):
                              "that version's own section, plus, when any exist, "
                              "the late-replies block for messages filed on an "
                              "earlier version's thread during vN's window")
+    parser.add_argument("--export-dir", metavar="DIR",
+                        help="write every message as DIR/<short-id>.txt (mutt-style "
+                             "headers, ancestors quoted with '>', then the body) "
+                             "plus a thread index, DIR/index.txt (index-<series>.txt "
+                             "per series when given several)")
     args = parser.parse_args(argv)
+    if args.export_dir is not None:
+        # Its own backend: files in DIR, nothing on stdout.
+        if args.text or args.output or args.version is not None:
+            parser.error("--export-dir cannot be combined with --text, --version or -o/--output")
+        export_dirs(args.series_dirs, args.export_dir, args.assume_root_version)
+        return
     if args.version is not None and not args.text:
         parser.error("--version is only valid with --text")
     if args.text:

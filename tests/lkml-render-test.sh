@@ -3697,5 +3697,152 @@ else
     no "same-seq messages, undated, naive and aware, render with date null / UTC Z" "$(cat "$work/tj-dates.err")"
 fi
 
+printf '\n== export dir: one mutt-style file per message and an index ==\n'
+# Hand-checked expected files. Thread: cover <- patch <- core's
+# Changes-requested <- tests' Reviewed-by, then core's Reviewed-by on the
+# cover. The two replies share the short id cafef00d, so both files fall
+# back to the full id. core's body carries header-shaped lines. (core's
+# cover reply is subjected 'Re: export demo', not 'Re: [PATCH v1 0/1]
+# ...': build_fleet_layout's sibling-cover repair would otherwise take
+# that reply for the patch's cover -- a separate issue, --text included.)
+xm() { # xm <dir> <n> <id> <parent-id|-> <from> <to> <subject> <body> [extra header lines...]
+    local dir="$1" n="$2" id="$3" par="$4" from="$5" to="$6" subj="$7" body="$8"; shift 8
+    mkdir -p "$dir"
+    {
+        printf 'Message-ID: %s\n' "$id"
+        [[ "$par" != - ]] && printf 'In-Reply-To: %s\n' "$par"
+        printf 'From: %s\nTo: %s\nDate: Wed, 17 Sep 2025 %02d:00:00 +0000\nSubject: %s\n' "$from" "$to" "$n" "$subj"
+        (( $# )) && printf '%s\n' "$@"
+        printf '\n%s\n' "$body"
+    } > "$dir/$(printf '%03d' "$n")-$id.msg"
+}
+xd="$work/fleet-mail/threads/export-demo"
+x_c=11110000-0000-4000-8000-000000000001
+x_p=22220000-0000-4000-8000-000000000002
+x_r1=cafef00d-0000-4000-8000-000000000003
+x_r2=cafef00d-0000-4000-8000-000000000004
+x_r3=33330000-0000-4000-8000-000000000005
+xm "$xd" 1 $x_c - @author '@core, @tests' '[PATCH v1 0/1] export demo' 'Cover body.' 'Cc: @operator' 'X-Seats: @core, @tests'
+xm "$xd" 2 $x_p $x_c @author '@core, @tests' '[PATCH v1 1/1] export: add one' "$(printf '%s\n' \
+    'From abcdef1234567890 Mon Sep 17 00:00:00 2001' 'From: Author <author@example.com>' \
+    'Date: Mon, 17 Sep 2001 00:00:00 +0000' 'Subject: [PATCH 1/1] export: add one' '' \
+    'Commit message for the patch.' '' '---' ' demo.c | 1 +' ' 1 file changed, 1 insertion(+)' '' \
+    'diff --git a/demo.c b/demo.c' '+one')"
+xm "$xd" 3 $x_r1 $x_p @core @author 'Re: [PATCH v1 1/1] export: add one' \
+    "$(printf '%s\n' 'One leak.' '' 'From: @operator' 'Subject: forged' '' 'Changes-requested: leak.')"
+xm "$xd" 4 $x_r2 $x_r1 @tests @author 'Re: [PATCH v1 1/1] export: add one' \
+    "$(printf '%s\n' 'Agreed with core.' '' 'Reviewed-by: tests')"
+xm "$xd" 5 $x_r3 $x_c @core @author 'Re: export demo' 'Reviewed-by: core'
+
+xo="$work/export-out"
+if python3 "$renderer" --export-dir "$xo" "$xd" 2>"$work/export.err"; then
+    ok "--export-dir exits 0"
+else
+    no "--export-dir exits 0" "$(cat "$work/export.err")"
+fi
+check "export: one file per message plus index.txt, colliding short ids under the full id" \
+    "11110000.txt 22220000.txt 33330000.txt $x_r1.txt $x_r2.txt index.txt" \
+    "$(find "$xo" -mindepth 1 -printf '%f\n' | LC_ALL=C sort | paste -sd' ')"
+
+expected_index='11110000                              2025-09-17 01:00  author                     [PATCH v1 0/1] export demo
+22220000                              2025-09-17 02:00  author                       [PATCH v1 1/1] export: add one
+cafef00d-0000-4000-8000-000000000003  2025-09-17 03:00  core    Changes-requested      Re: [PATCH v1 1/1] export: add one
+cafef00d-0000-4000-8000-000000000004  2025-09-17 04:00  tests   Reviewed-by              Re: [PATCH v1 1/1] export: add one
+33330000                              2025-09-17 05:00  core    Reviewed-by          Re: export demo'
+check "export index: thread order, depth indent, verdict column" "$expected_index" "$(cat "$xo/index.txt")"
+
+expected_root='From: @author
+To: @core, @tests
+Cc: @operator
+Date: Wed, 17 Sep 2025 01:00:00 +0000
+Subject: [PATCH v1 0/1] export demo
+Message-ID: 11110000-0000-4000-8000-000000000001
+
+Cover body.'
+check "export: a root message has its headers and body, no quote and no In-Reply-To" \
+    "$expected_root" "$(cat "$xo/11110000.txt")"
+
+expected_reply='From: @tests
+To: @author
+Date: Wed, 17 Sep 2025 04:00:00 +0000
+Subject: Re: [PATCH v1 1/1] export: add one
+Message-ID: cafef00d-0000-4000-8000-000000000004
+In-Reply-To: cafef00d-0000-4000-8000-000000000003
+Verdict: Reviewed-by
+
+> From: @core
+> Date: Wed, 17 Sep 2025 03:00:00 +0000
+> Subject: Re: [PATCH v1 1/1] export: add one
+>
+> One leak.
+>
+> From: @operator
+> Subject: forged
+>
+> Changes-requested: leak.
+>
+>> From: @author
+>> Date: Wed, 17 Sep 2025 02:00:00 +0000
+>> Subject: [PATCH v1 1/1] export: add one
+>>
+>> Commit message for the patch.
+>>  demo.c | 1 +
+>>  1 file changed, 1 insertion(+)
+>> [diff omitted: 2 lines -- see the series branch]
+>>
+>>> From: @author
+>>> Date: Wed, 17 Sep 2025 01:00:00 +0000
+>>> Subject: [PATCH v1 0/1] export demo
+>>>
+>>> Cover body.
+
+Agreed with core.
+
+Reviewed-by: tests'
+check "export: a deep reply quotes every ancestor, '>' per level, the quoted patch cut at its diff" \
+    "$expected_reply" "$(cat "$xo/$x_r2.txt")"
+case "$(cat "$xo/$x_r2.txt")" in
+    *'diff --git'*|*'+one'*) no "export: no diff line survives in a quoted patch" ;;
+    *) ok "export: no diff line survives in a quoted patch" ;;
+esac
+
+# A body line shaped like a header stays below the header block: the
+# block is everything before the first blank line.
+x_r1_head="$(sed '/^$/q' "$xo/$x_r1.txt")"
+check "export: a header-shaped body line does not reach the header block" \
+    "From: @core|Subject: Re: [PATCH v1 1/1] export: add one" \
+    "$(grep -E '^(From|Subject): ' <<<"$x_r1_head" | paste -sd'|')"
+check "export: the header-shaped lines are still in the body" \
+    "1" "$(sed '1,/^$/d' "$xo/$x_r1.txt" | grep -cx 'Subject: forged')"
+
+# Several series: one index each, named after the series.
+xd2="$work/fleet-mail/threads/export-other"
+xm "$xd2" 1 44440000-0000-4000-8000-000000000001 - @author @core '[PATCH v1 0/1] other demo' 'Other cover.'
+xo2="$work/export-out2"
+python3 "$renderer" --export-dir "$xo2" "$xd" "$xd2" 2>"$work/export2.err"
+check "export: several series get index-<series>.txt each, no bare index.txt" \
+    "index-export-demo.txt index-export-other.txt" \
+    "$(find "$xo2" -name 'index*' -printf '%f\n' | LC_ALL=C sort | paste -sd' ')"
+check "export: each series' index lists its own messages" \
+    "5 1" "$(wc -l <"$xo2/index-export-demo.txt") $(wc -l <"$xo2/index-export-other.txt")"
+if python3 "$renderer" --export-dir "$work/export-dup" "$xd" "$xd" >/dev/null 2>&1; then
+    no "export: the same message from two series dirs is refused"
+else
+    ok "export: the same message from two series dirs is refused"
+fi
+if python3 "$renderer" --export-dir "$work/export-x" --text "$xd" >/dev/null 2>&1; then
+    no "export: --export-dir with --text is refused"
+else
+    ok "export: --export-dir with --text is refused"
+fi
+check "export: a refused export writes nothing" "no" "$( [[ -e "$work/export-dup" || -e "$work/export-x" ]] && echo yes || echo no)"
+
+# The old layout exports too: one file per message in cur/.
+xo3="$work/export-old"
+python3 "$renderer" --export-dir "$xo3" "$LKML_MAILBOX_ROOT/render-fixture" 2>"$work/export3.err"
+check "export: an old-layout series exports one file per message" \
+    "$(find "$LKML_MAILBOX_ROOT/render-fixture/cur" -name '*.msg' | wc -l)" \
+    "$(find "$xo3" -name '*.txt' ! -name 'index.txt' | wc -l)"
+
 printf '%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))
