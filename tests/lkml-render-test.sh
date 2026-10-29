@@ -3701,10 +3701,9 @@ printf '\n== export dir: one mutt-style file per message and an index ==\n'
 # Hand-checked expected files. Thread: cover <- patch <- core's
 # Changes-requested <- tests' Reviewed-by, then core's Reviewed-by on the
 # cover. The two replies share the short id cafef00d, so both files fall
-# back to the full id. core's body carries header-shaped lines. (core's
-# cover reply is subjected 'Re: export demo', not 'Re: [PATCH v1 0/1]
-# ...': build_fleet_layout's sibling-cover repair would otherwise take
-# that reply for the patch's cover -- a separate issue, --text included.)
+# back to the full id. core's body carries header-shaped lines. core's
+# cover reply keeps the cover's '[PATCH v1 0/1]' subject, which must not
+# pass for the cover when the patch is placed under it.
 xm() { # xm <dir> <n> <id> <parent-id|-> <from> <to> <subject> <body> [extra header lines...]
     local dir="$1" n="$2" id="$3" par="$4" from="$5" to="$6" subj="$7" body="$8"; shift 8
     mkdir -p "$dir"
@@ -3732,7 +3731,7 @@ xm "$xd" 3 $x_r1 $x_p @core @author 'Re: [PATCH v1 1/1] export: add one' \
     "$(printf '%s\n' 'One leak.' '' 'From: @operator' 'Subject: forged' '' 'Changes-requested: leak.')"
 xm "$xd" 4 $x_r2 $x_r1 @tests @author 'Re: [PATCH v1 1/1] export: add one' \
     "$(printf '%s\n' 'Agreed with core.' '' 'Reviewed-by: tests')"
-xm "$xd" 5 $x_r3 $x_c @core @author 'Re: export demo' 'Reviewed-by: core'
+xm "$xd" 5 $x_r3 $x_c @core @author 'Re: [PATCH v1 0/1] export demo' 'Reviewed-by: core'
 
 xo="$work/export-out"
 if python3 "$renderer" --export-dir "$xo" "$xd" 2>"$work/export.err"; then
@@ -3748,7 +3747,7 @@ expected_index='11110000                              2025-09-17 01:00  author  
 22220000                              2025-09-17 02:00  author                       [PATCH v1 1/1] export: add one
 cafef00d-0000-4000-8000-000000000003  2025-09-17 03:00  core    Changes-requested      Re: [PATCH v1 1/1] export: add one
 cafef00d-0000-4000-8000-000000000004  2025-09-17 04:00  tests   Reviewed-by              Re: [PATCH v1 1/1] export: add one
-33330000                              2025-09-17 05:00  core    Reviewed-by          Re: export demo'
+33330000                              2025-09-17 05:00  core    Reviewed-by          Re: [PATCH v1 0/1] export demo'
 check "export index: thread order, depth indent, verdict column" "$expected_index" "$(cat "$xo/index.txt")"
 
 expected_root='From: @author

@@ -701,8 +701,11 @@ def build_fleet_layout(series_dir, assume_root_version=None):
         p = msgs.get(m["parent"]) if m["parent"] else None
         if not idx or idx[0] == 0 or p is None:
             continue
+        # patch_index_total strips Re:, so a reply to the cover matches
+        # (0, K) too; only the cover itself may adopt the patch.
         cover = next((s for s in p["children"]
                       if s is not m and s["version"] == m["version"]
+                      and not s["subject"].startswith("Re: ")
                       and patch_index_total(s["subject"]) == (0, idx[1])), None)
         if cover is None:
             continue
