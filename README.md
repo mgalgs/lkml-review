@@ -153,6 +153,15 @@ scheduling and reading are different jobs held by different sessions.
 | `lkml-fleet.sh` | fleet transport wrapper: selects lkml's personas and isolated optional fleet file, then passes its arguments to `fork-sandbox` |
 | `lkml-fleet-kickoff.sh` | Dogfood harness: formats a series and composes a kickoff mail for the fleet transport above; prints the `fork-sandbox mail send` command, or runs it with `--send`. `--ci-first <ci-addr>` addresses the kickoff to the CI seat alone so its reply is what wakes the panel — see `docs/ci-first-ordering.md`. `--seats <addr-list>` expands every address (seats and/or lists like `@panel`) and stamps the result as `X-Seats` on the cover — the panel `lkml-render.py` trusts for convergence |
 
+`lkml-render.py --export-dir DIR <series-dir>...` is the per-message
+counterpart of `--text`: a file per message, `DIR/<short-id>.txt`, laid
+out the way a plain-text mail client exports one — headers, then every
+ancestor up to the root quoted with one more `>` per level, then the
+body — plus a mutt-style `DIR/index.txt` (`index-<series>.txt` per
+series when given several) listing the thread with reply depth and
+verdicts. It uses `--text`'s thread order and body rules, and like
+`--text` it is a stable interface.
+
 ## Converging
 
 A series is converged when **every seated reviewer holds a positive
