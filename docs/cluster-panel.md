@@ -594,9 +594,13 @@ cannot unset a field. `ci`, `operability` and `second-opinion` name
 `harness: pi` and no model; every other persona names `harness: claude`,
 with `model: opus` for the authors, core, devils-advocate, security and
 secretary and `sonnet` for the rest. So a seat moved to pi must name a
-model its endpoint serves, or it inherits a claude model name; and a pi
-persona with no model gets both its `model` and its `endpoint` from the
-fleet entry, or it has nothing to run on.
+model its endpoint serves, or it inherits a claude model name. A pi
+persona with no model is where the fleet entry pins `model` and
+`endpoint` for the site. Without them, a `backend: k8s` seat falls back to
+the k8s install's defaults (`K8S_DEFAULT_ENDPOINT`, `K8S_DEFAULT_MODEL`)
+and to discovery of the single endpoint and the single model it serves.
+It fails only when those are ambiguous or unavailable. So pin them in the
+fleet entry rather than rely on whatever the install happens to serve.
 
 A claude seat in the cluster needs a claude credential installed with the
 postmaster. See "Claude seats in a cluster postmaster" in fork-sandbox's
