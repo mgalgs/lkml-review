@@ -52,9 +52,13 @@ templates, and a thin kickoff harness — not a transport of its own.
 
 The fleet transport is runnable through `lkml-fleet.sh`: it selects this
 checkout's personas under `fleet/personas/` and isolates lkml from any
-machine-wide fleet registry. Kickoff-mail templates live under
-`fleet/kickoffs/`, and `lkml-fleet-kickoff.sh` formats a patch series and
-composes the kickoff mail.
+machine-wide fleet registry. A reviewer persona there is role-only: its
+frontmatter names `protocol: reviewer`, and the shared panel protocol it
+follows lives once in `fleet/prompts/protocol-reviewer.md`, which
+fork-sandbox appends after the persona body at wake time. So a custom
+reviewer is just its role text plus that one line. Kickoff-mail templates
+live under `fleet/kickoffs/`, and `lkml-fleet-kickoff.sh` formats a patch
+series and composes the kickoff mail.
 
 For a first run, use the wrapper to see the built-in panel and start the
 router, then send a kickoff:

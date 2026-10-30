@@ -610,8 +610,14 @@ claude. On pi, their behaviour is unproven until a panel has shown it.
 The postmaster routing the thread must see this fleet file and this repo's
 `fleet/personas/`. `lkml-fleet.sh` exports both as
 `FORK_SANDBOX_FLEET_FILE` and `FORK_SANDBOX_PERSONAS_DIR`, and
-`install --postmaster` reads the same two variables. So the cluster install
-is:
+`install --postmaster` reads the same two variables. It also exports
+`FORK_SANDBOX_PROMPTS_DIR` as `fleet/prompts/`, which holds
+`protocol-reviewer.md`: the shared protocol every role-only reviewer
+persona names with `protocol: reviewer`. That variable is only the
+runtime lookup. `install --postmaster` does not read it; it ships the
+`prompts/` directory of its own config directory, so `fleet/prompts/`'s
+`protocol-*.md` files must be copied there first (a deploy repo's CI
+does this). So the cluster install is:
 
 ```bash
 LKML_FLEET_FILE=<cluster fleet file> lkml-fleet.sh k8s install --postmaster
