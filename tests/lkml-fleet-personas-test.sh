@@ -5,31 +5,47 @@
 # the persona files cannot catch a misread of that external format (see
 # CLAUDE.md's "false green" hazard) -- only the real parser can, which
 # is why this suite shells out to `fork-sandbox fleet resolve` instead
-# of parsing the YAML itself.
+# of parsing the YAML itself. Without fork-sandbox on PATH those checks
+# SKIP and the rest of the suite still runs.
+#
+# The text checks run on each seat's assembled text: the persona file,
+# then the fleet/prompts/protocol-<name>.md its `protocol:` frontmatter
+# names, the order fork-sandbox prints them in at wake time. A reviewer
+# persona is role-only; the shared reviewer protocol lives once, in
+# protocol-reviewer.md, and the machinery seats' own copies of its
+# sections are compared against it.
 #
 # Usage: tests/lkml-fleet-personas-test.sh
 
 set -uo pipefail
 
-if ! command -v fork-sandbox >/dev/null 2>&1; then
-    echo "SKIP: fork-sandbox not installed; this suite needs the real fleet parser on PATH."
-    exit 0
-fi
-
 repo_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 personas_dir="$repo_dir/fleet/personas"
+prompts_dir="$repo_dir/fleet/prompts"
+reviewers="architecture core devils-advocate docs newcomer operability second-opinion security tests"
 
 pass=0; fail=0
 ok() { printf '  ok    %s\n' "$1"; pass=$(( pass + 1 )); }
 no() { printf '  FAIL  %s\n' "$1"; [[ -n "${2:-}" ]] && printf '        %s\n' "$2"; fail=$(( fail + 1 )); }
+check() {
+    local label="$1" expected="$2" actual="$3"
+    if [[ "$expected" == "$actual" ]]; then ok "$label"; else no "$label" "expected '$expected', got '$actual'"; fi
+}
 
-fleet_file="$(mktemp)"
-trap 'rm -f -- "$fleet_file"' EXIT
+work="$(mktemp -d)"
+trap 'rm -rf -- "$work"' EXIT
+fleet_file="$work/fleet.yaml"
 printf 'agents: {}\nlists: {}\n' > "$fleet_file"
 
 export FORK_SANDBOX_PERSONAS_DIR="$personas_dir"
+export FORK_SANDBOX_PROMPTS_DIR="$prompts_dir"
 export FORK_SANDBOX_FLEET_FILE="$fleet_file"
 
+have_fork_sandbox=false
+command -v fork-sandbox >/dev/null 2>&1 && have_fork_sandbox=true
+if ! $have_fork_sandbox; then
+    echo "SKIP: fork-sandbox not installed; the fleet parser checks need it on PATH."
+else
 if out="$(fork-sandbox fleet check 2>&1)"; then
     ok "fleet check accepts every persona file's frontmatter"
 else
@@ -85,12 +101,93 @@ if [[ "$da" == "claude opus high " ]]; then
 else
     no "devils-advocate resolves claude/opus/thinking=high" "got '$da'"
 fi
+fi
+
+# Assemble each seat's text the way the protocol slot does: the persona
+# file, then the protocol file its frontmatter names, verbatim. Every
+# text check below reads these, so a section a reviewer gets from the
+# shared protocol is checked exactly where the seat sees it.
+frontmatter_protocol() {
+    awk 'NR == 1 && $0 != "---" { exit }
+         NR > 1 && /^---$/ { exit }
+         NR > 1 && sub(/^protocol:[ \t]*/, "") { print; exit }' "$1"
+}
+body_after_frontmatter() {
+    awk 'NR == 1 && $0 == "---" { fm = 1; next }
+         fm && /^---$/ { fm = 0; next }
+         !fm { print }' "$1"
+}
+texts_dir="$work/texts"; mkdir -p -- "$texts_dir"
+for f in "$personas_dir"/*.md; do
+    name="$(basename "$f" .md)"
+    cp -- "$f" "$texts_dir/$name.md"
+    protocol="$(frontmatter_protocol "$f")"
+    [[ -n "$protocol" ]] || continue
+    if [[ -f "$prompts_dir/protocol-$protocol.md" ]]; then
+        cat -- "$prompts_dir/protocol-$protocol.md" >> "$texts_dir/$name.md"
+    else
+        no "$name's protocol file exists" "no $prompts_dir/protocol-$protocol.md"
+    fi
+done
+
+# A reviewer persona is role-only: it names the shared protocol, and
+# carries none of the protocol's sections itself.
+protocol_file="$prompts_dir/protocol-reviewer.md"
+if [[ -f "$protocol_file" ]]; then
+    ok "fleet/prompts/protocol-reviewer.md exists"
+else
+    no "fleet/prompts/protocol-reviewer.md exists" "missing"
+fi
+for name in $reviewers; do
+    f="$personas_dir/$name.md"
+    check "$name names protocol: reviewer" "reviewer" "$(frontmatter_protocol "$f")"
+    if grep -qxF '## Tier focus and recheck scope' "$f"; then
+        no "$name.md does not carry the protocol tail itself" "found '## Tier focus and recheck scope'"
+    else
+        ok "$name.md does not carry the protocol tail itself"
+    fi
+    dup="$(grep -xF -f <(grep '^## ' "$protocol_file" 2>/dev/null) "$f" | tr '\n' ' ')"
+    if [[ -z "$dup" ]]; then
+        ok "$name.md repeats no protocol section heading"
+    else
+        no "$name.md repeats no protocol section heading" "found: $dup"
+    fi
+done
+for name in ci author distiller secretary pr-author; do
+    check "$name names no protocol (machinery keeps its own text)" "" "$(frontmatter_protocol "$personas_dir/$name.md")"
+done
+# The protocol opens with the blank line that ends the role text, so a
+# persona body ends on its last line of prose and an editor trimming
+# trailing blank lines cannot change the assembled prompt.
+check "protocol-reviewer.md opens with the separating blank line" "" "$(head -n 1 "$protocol_file" 2>/dev/null)"
+check "protocol-reviewer.md's first heading is the tier focus section" \
+    "## Tier focus and recheck scope" "$(sed -n '2p' "$protocol_file" 2>/dev/null)"
+# Moving the tail out of the personas changed no seat's prompt: each
+# reviewer's body plus the protocol file is byte-identical to the body
+# its persona file carried before the split. Pinned as a hash of that
+# assembled body so drift in either half fails here; a deliberate edit
+# to a persona or the protocol updates its hash in the same commit.
+while read -r name want; do
+    got="$( { body_after_frontmatter "$personas_dir/$name.md"; cat -- "$protocol_file"; } 2>/dev/null \
+            | sha256sum | cut -d' ' -f1)"
+    check "$name's body + protocol-reviewer.md is its pre-split body" "$want" "$got"
+done <<'HASHES'
+architecture 0610ef60a6296739beb5018d14a553a5acf03e622f801a5058b1025496303fe3
+core 952823825c958b55e6fbb051d3bb8da9900af101d58dc16b0c728062f171e858
+devils-advocate fc8bcbc80874bafe7090c8e65bbfbcd432b53349d3b6424e829ebcb977df7870
+docs f99c94f5a3b3ae3811e5eaeb3bc4de0e1922ec78df756bf53e4075552d99cd6e
+newcomer 7b29708aaede99819a91220160d346d0ae04a7c0dc96203b559f306236a73a84
+operability 4f5e4ba909b9b75ef8bb32eda81bd0bdcf6bca4cb275e736f0daf0188e4614a6
+second-opinion e59653b19195d40b2daaf4442a94c451a96631a3e508e14bcad2d1f8c4ea9b9b
+security c5581d247bb3d569ecf3f9d444961b8ec3eff23a304974b91099d9c7d5d150e0
+tests 1c1f26198505bfe4f8866c5c525e1b6358d6177ea11716c2d154d9cf2f9e95b1
+HASHES
 
 # The ci persona's suite source is a two-path contract: an executable
 # .agents/ci/run-tests at the repo root wins (the repo's own statement
 # of how to run its whole suite); otherwise the persona falls back to
 # tests/*-test.sh. Pin both paths and the contract path's reporting.
-ci_md="$personas_dir/ci.md"
+ci_md="$texts_dir/ci.md"
 has_flat() { # like has, but the file is flattened so a needle may span a wrap
     if tr '\n' ' ' < "$1" | sed 's/  */ /g' | grep -qF -- "$2"; then
         ok "$3"
@@ -122,7 +219,7 @@ has "$ci_md" 'non-zero' \
 # Only the seat that executes anything may grow the contract; the other
 # eight personas must not pick it up.
 mentioners=""
-for f in "$personas_dir"/*.md; do
+for f in "$texts_dir"/*.md; do
     if grep -qF '.agents/ci/run-tests' "$f"; then
         mentioners+=" $(basename "$f" .md)"
     fi
@@ -147,7 +244,7 @@ extract_reply_format() {
 count=0
 baseline=""
 baseline_name=""
-for f in "$personas_dir"/*.md; do
+for f in "$texts_dir"/*.md; do
     name="$(basename "$f" .md)"
     count=$(( count + 1 ))
     section="$(extract_reply_format "$f")"
@@ -194,7 +291,7 @@ if [[ -n "$baseline" && -n "${pr_author_reply_format:-}" ]]; then
     fi
     # No other persona may document Version: as a legal key.
     others=""
-    for f in "$personas_dir"/*.md; do
+    for f in "$texts_dir"/*.md; do
         [[ "$(basename "$f" .md)" == "pr-author" ]] && continue
         if grep -qF 'Version: <n>' "$f"; then others+=" $(basename "$f" .md)"; fi
     done
@@ -214,7 +311,7 @@ if [[ -n "$baseline" ]]; then
     fi
     # @localhost is the dialect the router cannot parse; a persona that
     # shows it as an example primes the seats to write it.
-    if ! grep -rqF '@localhost' "$personas_dir"; then
+    if ! grep -rqF '@localhost' "$texts_dir"; then
         ok "no persona file contains @localhost"
     else
         no "no persona file contains @localhost" "found '@localhost' in fleet/personas/"
@@ -237,7 +334,7 @@ extract_triage() {
 triage_baseline=""
 triage_baseline_name=""
 triage_baseline_set=0
-for f in "$personas_dir"/*.md; do
+for f in "$texts_dir"/*.md; do
     name="$(basename "$f" .md)"
     section="$(extract_triage "$f")"
     # pr-author replaces the generic triage with its own wake checklist
@@ -274,7 +371,7 @@ done
 # no-reply wake. author.md's carve-out bullet is the fix, and it lives
 # outside the byte-identical-pinned section above (in its own Rules
 # list), so nothing else here would catch its removal.
-has "$personas_dir/author.md" 'Your lane is the whole series' \
+has "$texts_dir/author.md" 'Your lane is the whole series' \
     "author.md's Rules list carries the whole-series carve-out"
 
 # Triage (above) cuts the cost of a no-op REPLY after a seat is woken;
@@ -297,7 +394,7 @@ addressing_baseline=""
 addressing_baseline_name=""
 addressing_baseline_set=0
 addressing_count=0
-for f in "$personas_dir"/*.md; do
+for f in "$texts_dir"/*.md; do
     name="$(basename "$f" .md)"
     section="$(extract_addressing_distiller "$f")"
     if [[ "$name" == "distiller" ]]; then
@@ -404,19 +501,19 @@ extract_addressing_outbound() {
          f && /^## / { exit }
          f { print }' "$1"
 }
-if [[ -n "$(extract_addressing_outbound "$personas_dir/distiller.md")" ]]; then
+if [[ -n "$(extract_addressing_outbound "$texts_dir/distiller.md")" ]]; then
     ok "distiller.md carries the Addressing your reply section"
 else
     no "distiller.md carries the Addressing your reply section" "no '## Addressing your reply' heading"
 fi
-has "$personas_dir/distiller.md" 'To: @operator' \
+has "$texts_dir/distiller.md" 'To: @operator' \
     "distiller.md's Addressing your reply section names To: @operator"
-has "$personas_dir/distiller.md" "seat's direct question" \
+has "$texts_dir/distiller.md" "seat's direct question" \
     "distiller.md's Addressing your reply section carries the answer-the-asker-alone exception"
 # shellcheck disable=SC2016  # literal backtick in the needle
-has "$personas_dir/distiller.md" 'never `To:` or `Cc:` the panel, a list, or any individual seat' \
+has "$texts_dir/distiller.md" 'never `To:` or `Cc:` the panel, a list, or any individual seat' \
     "distiller.md's Addressing your reply section forbids panel/list/seat addressing"
-has "$personas_dir/distiller.md" 'reply-all' \
+has "$texts_dir/distiller.md" 'reply-all' \
     "distiller.md's Addressing your reply section names the reply-all default hazard"
 
 # Wake prompts are moving to trigger-only delivery (the fork-sandbox
@@ -426,7 +523,7 @@ has "$personas_dir/distiller.md" 'reply-all' \
 # worded once and reused verbatim -- pinned the same way as the section
 # itself above, so this is redundant with that byte-identical check but
 # still asserted directly per persona per the operator's own ask.
-for f in "$personas_dir"/*.md; do
+for f in "$texts_dir"/*.md; do
     name="$(basename "$f" .md)"
     has "$f" "Quote what you're answering" \
         "$name carries the quote-reply discipline"
@@ -436,9 +533,9 @@ done
 # single-body-inline instruction; the stable phrase below is the one
 # this round introduced, and the old instruction's own wording must be
 # gone, not just superseded further down the file.
-has "$personas_dir/author.md" 'one message per patch' \
+has "$texts_dir/author.md" 'one message per patch' \
     "author.md instructs one message per patch"
-if grep -qF 'paste each patch into the reply' "$personas_dir/author.md"; then
+if grep -qF 'paste each patch into the reply' "$texts_dir/author.md"; then
     no "author.md no longer instructs inlining the whole series into one reply"
 else
     ok "author.md no longer instructs inlining the whole series into one reply"
@@ -456,10 +553,9 @@ extract_verdict_section() {
          f && /^## / { exit }
          f { print }' "$1"
 }
-reviewers="architecture core devils-advocate docs newcomer operability second-opinion security tests"
 verdict_baseline=""
 for name in $reviewers; do
-    f="$personas_dir/$name.md"
+    f="$texts_dir/$name.md"
     section="$(extract_verdict_section "$f")"
     if [[ -z "$section" ]]; then
         no "$name carries the verdict section" "no '## Who hears your review, and your verdict' heading"
@@ -483,7 +579,7 @@ for name in $reviewers; do
     fi
 done
 for name in ci author distiller secretary pr-author; do
-    if [[ -z "$(extract_verdict_section "$personas_dir/$name.md")" ]]; then
+    if [[ -z "$(extract_verdict_section "$texts_dir/$name.md")" ]]; then
         ok "$name.md does not carry the reviewer verdict section"
     else
         no "$name.md does not carry the reviewer verdict section" "found the heading"
@@ -531,22 +627,22 @@ fi
 # secretary: the terminal message of a panel thread. Its Panel-* trailer
 # lines are a machine contract read by a separate parser, so spelling and
 # order are pinned exactly, and the summary goes to @operator alone.
-sec="$personas_dir/secretary.md"
+sec="$texts_dir/secretary.md"
 # shellcheck disable=SC2016  # literal backticks in the needle
 has_flat "$sec" 'a `Question` on a message that is `To:` or `Cc:` `@operator`, given beside a non-blocking trailer' \
     "secretary.md leaves an operator question beside a verdict to the gate"
-has_flat "$personas_dir/tests.md" 'CI not having reported is not' \
+has_flat "$texts_dir/tests.md" 'CI not having reported is not' \
     "tests.md does not let pending CI shape its verdict"
 # A seat once blocked a one-line permission fix for lacking a test that
 # would fail if someone reverted the line: true of every line.
-has_flat "$personas_dir/tests.md" '"Someone could revert this line" is not one' \
+has_flat "$texts_dir/tests.md" '"Someone could revert this line" is not one' \
     "tests.md does not count a deliberate revert as a bug a test must catch"
 # The rebuttal sidebar and its tie-break: the author argues a block in a
 # reply to the seat (no version), a held block goes to @core, @core's own
 # to @operator, and a ruling is a machine-read `Overrule: <id>` line.
 # shellcheck disable=SC2016  # literal backticks in the needles
 {
-pa="$personas_dir/pr-author.md"
+pa="$texts_dir/pr-author.md"
 has_flat "$pa" '## Arguing a block' "pr-author.md has the Arguing a block section"
 has_flat "$pa" 'Arguing is part of the job' "pr-author.md says arguing is expected"
 has_flat "$pa" 'Challenge any block that does not name a concrete failure' "pr-author.md challenges a block with no concrete failure"
@@ -561,7 +657,7 @@ has_flat "$pa" 'Never ask the Secretary for a verdict while one is open' "pr-aut
 has_flat "$pa" 'carries `Overrule: <that verdict'"'"'s message id>` alone on its line at the left margin' "pr-author.md reads an Overrule line as a ruling"
 has_flat "$pa" 'only `@operator` can overrule `@core`' "pr-author.md: only the operator overrules @core"
 has_flat "$pa" 'upholds the block: comply' "pr-author.md complies with an upheld block"
-co="$personas_dir/core.md"
+co="$texts_dir/core.md"
 has_flat "$co" '## First pass: hunt the bugs' "core.md has the mandatory bug-hunt first pass"
 has_flat "$co" 'at high effort, and finish it before you write anything else' "core.md runs the hunt first, at high effort"
 has_flat "$co" 'run it at `high`' "core.md uses the built-in /code-review at high when it has one"
@@ -582,7 +678,7 @@ has_flat "$sec" 'belongs here only once a ruling upheld it' "secretary.md lists 
 has_flat "$sec" 'A blocking verdict is overruled, and counts as non-blocking' "secretary.md counts an overruled block as non-blocking"
 has_flat "$sec" 'or a block that was overruled' "secretary.md leaves an overruled block out of the findings"
 }
-has_flat "$personas_dir/tests.md" 'wants a comment saying why it has that value, not a test restating it' \
+has_flat "$texts_dir/tests.md" 'wants a comment saying why it has that value, not a test restating it' \
     "tests.md asks for a comment, not a test, on a setting that fails loudly"
 extract_closing() {
     awk '/^## Closing the panel$/{ f = 1; print; next }
@@ -640,7 +736,7 @@ has "$sec" 'last in the body' \
 # pr-author: the fleet's in-cluster PR author. Its wake checklist IS the
 # round protocol (no orchestrator drives the rounds), so the strings
 # that carry the protocol are pinned, not just the frontmatter.
-pra="$personas_dir/pr-author.md"
+pra="$texts_dir/pr-author.md"
 pra_fm="$(awk 'NR == 1 && /^---$/ { f = 1; next } f && /^---$/ { exit } f { print }' "$pra")"
 
 # The CI suite source (X-Lkml-Suite-Source: ci): the project's suite is CI's
@@ -648,7 +744,7 @@ pra_fm="$(awk 'NR == 1 && /^---$/ { f = 1; next } f && /^---$/ { exit } f { prin
 # secretary reports CI's result on the frozen head in place of Suite-Run.
 # shellcheck disable=SC2016  # literal backticks in the needles
 ci_source_pins() {
-local tst="$personas_dir/tests.md"
+local tst="$texts_dir/tests.md"
 has_flat "$tst" '## The suite' "tests.md has the suite section"
 has_flat "$tst" '`X-Lkml-Suite-Source: ci`' "tests.md names the opt-in header"
 has_flat "$tst" "never run the project's full suite" "tests.md never runs the full suite under ci"
@@ -676,11 +772,13 @@ if grep -qE '^description: .+' <<<"$pra_fm"; then
 else
     no "pr-author.md frontmatter has a description"
 fi
-pra_resolved="$(fork-sandbox fleet resolve pr-author 2>&1)"
-if [[ "$(sed -n '1p' <<<"$pra_resolved")" == "claude" && "$(sed -n '2p' <<<"$pra_resolved")" == "opus" ]]; then
-    ok "pr-author resolves harness=claude model=opus"
-else
-    no "pr-author resolves harness=claude model=opus" "$pra_resolved"
+if $have_fork_sandbox; then
+    pra_resolved="$(fork-sandbox fleet resolve pr-author 2>&1)"
+    if [[ "$(sed -n '1p' <<<"$pra_resolved")" == "claude" && "$(sed -n '2p' <<<"$pra_resolved")" == "opus" ]]; then
+        ok "pr-author resolves harness=claude model=opus"
+    else
+        no "pr-author resolves harness=claude model=opus" "$pra_resolved"
+    fi
 fi
 # backend and review-target are fleet.yaml-only; the real parser refuses
 # them in frontmatter, and the persona must not try.
@@ -753,7 +851,7 @@ has_flat "$pra" 'The mode is absent only when the mail shows no such line' \
 if grep -qF 'may spell it `Lkml-Push-Mode`' "$pra"; then
     no "pr-author.md drops the guessed Lkml-Push-Mode spelling" "still present"
 else ok "pr-author.md drops the guessed Lkml-Push-Mode spelling"; fi
-has_flat "$personas_dir/secretary.md" 'each `X-*` header is its own unquoted line after `Hops:`' \
+has_flat "$texts_dir/secretary.md" 'each `X-*` header is its own unquoted line after `Hops:`' \
     "secretary.md says how the render shows X-* headers"
 has "$pra" 'A push never aborts a round.' \
     "pr-author.md never lets a push abort a round"
@@ -923,7 +1021,7 @@ extract_tier_scope() {
 }
 tier_baseline=""
 for name in $reviewers; do
-    f="$personas_dir/$name.md"
+    f="$texts_dir/$name.md"
     section="$(extract_tier_scope "$f")"
     if [[ -z "$section" ]]; then
         no "$name carries the tier focus section" "no '## Tier focus and recheck scope' heading"
@@ -946,7 +1044,7 @@ for name in $reviewers; do
     fi
 done
 for name in ci author distiller secretary pr-author; do
-    if [[ -z "$(extract_tier_scope "$personas_dir/$name.md")" ]]; then
+    if [[ -z "$(extract_tier_scope "$texts_dir/$name.md")" ]]; then
         ok "$name.md does not carry the tier focus section"
     else
         no "$name.md does not carry the tier focus section" "found the heading"
@@ -1062,13 +1160,13 @@ has "$cluster_doc" 'Nothing wakes a thread when an operator question times out' 
 # fork-sandbox skips a malformed reply and flags the thread; it does not
 # respawn the seat. A persona that promises a retry tells the seat its
 # broken stanza is recoverable when it is not.
-if respawn_files="$(grep -rlE 'respawns? the seat' "$personas_dir")"; then
+if respawn_files="$(grep -rlE 'respawns? the seat' "$texts_dir")"; then
     no "no persona promises a respawn after a malformed reply" "$respawn_files"
 else
     ok "no persona promises a respawn after a malformed reply"
 fi
-stanza_count="$(grep -rlF 'nothing retries. A complete review in a broken stanza' "$personas_dir" | wc -l)"
-check_count="$(grep -rlF 'A complete review in a broken stanza' "$personas_dir" | wc -l)"
+stanza_count="$(grep -rlF 'nothing retries. A complete review in a broken stanza' "$texts_dir" | wc -l)"
+check_count="$(grep -rlF 'A complete review in a broken stanza' "$texts_dir" | wc -l)"
 if (( stanza_count == check_count && check_count > 0 )); then
     ok "every persona with the stanza warning says nothing retries"
 else
@@ -1077,7 +1175,7 @@ fi
 
 # Contract header names: exactly nine X-Lkml-* names appear in fleet/, so
 # a typo'd header never ships, and push modes / tier focus live only in
-# the personas that own them.
+# the files that own them (fleet/ includes fleet/prompts).
 lkml_headers="$(grep -rhoE 'X-Lkml-[A-Za-z-]+' "$repo_dir/fleet" | sed 's/-$//' | sort -u | tr '\n' ' ')"
 expected_headers='X-Lkml-Add-Seats X-Lkml-CI-Head X-Lkml-CI-Status X-Lkml-Push-Mode X-Lkml-Question-Timeout X-Lkml-Recheck-Seats X-Lkml-Suite-Source X-Lkml-Tier X-Lkml-Tier-Reason '
 if [[ "$lkml_headers" == "$expected_headers" ]]; then
@@ -1091,11 +1189,11 @@ if [[ "$push_files" == 'pr-author.md secretary.md ' ]]; then
 else
     no "push modes appear only in pr-author.md and secretary.md" "got: $push_files"
 fi
-focus_files="$(grep -rlF 'tier-focus.md' "$repo_dir/fleet" | xargs -n1 basename | sort | tr '\n' ' ')"
-if [[ "$focus_files" == 'architecture.md core.md devils-advocate.md docs.md newcomer.md operability.md pr-review.md second-opinion.md security.md tests.md ' ]]; then
-    ok "tier-focus.md appears only in the nine reviewers and the pr-review kickoff"
+focus_files="$(grep -rlF 'tier-focus.md' "$repo_dir/fleet" | xargs -n1 basename | LC_ALL=C sort | tr '\n' ' ')"
+if [[ "$focus_files" == 'pr-review.md protocol-reviewer.md ' ]]; then
+    ok "tier-focus.md appears only in the reviewer protocol and the pr-review kickoff"
 else
-    no "tier-focus.md appears only in the nine reviewers and the pr-review kickoff" "got: $focus_files"
+    no "tier-focus.md appears only in the reviewer protocol and the pr-review kickoff" "got: $focus_files"
 fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
