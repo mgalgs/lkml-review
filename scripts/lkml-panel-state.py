@@ -407,6 +407,12 @@ and change no status.
 
 Status -- precedence top to bottom, first match wins:
 
+    CLOSED          the postmaster status says the thread is upstream
+                    closed (its `upstream_state.state` is "closed": the
+                    pull request was closed or merged, or the thread was
+                    restarted) and the thread is not CONVERGED. No seat
+                    will wake, so nothing here needs a human; the first
+                    reason names the closing message
     NEEDS-OPERATOR  the thread is flagged
     AWAITING-OPERATOR
                     at least one operator question is open (see
@@ -477,6 +483,10 @@ Output (null, never an omitted key, for what is unknown):
                     "budget_source","spawns_total","grant_mode"},
      "bundle": {"base","tip","branch"},   # RESPIN + a frozen head only;
                                           # base is that frozen head
+     "upstream_state": {"state","message_id","at"},
+                                          # the postmaster's, or null when
+                                          # its status has none (a thread
+                                          # that never saw X-Upstream-State)
      "reasons": [...]}                    # empty only for CONVERGED
 """
 
@@ -1761,6 +1771,15 @@ def postmaster_facts(status):
     return facts, reasons
 
 
+def upstream_state_of(status):
+    u = status.get("upstream_state")
+    if not isinstance(u, dict):
+        return None
+    return {"state": opt_str(u.get("state")),
+            "message_id": opt_str(u.get("message_id")),
+            "at": opt_str(u.get("at"))}
+
+
 def build_state(export, status, now):
     if not isinstance(export, dict) or not isinstance(export.get("thread"), str) \
             or not isinstance(export.get("messages"), list):
@@ -1887,6 +1906,7 @@ def build_state(export, status, now):
         reasons.append("internal: not converged for a cause that was not "
                        "recorded; treat as IN-PROGRESS")
 
+    upstream = upstream_state_of(status)
     if pm["flagged"]:
         status_word = "NEEDS-OPERATOR"
     elif any(q["open"] for q in questions):
@@ -1897,6 +1917,15 @@ def build_state(export, status, now):
         status_word = "STALLED"
     else:
         status_word = "IN-PROGRESS"
+    # After the CONVERGED test, so the closing reason cannot block it.
+    if (status_word != "CONVERGED" and upstream is not None
+            and (upstream["state"] or "").lower() == "closed"):
+        status_word = "CLOSED"
+        reasons.insert(0, "the thread is upstream closed"
+                       + (f" at {upstream['at']}" if upstream["at"] else "")
+                       + (f" (msg {clip(upstream['message_id'])})"
+                          if upstream["message_id"] else "")
+                       + ": no seat will wake")
 
     verdict = secretary["verdict"] if status_word == "CONVERGED" else None
     bundle = None
@@ -1924,6 +1953,7 @@ def build_state(export, status, now):
         "secretary": secretary,
         "postmaster": pm,
         "bundle": bundle,
+        "upstream_state": upstream,
         "reasons": reasons,
     }
 

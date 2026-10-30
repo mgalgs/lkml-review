@@ -3206,6 +3206,65 @@ run_case ov17
 check "(ov17) a stray ruling on an older version raises no reason" "CONVERGED" "$(jr .status)"
 reason_lacks "(ov17) no Overrule reason" "Overrule in"
 
+printf '\n== upstream closed ==\n'
+CLOSED_ST='{"state": "closed", "message_id": "m099", "at": "2026-03-02T11:00:00Z"}'
+gen cl1 <<PY
+write(D, export([root()] + panel_positive(who=("@core",))), status(upstream_state=$CLOSED_ST))
+PY
+run_case cl1
+check "(cl1) a closed, unconverged, quiescent thread is CLOSED, not STALLED" "CLOSED" "$(jr .status)"
+check "(cl1) the closing reason comes first" \
+    "the thread is upstream closed at 2026-03-02T11:00:00Z (msg m099): no seat will wake" "$(jr '.reasons[0]')"
+reason_has "(cl1) the unconverged seats are still reasons" "@tests"
+check "(cl1) upstream_state is the postmaster's" '{"state":"closed","message_id":"m099","at":"2026-03-02T11:00:00Z"}' "$(j .upstream_state)"
+check "(cl1) no verdict" "null" "$(j .verdict)"
+
+gen cl2 <<PY
+write(D, export(green()), status(sha=A, upstream_state=$CLOSED_ST))
+PY
+run_case cl2
+check "(cl2) a closed thread that converged stays CONVERGED with its verdict" "CONVERGED SIGNED-OFF" "$(jr '"\(.status) \(.verdict)"')"
+check "(cl2) and has no reasons" "[]" "$(j .reasons)"
+
+gen cl3 <<PY
+write(D, export([root()]), status(flag={"reason": "hops exhausted at m002"}, upstream_state=$CLOSED_ST))
+PY
+run_case cl3
+check "(cl3) closed outranks a flag" "CLOSED" "$(jr .status)"
+reason_has "(cl3) the flag is still a reason" "hops exhausted"
+
+gen cl4 <<PY
+write(D, export([root()] + panel_positive(who=("@core",))), status(runs=[run("r1", "live", "@tests")], upstream_state=$CLOSED_ST))
+PY
+run_case cl4
+check "(cl4) closed outranks a live run" "CLOSED" "$(jr .status)"
+
+gen cl5 <<'PY'
+e = qthread("Question: is the cache bound safe?", hours=None)
+write(D, export(e), status(upstream_state={"state": "closed"}))
+PY
+run_case cl5 --now 2026-03-02T12:02:00Z
+check "(cl5) the question is still open" "true" "$(jr '.questions[0].open')"
+check "(cl5) closed outranks an open operator question" "CLOSED" "$(jr .status)"
+check "(cl5) with no message id or time, the reason says only that" \
+    "the thread is upstream closed: no seat will wake" "$(jr '.reasons[0]')"
+
+gen cl6 <<'PY'
+write(D, export([root()] + panel_positive(who=("@core",))), status(upstream_state={"state": "open"}))
+PY
+run_case cl6
+check "(cl6) a reopened thread is judged as usual" "STALLED" "$(jr .status)"
+check "(cl6) upstream_state passes the open state through" '{"state":"open","message_id":null,"at":null}' "$(j .upstream_state)"
+
+gen cl7 <<'PY'
+write(D, export([root()] + panel_positive(who=("@core",))), status(upstream_state="closed"))
+PY
+run_case cl7
+check "(cl7) a non-object upstream_state is ignored" "STALLED null" "$(jr '"\(.status) \(.upstream_state)"')"
+
+run_case base
+check "(cl) a thread that never saw the header has upstream_state null" "null" "$(j .upstream_state)"
+
 printf '\n== invariants over every case above ==\n'
 inv_bad=""; inv_n=0; inv_conv=0; diff_bad=""; diff_n=0
 # Opt-in differential check: LKML_PANEL_STATE_BASELINE names an earlier copy
@@ -3213,7 +3272,7 @@ inv_bad=""; inv_n=0; inv_conv=0; diff_bad=""; diff_n=0
 # new output, minus the keys this change added, must equal the old output
 # byte for byte. Unset, it did not run, and reports nothing.
 baseline="${LKML_PANEL_STATE_BASELINE:-}"
-strip_new='del(.tier, .panel, .push, .ci, .questions, .question_timeout_hours, .now) | .postmaster |= del(.budget, .budget_source, .spawns_total, .grant_mode) | .seats |= map(del(.carried)) | if .secretary then .secretary |= del(.carried) else . end'
+strip_new='del(.tier, .panel, .push, .ci, .questions, .question_timeout_hours, .now, .upstream_state) | .postmaster |= del(.budget, .budget_source, .spawns_total, .grant_mode) | .seats |= map(del(.carried)) | if .secretary then .secretary |= del(.carried) else . end'
 for c in "${cases_run[@]}"; do
     d="$work/case-$c"
     o="$("$ps" --export-file "$d/export.json" --status-file "$d/status.json" 2>/dev/null)" || { inv_bad+=" $c(exit)"; continue; }
@@ -3224,10 +3283,11 @@ for c in "${cases_run[@]}"; do
         [[ "$(jq -c "$strip_new" <<<"$o")" == "$ob" ]] || diff_bad+=" $c"
     fi
     if ! jq -e '
-        (["schema","thread","subject","status","verdict","target","roster","tier","panel","push","frozen_head","ci","question_timeout_hours","questions","now","seats","secretary","postmaster","bundle","reasons"]
+        (["schema","thread","subject","status","verdict","target","roster","tier","panel","push","frozen_head","ci","question_timeout_hours","questions","now","seats","secretary","postmaster","bundle","upstream_state","reasons"]
          - keys | length) == 0
-        and (.status | IN("CONVERGED","IN-PROGRESS","STALLED","NEEDS-OPERATOR","AWAITING-OPERATOR"))
-        and ((.status == "AWAITING-OPERATOR") == (.postmaster.flagged != true and any(.questions[]; .open)))
+        and (.status | IN("CONVERGED","IN-PROGRESS","STALLED","NEEDS-OPERATOR","AWAITING-OPERATOR","CLOSED"))
+        and ((.status == "CLOSED") == (.status != "CONVERGED" and .upstream_state.state == "closed"))
+        and ((.status == "AWAITING-OPERATOR") == (.upstream_state.state != "closed" and .postmaster.flagged != true and any(.questions[]; .open)))
         and ((.status == "CONVERGED") == (.reasons | length == 0))
         and (.verdict == null or .status == "CONVERGED")
         and (.bundle == null or .verdict == "RESPIN")

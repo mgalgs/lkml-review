@@ -424,8 +424,11 @@ job or a dashboard, should read this object and nothing else.
 | `STALLED` | nothing is pending, but the panel has not converged | a human looks; `reasons` says why |
 | `NEEDS-OPERATOR` | the postmaster flagged the thread | a human looks; the flag reason is in `postmaster` |
 | `AWAITING-OPERATOR` | a seat or the author asked @operator a question that is still open | answer it; `questions` lists them, open ones with `open: true` |
+| `CLOSED` | the postmaster has the thread upstream closed (the pull request was closed or merged, or the thread was restarted), and it had not converged | nothing; no seat will wake. `upstream_state` names the closing message, which a caller can read for why |
 
-`AWAITING-OPERATOR` ranks below `NEEDS-OPERATOR` and above the rest. A
+`CLOSED` outranks every status but `CONVERGED`: a panel that converged
+before its thread closed keeps its verdict. `AWAITING-OPERATOR` ranks below
+`NEEDS-OPERATOR` and above the rest. A
 question is open until it times out, the seat gives a newer verdict (for
 the author's question, a new version is posted), or an @operator mail
 replies to it or is addressed to the asking seat.
