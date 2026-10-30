@@ -34,6 +34,7 @@ set -euo pipefail
 {
     printf 'personas=%s\n' "$FORK_SANDBOX_PERSONAS_DIR"
     printf 'fleet=%s\n' "$FORK_SANDBOX_FLEET_FILE"
+    printf 'prompts=%s\n' "$FORK_SANDBOX_PROMPTS_DIR"
     printf 'args:\n'
     printf '%s\n' "$@"
 } > "$LKML_FLEET_TEST_RECORD"
@@ -46,21 +47,26 @@ run_fleet() {
 
 home_dir="$work/home"; mkdir -p -- "$home_dir"
 expected_personas="$repo_dir/fleet/personas"
+expected_prompts="$repo_dir/fleet/prompts"
 
 printf '\n== registry environment ==\n'
 run_fleet "$fleet" fleet expand '@all'; rc=$?
 check "wrapper exits with the stub's status" "0" "$rc"
 recorded="$(cat "$record")"
 contains "exports the repository personas directory" "$recorded" "personas=$expected_personas"
+contains "exports the repository prompts directory" "$recorded" "prompts=$expected_prompts"
 contains "exports the default fleet-file path" "$recorded" "fleet=$home_dir/.config/lkml/fleet.yaml"
-check "passes the first argument" "fleet" "$(sed -n '4p' "$record")"
-check "passes the final argument" "@all" "$(sed -n '6p' "$record")"
+check "passes the first argument" "fleet" "$(sed -n '5p' "$record")"
+check "passes the final argument" "@all" "$(sed -n '7p' "$record")"
 
 printf '\n== caller environment cannot select another registry ==\n'
 other_personas="$work/other-personas"; mkdir -p -- "$other_personas"
 FORK_SANDBOX_PERSONAS_DIR="$other_personas" run_fleet "$fleet" mail tree 'thread with spaces'; rc=$?
 check "pre-existing personas directory is overridden" "personas=$expected_personas" "$(sed -n '1p' "$record")"
-check "arguments containing spaces pass verbatim" "thread with spaces" "$(sed -n '6p' "$record")"
+FORK_SANDBOX_PROMPTS_DIR="$other_personas" run_fleet "$fleet" fleet expand '@all'; rc=$?
+check "pre-existing prompts directory is overridden" "prompts=$expected_prompts" "$(sed -n '3p' "$record")"
+FORK_SANDBOX_PERSONAS_DIR="$other_personas" run_fleet "$fleet" mail tree 'thread with spaces'; rc=$?
+check "arguments containing spaces pass verbatim" "thread with spaces" "$(sed -n '7p' "$record")"
 
 printf '\n== explicit fleet-file override ==\n'
 override="$work/custom fleet.yaml"
@@ -68,7 +74,7 @@ LKML_FLEET_FILE="$override" run_fleet "$fleet" postmaster deliver --project "$wo
 check "override invocation exits 0" "0" "$rc"
 check "LKML_FLEET_FILE overrides the default" "fleet=$override" "$(sed -n '2p' "$record")"
 check "fleet file remains exported when absent" "fleet=$override" "$(sed -n '2p' "$record")"
-check "all postmaster arguments pass through" "--project" "$(sed -n '6p' "$record")"
+check "all postmaster arguments pass through" "--project" "$(sed -n '7p' "$record")"
 
 printf '\n== cluster postmaster deploys default to fleet-cluster.yaml ==\n'
 cluster_fleet="$home_dir/.config/lkml/fleet-cluster.yaml"
@@ -93,6 +99,7 @@ rm -f -- "$cluster_fleet"
 
 printf '\n== missing personas directory ==\n'
 missing_root="$work/missing"; mkdir -p -- "$missing_root/scripts"
+mkdir -p -- "$missing_root/fleet/prompts"
 cp -- "$fleet" "$missing_root/scripts/lkml-fleet.sh"
 chmod +x -- "$missing_root/scripts/lkml-fleet.sh"
 rm -f -- "$record"
@@ -103,6 +110,18 @@ if [[ -e "$record" ]]; then
     no "missing personas does not exec fork-sandbox" "stub record exists"
 else
     ok "missing personas does not exec fork-sandbox"
+fi
+
+printf '\n== missing prompts directory ==\n'
+rm -rf -- "$missing_root/fleet/prompts"; mkdir -p -- "$missing_root/fleet/personas"
+rm -f -- "$record"
+out="$(HOME="$home_dir" PATH="$stub_bin:$PATH" LKML_FLEET_TEST_RECORD="$record" "$missing_root/scripts/lkml-fleet.sh" fleet expand '@all' 2>&1)"; rc=$?
+if (( rc != 0 )); then ok "missing prompts exits non-zero"; else no "missing prompts exits non-zero" "exit 0"; fi
+contains "missing prompts names the resolved directory" "$out" "$missing_root/fleet/prompts"
+if [[ -e "$record" ]]; then
+    no "missing prompts does not exec fork-sandbox" "stub record exists"
+else
+    ok "missing prompts does not exec fork-sandbox"
 fi
 
 printf '\n== --help ==\n'
