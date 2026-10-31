@@ -57,7 +57,7 @@ ROOT_BODY = "\n".join([
 ])
 
 def msg(seq, frm, body, sha=None, ver=None, set_target=None,
-        subject="Re: [PATCH v1] Fix the thing", extra=(), to=None):
+        subject="Re: [PATCH v1] Fix the thing", extra=(), to=None, cc=()):
     h = [["From", frm]]
     if sha:
         h.append(["X-Review-Target", "pr/example " + sha])
@@ -67,7 +67,7 @@ def msg(seq, frm, body, sha=None, ver=None, set_target=None,
         h.append(["X-Version", str(ver)])
     h.extend(list(x) for x in extra)
     return {"seq": seq, "id": "m%03d" % seq, "headers": h, "from": frm,
-            "to": to if to is not None else ["@panel"], "cc": [], "subject": subject,
+            "to": to if to is not None else ["@panel"], "cc": list(cc), "subject": subject,
             "date": "Mon, 02 Mar 2026 10:%02d:00 +0000" % (seq % 60),
             "in_reply_to": None, "body": body, "attachments": []}
 
@@ -105,9 +105,22 @@ def cover(seq, target, ver, body):
     return msg(seq, "@pr-author", body, sha=target, ver=ver, set_target=target,
                subject="Re: [PATCH v%d 0/0] Fix the thing" % ver)
 
-def reviewed(seq, who, sha=A, ver=1):
+def reviewed(seq, who, sha=A, ver=1, cc=(), to=None):
     return msg(seq, who, "Reviewed-by: %s <%s@example.com>" % (who, who[1:]),
-               sha=sha, ver=ver)
+               sha=sha, ver=ver, cc=cc, to=to)
+
+def trailer(seq, status="CONVERGED", verdict="SIGNED-OFF", sha=A, ver=1):
+    lines = ["Summary.", "", "Panel-Version: %d" % ver, "Panel-Status: " + status]
+    if verdict:
+        lines.append("Panel-Verdict: " + verdict)
+    return msg(seq, "@secretary", "\n".join(lines), sha=sha, ver=ver,
+               to=["@operator"])
+
+# Every seat positive on the target; the last verdict (m004) Cc's the
+# secretary, as a reviewer's verdict reply does when the root names one.
+def settled(cc=("@secretary",), to=None, extra=()):
+    return export([root(), reviewed(2, "@core"), reviewed(3, "@tests"),
+                   reviewed(4, "@docs", cc=cc, to=to)] + list(extra))
 
 def run_rec(agent, rid, sha=A, replies=0, state="harvested",
             at="2026-03-02T10:30:00Z", trigger="m003"):
@@ -224,10 +237,17 @@ expect "sibling answers another schema" 2 "" "schema"
 GATE="$gate_src"
 
 printf '\n== rules b-e: always wake ==\n'
-run silent FS_HOOK_AGENT=secretary
-expect "agent is not the author" 0 "b"
-run silent FS_HOOK_AGENT=@secretary
-expect "agent is not the author, '@' form" 0 "b"
+run silent FS_HOOK_AGENT=core
+expect "agent is neither the author nor the secretary" 0 "b"
+run silent FS_HOOK_AGENT=@core
+expect "agent is neither the author nor the secretary, '@' form" 0 "b"
+
+gen nosecretary <<'PY'
+write(D, export([root(body=ROOT_BODY.replace("Secretary: @secretary\n", "")),
+                 reviewed(2, "@core")]), status())
+PY
+run nosecretary FS_HOOK_AGENT=secretary
+expect "the root names no Secretary: that seat is not gated" 0 "b"
 
 gen upstream <<'PY'
 write(D, export([root(), msg(2, "@core", "Reviewed-by: C", sha=A, ver=1,
@@ -471,11 +491,198 @@ PY
 run carry FS_HOOK_MESSAGE=m031
 expect "carry version: every seat carried, a late reply wakes the author" 0 "f"
 
+
+printf '\n== rule i: the author skips what the secretary is woken on ==\n'
+gen allsettled <<'PY'
+write(D, settled(), status())
+PY
+run allsettled FS_HOOK_MESSAGE=m004
+expect "every seat positive, the trigger Cc's the secretary" 3 "i" \
+    "skip @pr-author" "@secretary"
+
+gen allsettledto <<'PY'
+write(D, settled(cc=(), to=["@pr-author", "@secretary"]), status())
+PY
+run allsettledto FS_HOOK_MESSAGE=m004
+expect "every seat positive, the trigger is To: the secretary" 3 "i"
+
+gen allsettlednocc <<'PY'
+write(D, settled(cc=()), status())
+PY
+run allsettlednocc FS_HOOK_MESSAGE=m004
+expect "every seat positive, the trigger missed the secretary: wake the author" 0 "f"
+
+gen settledoverruled <<'PY'
+write(D, export([root(), msg(2, "@tests", "Changes-requested", sha=A, ver=1),
+                 msg(3, "@core", "Overrule: m002\n\nReviewed-by: C", sha=A, ver=1),
+                 reviewed(4, "@docs", cc=["@secretary"])]), status())
+PY
+run settledoverruled FS_HOOK_MESSAGE=m004
+expect "an overruled seat counts as settled" 3 "i"
+
+# None / some / all of the seats settled, each trigger Cc'ing the secretary.
+gen nonesettled <<'PY'
+write(D, export([root(),
+                 msg(2, "@core", "Changes-requested: no.", sha=A, ver=1),
+                 msg(3, "@tests", "Changes-requested: no.", sha=A, ver=1),
+                 msg(4, "@docs", "Question: why?", sha=A, ver=1, cc=["@secretary"])]),
+      status())
+PY
+run nonesettled FS_HOOK_MESSAGE=m004
+expect "no seat settled, every seat answered, Cc the secretary" 0 "f"
+gen somesettled <<'PY'
+write(D, export([root(), reviewed(2, "@core"),
+                 msg(3, "@tests", "Changes-requested: no.", sha=A, ver=1),
+                 reviewed(4, "@docs", cc=["@secretary"])]), status())
+PY
+run somesettled FS_HOOK_MESSAGE=m004
+expect "some seats settled, one blocks, Cc the secretary" 0 "f"
+
+gen settledpush <<'PY'
+D1 = sha("1")
+write(D, settled(extra=[upstream(5, D1), reviewed(6, "@core", cc=["@secretary"])]),
+      status())
+PY
+run settledpush FS_HOOK_MESSAGE=m006
+expect "every seat positive but a push is unanswered: wake the author" 0 "f"
+run settledpush FS_HOOK_MESSAGE=m005
+expect "the push itself still wakes the author" 0 "c"
+
+gen settledpushcc <<'PY'
+D1 = sha("1")
+write(D, settled(extra=[upstream(5, D1, to=["@pr-author"])]), status())
+PY
+run settledpushcc FS_HOOK_MESSAGE=m004
+expect "the Cc'd verdict before an unanswered push wakes the author" 0 "f"
+
+gen settledsecdone <<'PY'
+write(D, settled(extra=[trailer(5)]), status())
+PY
+run settledsecdone FS_HOOK_MESSAGE=m004
+expect "the secretary already reported on the target: it will skip, so wake the author" 0 "f"
+
+gen settledseclive <<'PY'
+write(D, settled(), status(runs=[run_rec("secretary", "r-sec", state="live")]))
+PY
+run settledseclive FS_HOOK_MESSAGE=m004
+expect "a secretary run is live: it will skip, so wake the author" 0 "f"
+
+gen mixedcc <<'PY'
+write(D, export([root(), reviewed(2, "@core"),
+                 msg(3, "@tests", "Changes-requested: the loop leaks.", sha=A, ver=1),
+                 msg(4, "@docs", "Question: why a new flag?", sha=A, ver=1,
+                     cc=["@secretary"])]),
+      status())
+PY
+run mixedcc FS_HOOK_MESSAGE=m004
+expect "a question Cc'ing the secretary still wakes the author" 0 "f"
+
+printf '\n== rules j-o: the secretary seat ==\n'
+run allsettled FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "secretary: every seat settled" 0 "o" "wake @secretary"
+run allsettled FS_HOOK_AGENT=@secretary FS_HOOK_MESSAGE=m004
+expect "secretary: every seat settled, '@' form" 0 "o"
+run settledoverruled FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "secretary: an overruled seat counts as settled" 0 "o"
+run allsettlednocc FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "secretary: the gate does not read the trigger's addressing" 0 "o"
+
+# None / some / all settled.
+run nonesettled FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "secretary: no seat settled" 3 "k" "skip @secretary" \
+    "@core (blocking)" "@tests (blocking)" "@docs (question)"
+run somesettled FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "secretary: some seats settled, one blocks" 3 "k" "@tests (blocking)"
+case "$ERR" in
+    *@core*|*@docs*) no "secretary: settled seats are not named" "$ERR" ;;
+    *) ok "secretary: settled seats are not named" ;;
+esac
+run silent FS_HOOK_AGENT=secretary
+expect "secretary: two seats silent" 3 "k" "@tests (silent)" "@docs (silent)"
+run stale FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "secretary: a stale seat is not settled" 3 "k" "@docs (stale)"
+run notarget FS_HOOK_AGENT=secretary
+expect "secretary: no target, nothing is settled on it" 3 "k"
+
+run settledpush FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m006
+expect "secretary: a push is unanswered" 3 "l"
+
+gen carrysec <<'PY'
+# A carry version with every seat carried and no secretary trailer yet.
+F, D1 = sha("f"), sha("1")
+e = [root(sha=F, body=ROOT_BODY.replace("f" * 40, F)),
+     reviewed(2, "@core", sha=F), reviewed(3, "@tests", sha=F), reviewed(4, "@docs", sha=F),
+     upstream(30, D1, mode="carry", to=["@operator"]),
+     reviewed(31, "@core", sha=F, cc=["@secretary"])]
+write(D, export(e), status(sha=F, ver=1))
+PY
+run carrysec FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m031
+expect "secretary: a carry push is answered by the carry" 0 "o"
+
+# A secretary run live / pending a retry / neither.
+gen seclive <<'PY'
+write(D, settled(), status(runs=[run_rec("secretary", "r-sec", state="live")]))
+PY
+run seclive FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "secretary: a secretary run is live" 3 "m" "r-sec"
+gen secliveat <<'PY'
+write(D, settled(), status(runs=[run_rec("@secretary", "r-sec", state="live")]))
+PY
+run secliveat FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "secretary: a live run's agent in '@' form still matches" 3 "m"
+gen secretry <<'PY'
+write(D, settled(), status(runs=[run_rec("secretary", "r-sec")],
+                           retries=[retry_rec("secretary")]))
+PY
+run secretry FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "secretary: a secretary retry is pending" 3 "m" "retry"
+gen secidle <<'PY'
+write(D, settled(), status(runs=[run_rec("secretary", "r-sec"),
+                                 run_rec("core", "r-core", state="live")],
+                           retries=[retry_rec("secretary", state="exhausted"),
+                                    retry_rec("docs")]))
+PY
+run secidle FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "secretary: a harvested run, an exhausted retry, other seats' runs do not hold it" 0 "o"
+
+# The secretary has posted on the target / on an older one.
+run settledsecdone FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "secretary: already posted on the target" 3 "n" "m005"
+gen secinprogress <<'PY'
+write(D, settled(extra=[trailer(5, status="IN-PROGRESS", verdict=None)]), status())
+PY
+run secinprogress FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "secretary: an IN-PROGRESS on the target is a post on it" 3 "n"
+gen secoldtarget <<'PY'
+write(D, settled(extra=[trailer(5, sha=B)]), status())
+PY
+run secoldtarget FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "secretary: a post on an older target does not count" 0 "o"
+
+# The author's or the operator's request always wakes the secretary.
+gen secask <<'PY'
+write(D, export([root(), reviewed(2, "@core"),
+                 msg(3, "@tests", "Changes-requested: no.", sha=A, ver=1),
+                 msg(4, "@pr-author", "Version-Limit reached; @tests still blocks.",
+                     sha=A, ver=1, to=["@secretary"]),
+                 msg(5, "@operator", "Please summarize.", sha=A, ver=1,
+                     to=["@secretary"]),
+                 trailer(6, status="IN-PROGRESS", verdict=None)]),
+      status(runs=[run_rec("secretary", "r-sec", state="live")]))
+PY
+run secask FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "secretary: the author's request wakes it regardless" 0 "j" "@pr-author"
+run secask FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m005
+expect "secretary: the operator's request wakes it regardless" 0 "j" "@operator"
+run secask FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m003
+expect "secretary: the same thread, a reviewer's trigger, skips" 3 "k"
+
 printf '\n== --help ==\n'
 HELP="$("$gate_src" --help 2>&1)"; HRC=$?
 check "--help exits 0" "0" "$HRC"
 contains "--help mentions wake-when" "$HELP" "wake-when"
 contains "--help says a carried verdict counts as answered" "$HELP" "carried"
+contains "--help documents exit 3" "$HELP" "3 skips"
 check "-h prints the same text" "$HELP" "$("$gate_src" -h 2>&1)"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
