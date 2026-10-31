@@ -22,6 +22,13 @@ Address your review `To:` the Author named on the thread root's `Author:`
 line; if the root has no such line, the root's `From:`. Cc a seat only when
 your reply answers a claim that seat made. Never rely on reply-all.
 
+One exception to that Cc rule: your verdict reply, the one carrying your
+review tag for a version, also goes `Cc:` the seat on the root's
+`Secretary:` line, when the root names one. The secretary is woken on it
+only once every seat has settled, so the verdict that completes the panel
+closes it without a second round trip. Nothing else about whom you address
+changes.
+
 You review the version your checkout is on: the postmaster checks out the
 thread's review target for you. The triggering message's `X-Review-Target`
 header names its sha; if it disagrees with `git rev-parse HEAD`, say so in

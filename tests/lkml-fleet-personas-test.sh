@@ -172,15 +172,15 @@ while read -r name want; do
             | sha256sum | cut -d' ' -f1)"
     check "$name's body + protocol-reviewer.md is its pre-split body" "$want" "$got"
 done <<'HASHES'
-architecture 0610ef60a6296739beb5018d14a553a5acf03e622f801a5058b1025496303fe3
-core 952823825c958b55e6fbb051d3bb8da9900af101d58dc16b0c728062f171e858
-devils-advocate fc8bcbc80874bafe7090c8e65bbfbcd432b53349d3b6424e829ebcb977df7870
-docs f99c94f5a3b3ae3811e5eaeb3bc4de0e1922ec78df756bf53e4075552d99cd6e
-newcomer 7b29708aaede99819a91220160d346d0ae04a7c0dc96203b559f306236a73a84
-operability 4f5e4ba909b9b75ef8bb32eda81bd0bdcf6bca4cb275e736f0daf0188e4614a6
-second-opinion e59653b19195d40b2daaf4442a94c451a96631a3e508e14bcad2d1f8c4ea9b9b
-security c5581d247bb3d569ecf3f9d444961b8ec3eff23a304974b91099d9c7d5d150e0
-tests 1c1f26198505bfe4f8866c5c525e1b6358d6177ea11716c2d154d9cf2f9e95b1
+architecture 18c12acfd5649a55376b721e597b5c3432bd601af254ba29ff895334d0bc15ed
+core dee8f3b6434315883ee72cff3e3c3fe3056fbddc7c37f8223b359b9ff92579c4
+devils-advocate bc800be158eebba21c627e9c1cf60b3f2569ba530b811caba42a16466ac2610b
+docs ba5e886b9231401bee4ed0a37222a3703cdd5fb235b790c062d8ca3de0e455b3
+newcomer 26991f97fa708a9400c1273a4d3a569e1c89a4fa343e50c3141d8cbc156807eb
+operability 0a4772118bc4378c3e0704e777b43711f8e25884e14b64da1f035ad01fa0fa62
+second-opinion 79a61ec856c29568fa3c01eaaf8da7f040b3cd63f6ab5da059ca26168a9d775d
+security c8c98390fbd083e58ee96790c9142322fc5cfa2ceee839f40919bc97def7f165
+tests f622f4fdbdfe1ca8c220939d406ee441b05346f220513d97f8c5b2a95569c174
 HASHES
 
 # The ci persona's suite source is a two-path contract: an executable
@@ -593,6 +593,9 @@ if [[ -n "$verdict_baseline" ]]; then
         '`Author:`' \
         '`To:` the Author' \
         'Never rely on reply-all' \
+        'One exception to that Cc rule: your verdict reply' \
+        '`Cc:` the seat on the root'"'"'s `Secretary:` line, when the root names one' \
+        'Nothing else about whom you address changes' \
         '`X-Review-Target`' \
         '`git rev-parse HEAD`' \
         'LAST non-empty line' \
