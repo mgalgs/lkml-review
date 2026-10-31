@@ -677,8 +677,12 @@ agents:
   yet answered by a version, a secretary run live or due for a retry, or a
   summary already posted on the target. A message from the author or from
   `@operator` always wakes the secretary, so the author's `Version-Limit`
-  request and a deliberate request work as before. The author is skipped
-  only when the secretary is woken on the same message. A settling verdict
+  request and a deliberate request work as before. On a thread that is not
+  a PR panel (a root naming no `Author:`, `Panel:` or `Secretary:`, as in a
+  series review or a solo `To: @secretary` request) the gate wakes the
+  secretary without judging it. The author is skipped only when the
+  secretary is woken on the same message; a secretary run already live on
+  that message, spawned before the author's gate ran, counts as woken. A settling verdict
   that missed the secretary wakes the author, which asks the secretary as
   it always has; a forgotten `Cc:` costs one wake, and never leaves a
   converged panel with nobody woken. The secretary still verifies the panel

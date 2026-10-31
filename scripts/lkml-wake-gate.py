@@ -69,10 +69,15 @@ overruled on the current target (carried included).
 Rules, in order; the first match decides, and every path prints exactly
 one "lkml-wake-gate: ..." line on stderr naming the decision and rule:
 
-    a  roster.author is null                      -> exit 2
+    a  roster.author is null, but the root names a Panel or a
+       Secretary                                  -> exit 2
+       (a PR panel root with no readable Author line)
     b  the agent is neither roster.author nor roster.secretary -> exit 0
        (this gate judges those two seats only; a root with no Secretary
-       line gates no secretary)
+       line gates no secretary, and a root naming none of Author, Panel
+       and Secretary is not a PR panel thread, so the secretary invoked
+       solo there, on a series review or a To: @secretary request, is
+       woken without judgement)
 
 The author seat, after b:
 
@@ -92,7 +97,10 @@ The author seat, after b:
        where f would wake. A trigger the secretary would skip, because
        a push is unanswered, a secretary run is live or pending, or it
        already posted on the target, falls through to f, so skipping
-       the author never leaves the panel with nobody woken)
+       the author never leaves the panel with nobody woken. A live
+       secretary run whose trigger is this message is not rule m's live
+       run here: it is the secretary already woken on it, should the
+       postmaster spawn it before gating the author)
     f  every seat is positive, overruled, blocking or question -> exit 0
        (every reviewer has answered the current version; a verdict
        panel-state reports as carried forward is a verdict, so a recheck
@@ -242,12 +250,15 @@ def has_header(msg, name):
     return False
 
 
-def secretary_run(status, seat):
-    """A description of seat's live run or pending retry, or None."""
+def secretary_run(status, seat, woken_on=None):
+    """A description of seat's live run or pending retry, or None. A live
+    run whose trigger is woken_on does not count: that run is the seat
+    being woken on that very message."""
     name = bare(seat)
     for r in status.get("runs") or []:
         if (isinstance(r, dict) and bare(r.get("agent")) == name
-                and r.get("state") != "harvested"):
+                and r.get("state") != "harvested"
+                and (woken_on is None or r.get("trigger") != woken_on)):
             return "run %s is %s" % (r.get("run_id") or "?", r.get("state"))
     for r in status.get("retries") or []:
         if (isinstance(r, dict) and bare(r.get("agent")) == name
@@ -256,9 +267,10 @@ def secretary_run(status, seat):
     return None
 
 
-def secretary_skip(state, status, secretary):
+def secretary_skip(state, status, secretary, woken_on=None):
     """Rules k-n: (rule, why) when the secretary is not woken on a
-    reviewer's trigger, or None when the panel is ready to close."""
+    reviewer's trigger, or None when the panel is ready to close.
+    woken_on is passed by rule i; see secretary_run."""
     target = state.get("target")
     seats = state.get("seats") or []
     if not target or not target.get("sha"):
@@ -272,7 +284,7 @@ def secretary_skip(state, status, secretary):
     push = state.get("push")
     if push is not None and not push.get("answered"):
         return "l", "the push %s is unanswered" % push.get("message_id")
-    live = secretary_run(status, secretary)
+    live = secretary_run(status, secretary, woken_on)
     if live:
         return "m", "%s %s" % (secretary, live)
     sec = state.get("secretary") or {}
@@ -303,9 +315,11 @@ def decide(env):
 
     roster = state.get("roster") or {}
     author = roster.get("author")
-    if author is None:
-        raise Done(2, "error: the roster names no author (rule a)")
     secretary = roster.get("secretary")
+    # A root naming no Author, Panel or Secretary is not a PR panel (a
+    # series review, a To: @secretary request): rule b wakes, not an error.
+    if author is None and (secretary is not None or roster.get("panel")):
+        raise Done(2, "error: the roster names no author (rule a)")
     if agent not in (author, secretary):
         raise Done(0, "wake: %s is neither the author seat %s nor the "
                       "secretary seat %s (rule b)" % (agent, author, secretary))
@@ -329,7 +343,7 @@ def decide(env):
                 and all(s.get("state") in SETTLED for s in seats)
                 and addressed(trigger, secretary)
                 and secretary_skip(state, read_status(env["FS_HOOK_STATUS_FILE"]),
-                                   secretary) is None):
+                                   secretary, env["FS_HOOK_MESSAGE"]) is None):
             raise Done(3, "skip %s: every seat is settled and %s reaches "
                           "%s, which is woken on it (rule i)"
                        % (agent, env["FS_HOOK_MESSAGE"], secretary))

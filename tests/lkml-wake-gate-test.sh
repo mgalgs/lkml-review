@@ -218,6 +218,21 @@ write(D, export([root(body=ROOT_BODY.replace("Author: @pr-author\n", "")),
 PY
 run noauthor
 expect "roster without an author" 2 "a"
+run noauthor FS_HOOK_AGENT=secretary
+expect "roster without an author, secretary seat" 2 "a"
+
+# A root naming no Author, Panel or Secretary is not a PR panel: the
+# secretary invoked solo there (series review, To: @secretary) wakes.
+gen solo <<'PY'
+write(D, export([msg(1, "@operator", "Summarize the series review, please.",
+                     subject="[PATCH 0/2] Example series", to=["@secretary"]),
+                 msg(2, "@operator", "Please summarize now.",
+                     to=["@secretary"])]), status(target=None))
+PY
+run solo FS_HOOK_AGENT=secretary
+expect "secretary solo on a non-panel thread wakes, no error" 0 "b"
+run solo FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m001
+expect "secretary solo, the root itself as trigger" 0 "b"
 
 stub_case() { # stub_case <name> <stub script body>: gate beside a stub sibling
     local dir="$work/stub-$1"; mkdir -p -- "$dir"
@@ -566,6 +581,15 @@ write(D, settled(), status(runs=[run_rec("secretary", "r-sec", state="live")]))
 PY
 run settledseclive FS_HOOK_MESSAGE=m004
 expect "a secretary run is live: it will skip, so wake the author" 0 "f"
+
+gen settledsecwoken <<'PY'
+write(D, settled(), status(runs=[run_rec("secretary", "r-sec", state="live",
+                                         trigger="m004")]))
+PY
+run settledsecwoken FS_HOOK_MESSAGE=m004
+expect "the secretary's live run was woken on this trigger: skip the author" 3 "i"
+run settledsecwoken FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "secretary: its own run on this trigger is live" 3 "m" "r-sec"
 
 gen mixedcc <<'PY'
 write(D, export([root(), reviewed(2, "@core"),
