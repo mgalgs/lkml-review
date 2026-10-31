@@ -87,7 +87,9 @@ the mail API; the client reads `FORK_SANDBOX_MAIL_API_URL` and
 (`--allow-namespace`, `--reach-probe`, `--host-alias`, `--seat-resources`,
 `--context-secret`) attach to the new
 thread, as do `--no-grant` (open the thread with no environment; refused with
-any grant flag) and `--budget <n>` (the thread's own cap on seat spawns).
+any grant flag), `--grant-pending` (the grant follows later through
+`fork-sandbox mail grant`; refused with `--no-grant` and with any grant flag)
+and `--budget <n>` (the thread's own cap on seat spawns).
 `--services-env KEY=VALUE` stores a services-hook setting on the thread for
 its local seats (refused with `--remote`).
 `--header` adds headers of the caller's own; the headers the mail
@@ -584,7 +586,9 @@ What each key does here:
 - **`grant: required`** goes on seats that must reach the thread's preview
   environment. Such a seat waits until the thread has a grant. If the
   kickoff sent none, the postmaster flags the thread (`no-grant`) and
-  `lkml-panel-state.py` reports `NEEDS-OPERATOR`.
+  `lkml-panel-state.py` reports `NEEDS-OPERATOR`. A kickoff sent with
+  `--grant-pending` holds the seat quietly instead, until `fork-sandbox mail
+  grant` arrives or the postmaster's grant-pending timeout runs out.
 
 - **Every persona file is an agent**, including the ones the pr-review
   roster never addresses (`author`, `ci`, `distiller`). A cluster postmaster

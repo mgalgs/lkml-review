@@ -1468,9 +1468,26 @@ contains "--remote and --budget compose" "$k_argv" "mail --remote send"
 contains "--remote still carries --budget" "$k_argv" "--budget 3"
 kick "${kick_base[@]}" --send
 case "$k_argv" in
-    *"--no-grant"*|*"--budget"*) no "neither flag given: argv carries neither" "$k_argv" ;;
-    *) ok "neither flag given: argv carries neither" ;;
+    *"--no-grant"*|*"--grant-pending"*|*"--budget"*) no "no flag given: argv carries none of them" "$k_argv" ;;
+    *) ok "no flag given: argv carries none of them" ;;
 esac
+
+printf '\n== --grant-pending: forwarded to the cover only ==\n'
+kick "${kick_base[@]}" --grant-pending --send
+check "--send with --grant-pending exits 0" "0" "$k_rc"
+contains "the sent cover carries --grant-pending" "$k_argv" "--to @lkml-panel --grant-pending --subject"
+kick "${kick_base[@]}" --grant-pending --patches --send
+check "--send --patches with --grant-pending exits 0" "0" "$k_rc"
+contains "the posted cover carries --grant-pending" "$(grep -m1 -- '^mail send' <<<"$k_argv")" "--grant-pending"
+nogrant_reply_free "--grant-pending" '^mail reply' "$k_argv" "no per-patch reply carries --grant-pending"
+kick "${kick_base[@]}" --grant-pending --patches
+contains "the printed cover carries --grant-pending" "$(grep -m1 -- 'cover_id=\$(' <<<"$k_out")" "--grant-pending"
+nogrant_reply_free "--grant-pending" '^fork-sandbox mail reply' "$k_out" "no printed per-patch reply carries --grant-pending"
+kick "${kick_base[@]}" --grant-pending --budget 3 --send
+contains "--grant-pending precedes --budget" "$k_argv" "--to @lkml-panel --grant-pending --budget 3 --subject"
+kick "${kick_base[@]}" --remote --grant-pending --send
+contains "--remote and --grant-pending compose" "$k_argv" "mail --remote send"
+contains "--remote still carries --grant-pending" "$k_argv" "--grant-pending"
 
 printf '\n== --budget validation ==\n'
 kick "${kick_base[@]}" --budget 0
@@ -1543,8 +1560,28 @@ refused "--no-grant with --context-secret" "cannot be combined"
 kick "${kick_base[@]}" --no-grant --context-ro "$missing_ctx_dir" --send
 refused "--no-grant with a nonexistent --context-ro still names the conflict" "cannot be combined"
 
-printf '\n== --no-grant and --budget refuse against a focused (${FOCUS}) template ==\n'
-for focused_flag in "--no-grant" "--budget 3"; do
+printf '\n== --grant-pending refuses against --no-grant and the grant flags ==\n'
+kick "${kick_base[@]}" --grant-pending --no-grant --send
+refused "--grant-pending with --no-grant" "--grant-pending and --no-grant are mutually exclusive"
+kick "${kick_base[@]}" --no-grant --grant-pending
+refused "--no-grant then --grant-pending (either order, print-only)" "--grant-pending and --no-grant are mutually exclusive"
+kick "${kick_base[@]}" --grant-pending --allow-namespace example-ns --send
+refused "--grant-pending with --allow-namespace" "--grant-pending defers"
+kick "${kick_base[@]}" --grant-pending --host-alias '192.0.2.10=api.example.com' --send
+refused "--grant-pending with --host-alias" "--grant-pending defers"
+kick "${kick_base[@]}" --grant-pending --seat-resources '@tests=cpu=2' --send
+refused "--grant-pending with --seat-resources" "--grant-pending defers"
+kick "${kick_base[@]}" --grant-pending --reach-probe 'svc-a.example-ns.svc.cluster.local:8001' --send
+refused "--grant-pending with --reach-probe" "--grant-pending defers"
+kick "${kick_base[@]}" --grant-pending --context-ro "$grant_ctx_dir" --send
+refused "--grant-pending with --context-ro" "--grant-pending defers"
+kick "${kick_base[@]}" --grant-pending --context-secret one --send
+refused "--grant-pending with --context-secret" "--grant-pending defers"
+kick "${kick_base[@]}" --grant-pending --context-ro "$missing_ctx_dir" --send
+refused "--grant-pending with a nonexistent --context-ro still names the conflict" "--grant-pending defers"
+
+printf '\n== --no-grant, --grant-pending and --budget refuse against a focused (${FOCUS}) template ==\n'
+for focused_flag in "--no-grant" "--grant-pending" "--budget 3"; do
     # shellcheck disable=SC2086
     kick "${kick_base[@]}" --subject '[PATCH v3 0/2] improve the thing' --focus 'patch 2 only' \
         --template "$focused_template" $focused_flag
@@ -1559,6 +1596,7 @@ printf '\n== --help names the budget and grant-opt-out flags ==\n'
 help_out="$("$kickoff" --help 2>&1)"
 check "--help exits 0" "0" "$?"
 contains "--help mentions --no-grant" "$help_out" "--no-grant"
+contains "--help mentions --grant-pending" "$help_out" "--grant-pending"
 contains "--help mentions --budget" "$help_out" "--budget"
 
 printf '\n== --header: forwarded in order to the cover only ==\n'

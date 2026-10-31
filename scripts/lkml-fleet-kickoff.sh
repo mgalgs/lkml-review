@@ -13,7 +13,7 @@
 #            [--seat-resources <seat>=cpu=<q>[,memory=<q>]]...
 #            [--services-env <key>=<value>]...
 #            [--context-ro <dir>] [--context-secret <name>]
-#            [--no-grant] [--budget <n>]
+#            [--no-grant|--grant-pending] [--budget <n>]
 #            [--review-target <branch>:<sha>] [--header "Name: value"]...
 #            [--author <addr>] [--panel <addr-list>] [--secretary <addr>]
 #            [--version-limit <n>] [--suite <command>] [--suite-seats <addr-list>]
@@ -320,6 +320,14 @@
 #              restrictions as --allow-namespace otherwise: cover only,
 #              never a per-patch reply, refused alongside a focused
 #              (${FOCUS}) template.
+# --grant-pending
+#              forwarded to the cover's `mail send`, which marks the
+#              thread's grant as coming later (X-Grant: pending): a seat
+#              that needs grant flags holds quietly until `fork-sandbox
+#              mail grant <thread-id> ...` supplies them or the
+#              postmaster's grant-pending timeout runs out. Refused
+#              together with --no-grant and with the grant flags --no-grant
+#              refuses. Same restrictions as --no-grant otherwise.
 # --budget N   forwarded to the cover's `mail send` as the thread's own
 #              cap on seat spawns (the postmaster uses the lower of it
 #              and its global budget). N is a positive integer with no
@@ -460,6 +468,7 @@ context_ro_given=0
 context_secret=""
 context_secret_given=0
 no_grant=0
+grant_pending=0
 budget=""
 budget_given=0
 headers=()
@@ -508,6 +517,7 @@ while (( $# > 0 )); do
             (( ! budget_given )) || { echo "Error: --budget may only be given once. See --help." >&2; exit 1; }
             budget="$2"; budget_given=1; shift 2 ;;
         --no-grant) no_grant=1; shift ;;
+        --grant-pending) grant_pending=1; shift ;;
         --review-target)
             (( ! review_target_given )) || { echo "Error: --review-target may only be given once. See --help." >&2; exit 1; }
             review_target="$2"; review_target_given=1; shift 2 ;;
@@ -821,6 +831,14 @@ if (( no_grant && (${#allow_namespace[@]} > 0 || ${#reach_probe[@]} > 0 || ${#ho
     echo "Error: --no-grant opens a thread with no environment and cannot be combined with --allow-namespace, --reach-probe, --host-alias, --seat-resources, --context-ro or --context-secret. See --help." >&2
     exit 1
 fi
+if (( grant_pending && no_grant )); then
+    echo "Error: --grant-pending and --no-grant are mutually exclusive: a thread's grant is either coming later or never. See --help." >&2
+    exit 1
+fi
+if (( grant_pending && (${#allow_namespace[@]} > 0 || ${#reach_probe[@]} > 0 || ${#host_alias[@]} > 0 || ${#seat_resources[@]} > 0 || context_ro_given || context_secret_given) )); then
+    echo "Error: --grant-pending defers the thread's grant to a later \`fork-sandbox mail grant\` and cannot be combined with --allow-namespace, --reach-probe, --host-alias, --seat-resources, --context-ro or --context-secret. See --help." >&2
+    exit 1
+fi
 context_ro_abs=""
 if (( context_ro_given )); then
     if ! context_ro_abs="$(realpath -e -- "$context_ro" 2>/dev/null)" || [[ ! -d "$context_ro_abs" ]]; then
@@ -1107,7 +1125,7 @@ fi
 # --attach-file is refused for the same reason: the "Attached context"
 # section would be appended to the leftover body file, and the manual
 # `mail reply` bridge does not carry the attachments it lists.
-if [[ "$body" == *'${FOCUS}'* ]] && { (( ${#allow_namespace[@]} > 0 )) || (( ${#reach_probe[@]} > 0 )) || (( ${#host_alias[@]} > 0 )) || (( ${#seat_resources[@]} > 0 )) || (( ${#services_env[@]} > 0 )) || (( context_ro_given )) || (( context_secret_given )) || (( no_grant )) || (( budget_given )) || (( review_target_given )) || (( ${#headers[@]} > 0 )) || (( ${#attach_files[@]} > 0 )); }; then
+if [[ "$body" == *'${FOCUS}'* ]] && { (( ${#allow_namespace[@]} > 0 )) || (( ${#reach_probe[@]} > 0 )) || (( ${#host_alias[@]} > 0 )) || (( ${#seat_resources[@]} > 0 )) || (( ${#services_env[@]} > 0 )) || (( context_ro_given )) || (( context_secret_given )) || (( no_grant )) || (( grant_pending )) || (( budget_given )) || (( review_target_given )) || (( ${#headers[@]} > 0 )) || (( ${#attach_files[@]} > 0 )); }; then
     echo "Error: grant, budget, target, header and --attach-file flags apply to the thread a new \`mail send\` creates, but a focused round is a reply inside an existing thread, and the body would list attachments the manual \`mail reply\` bridge does not send. Set the grant on that thread with \`fork-sandbox mail grant <thread-id> ...\` and compose without these flags." >&2
     exit 1
 fi
@@ -1589,6 +1607,7 @@ done
 (( context_ro_given )) && cover_cmd+=(--context-ro "$context_ro_abs")
 (( context_secret_given )) && cover_cmd+=(--context-secret "$context_secret")
 (( no_grant )) && cover_cmd+=(--no-grant)
+(( grant_pending )) && cover_cmd+=(--grant-pending)
 (( budget_given )) && cover_cmd+=(--budget "$budget")
 (( review_target_given )) && cover_cmd+=(--review-target "$review_target_branch:$review_target_sha")
 for attach_path in "${attach_abs[@]}"; do
