@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# lkml-wake-gate-install.sh — Stage the author seat's wake gate where the
-# postmaster looks for hooks.
+# lkml-wake-gate-install.sh — Stage the author and secretary seats' wake
+# gate where the postmaster looks for hooks.
 #
 # Usage: lkml-wake-gate-install.sh [--check] [--hooks-dir DIR]
 #

@@ -42,9 +42,11 @@ Placeholders (dumb substitution, not a template engine):
   ${PATCH_COUNT}   number of commits in the PR
 
 Do not Cc anyone and do not put the author or the secretary in `To:`.
-The author wakes on each review it receives; the secretary is woken
-by the author, once, when the panel has converged or the version limit
-is reached; its summary goes to the operator and wakes nobody.
+The author wakes on each review it receives. Each verdict reply also
+Cc's the secretary, and the wake gate lets the one that settles the
+panel wake it; the author asks the secretary itself when the version
+limit is reached, or when the settling verdict missed the secretary.
+Its summary goes to the operator and wakes nobody.
 
 The thread's review target is set to the PR head as version 1 by
 whatever posts this kickoff; every reviewer's checkout is at that

@@ -127,6 +127,7 @@ under "Tiers and push modes" below.
    version, `To:` the author, and ends its reply with exactly one verdict on
    the last non-empty line: `Reviewed-by:`, `Acked-by:` or `Tested-by:`
    (non-blocking), or `Changes-requested`, `Question` or `NAK` (blocking).
+   A verdict reply also goes `Cc:` the root's `Secretary:` seat.
    The postmaster stamps each reply with `X-Review-Target` and `X-Version`
    for the target the seat was spawned at, so a reply always says which
    version it is about.
@@ -134,8 +135,12 @@ under "Tiers and push modes" below.
    review. It does nothing until every panel seat has replied on the current
    version N. A missing reply is never read as agreement.
 3. **The author decides.** With every reply in:
-   - if every panel seat's verdict on vN is non-blocking, it asks the
-     secretary for the panel verdict (`To: @secretary` only);
+   - if every panel seat's verdict on vN is non-blocking, the reply that
+     made it so has already reached the secretary by its `Cc:`. The wake
+     gate (below) wakes the secretary on it to close the panel, and skips
+     the author. If that reply missed the secretary, the gate wakes the
+     author instead, which asks the secretary for the panel verdict
+     (`To: @secretary` only);
    - if it disputes a block, it argues the block first and does not re-roll
      (see "Arguing a block" below);
    - if some seat still blocks and the version count has reached
@@ -634,24 +639,29 @@ Check the file first with `lkml-fleet.sh fleet check --cluster` under the
 same `LKML_FLEET_FILE`. Set `FORK_SANDBOX_CLUSTER_CLAUDE=1` for that check
 when the install will carry a claude credential.
 
-### Gating the author's wakes
+### Gating the author's and the secretary's wakes
 
 Reviewers reply `To: @pr-author`, so the postmaster wakes the author on
 every reply, and most of those wakes find a reviewer still unanswered. Each
-one spends a spawn. A `wake-when` gate lets the postmaster ask first:
+one spends a spawn. Reviewers also Cc the secretary on every verdict, which
+would wake it on every one. A `wake-when` gate lets the postmaster ask first:
 
 ```yaml
 budget-reserve: {spawns: 2, agents: [pr-author, secretary]}
 agents:
   pr-author:
-    wake-when: lkml-panel        # this seat only
+    wake-when: lkml-panel
+  secretary:
+    wake-when: lkml-panel
 ```
 
-- **`wake-when: lkml-panel`** goes on the `pr-author` agent and no other.
-  The postmaster runs `$FORK_SANDBOX_HOOKS_DIR/wake-when.lkml-panel` before
-  each spawn of that seat. The gate asks `lkml-panel-state.py` whether every
-  panel seat holds a verdict on the current version, and defers the wake
-  until they do. A carried verdict counts as answered, so a `recheck`
+- **`wake-when: lkml-panel`** goes on the `pr-author` and `secretary`
+  agents and no other. The postmaster runs
+  `$FORK_SANDBOX_HOOKS_DIR/wake-when.lkml-panel` before each spawn of those
+  seats; for any other seat the gate wakes it unconditionally. For the
+  author, the gate asks `lkml-panel-state.py` whether every panel seat
+  holds a verdict on the current version, and defers the wake until they
+  do. A carried verdict counts as answered, so a `recheck`
   version waits only on the seats it lists and a `carry` version on nobody;
   a seat escalated in by a push is a panel reviewer like any other. A human
   push, mail from anyone not on the panel, and a thread with no target always
@@ -659,6 +669,20 @@ agents:
   still waited on has run on the current target and posted nothing, with no
   retry pending (the postmaster re-runs a deferred gate after each zero-reply
   harvest): no reply is coming, and waiting would strand the author.
+- **Closing in one wake.** The verdict that settles the panel (every seat
+  positive, or overruled, on the current target) reaches both seats. The
+  gate wakes the secretary on it to close the panel, and skips the author,
+  whose only move would be to ask the secretary. On any other reviewer
+  reply the secretary is skipped: a seat not yet settled, a human push not
+  yet answered by a version, a secretary run live or due for a retry, or a
+  summary already posted on the target. A message from the author or from
+  `@operator` always wakes the secretary, so the author's `Version-Limit`
+  request and a deliberate request work as before. The author is skipped
+  only when the secretary is woken on the same message. A settling verdict
+  that missed the secretary wakes the author, which asks the secretary as
+  it always has; a forgotten `Cc:` costs one wake, and never leaves a
+  converged panel with nobody woken. The secretary still verifies the panel
+  from the thread, and writes `IN-PROGRESS` if its own reading disagrees.
 - **`budget-reserve`** names both seats because the author's final post
   comes before the secretary's verdict. A reserve held for the secretary
   alone would refuse that post, and the secretary would never be woken.
@@ -666,11 +690,20 @@ agents:
   --check`, before `install --postmaster`. The gate runs a staged copy of
   `lkml-panel-state.py`, and `--check` fails when that copy has drifted from
   the repo's.
-- **Exit codes.** 0 wakes the author. 1 defers: nothing spawns and no budget
-  is spent, and the author's next wake sees the whole thread. 2 means the
-  gate itself failed (a missing input, or `lkml-panel-state.py` erroring);
-  the postmaster wakes the author anyway and logs `wake-gate-error`, so look
-  for that in the postmaster log. A defer that no later reply ever wakes shows
+- **Exit codes.** 0 wakes the seat. 1 defers the author: nothing spawns and
+  no budget is spent, and the author's next wake sees the whole thread. 3
+  skips the seat by design: nothing spawns, no budget is spent, no
+  `wake-deferred` record is kept, and any standing defer for that seat on
+  that thread is cleared. 2 means the gate itself failed (a missing input,
+  or `lkml-panel-state.py` erroring); the postmaster wakes the seat anyway
+  and logs `wake-gate-error`, so look for that in the postmaster log.
+- **Exit 3 needs a postmaster that knows it.** fork-sandbox's postmaster
+  adds the skip contract; an older one treats 3 as an unknown exit, fails
+  open and wakes the seat. Nothing is lost, but nothing is saved either:
+  the secretary wakes on every verdict that Cc's it (and writes an
+  `IN-PROGRESS` summary for a panel still open), and the author wakes on the
+  settling verdict too. Upgrade the postmaster before putting
+  `wake-when: lkml-panel` on the secretary. A defer that no later reply ever wakes shows
   up as a `wake-deferred` flag, which `lkml-panel-state.py` reports as
   `NEEDS-OPERATOR`.
 
