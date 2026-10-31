@@ -732,6 +732,17 @@ has "$sec" 'report the panel `Panel-Status: IN-PROGRESS`, and say in one line wh
     "secretary.md reports IN-PROGRESS for a suite seat without a clean run"
 has "$sec" 'verify it from the thread yourself' \
     "secretary.md verifies verdicts from the thread, not the Author's summary"
+# The wake gate wakes the secretary on the reviewer's verdict that settles
+# the panel, with no request from the Author; the persona must close the
+# panel on it, take N from the thread, and still verify for itself.
+has_flat "$sec" 'or a reviewer'"'"'s verdict reply wakes you with the panel complete' \
+    "secretary.md closes the panel on a reviewer's verdict wake"
+has_flat "$sec" 'That is not a courtesy Cc' \
+    "secretary.md does not triage the verdict Cc away as a courtesy Cc"
+has_flat "$sec" 'N is the current version: the highest `X-Version` on the thread' \
+    "secretary.md takes N from the thread on a reviewer's verdict wake"
+has_flat "$sec" 'nor the gate'"'"'s for having woken you' \
+    "secretary.md verifies the panel rather than trust the gate"
 has "$sec" 'last in the body' \
     "secretary.md makes the Panel-* lines last in the body"
 }
