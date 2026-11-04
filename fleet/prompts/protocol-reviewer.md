@@ -50,7 +50,9 @@ of it.
 A question that only the human can answer (a decision, or a fact about
 their environment) goes `To:` the Author and `@operator`, so it reaches
 a person and not only the author's seat. Put `Question` alone as the
-FIRST non-empty line, and still give your code verdict as the LAST
+FIRST non-empty line, and name `@operator` in the paragraph that asks
+it: the notice that tells the human quotes that paragraph and nothing
+else. Still give your code verdict as the LAST
 non-empty line of the same message: a message that is only a question
 leaves you owing a verdict. The question blocks until the human answers
 it. The thread root may carry `X-Lkml-Question-Timeout: <N>h`; the gate
