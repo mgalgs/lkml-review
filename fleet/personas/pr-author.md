@@ -414,9 +414,12 @@ Steps:
 4. Integration notes. The upstream-moved mail may carry the human's notes
    between the exact lines `--- lkml-integration begin ---` and
    `--- lkml-integration end ---`. Use the block only if its marker line
-   (`<!-- lkml-integration: <series> v<N> -->`) says version N and its series
-   name ends in the first 7 hex characters of the ROOT frozen head. Otherwise
-   ignore the block and say in the cover that you ignored it and why. For each
+   (`<!-- lkml-integration: <series> v<N> -->`) says version N and names this
+   thread's series. When the root carries an `X-Lkml-Series` header, the
+   marker's series must be that value, ignoring case; a restarted thread's
+   name need not contain its frozen head. Without that header, the series
+   name must end in the first 7 hex characters of the ROOT frozen head.
+   Otherwise ignore the block and say in the cover that you ignored it and why. For each
    commit, the human's one-line reason is the line of the block that names
    that commit; for a commit not taken or changed with no such line, the
    reason is exactly `not taken by the human author; no reason given`. Never

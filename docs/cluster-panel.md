@@ -222,8 +222,11 @@ counts as taken only while the copy's change is still in H's tree. Where
 they give no reason, the
 reason is exactly `not taken
 by the human author; no reason given`; the persona never invents one and never
-asks. Notes are used only when their marker line names this version and a
-series name ending in the first 7 hex characters of the root's `Frozen-Head`.
+asks. Notes are used only when their marker line names this version and the
+thread's series: the root's `X-Lkml-Series` value (ignoring case) when the
+root carries one, else a name ending in the first 7 hex characters of the
+root's `Frozen-Head`. A restarted thread is named by whoever restarted it,
+so its name need not contain its frozen head.
 Nothing the human did not take is rebased forward: it counts as rejected, and
 the version's target is exactly H. Human-integration versions count toward
 `Version-Limit` like every other version.
@@ -257,6 +260,7 @@ On the root (kickoff) message:
 |---|---|---|
 | `X-Lkml-Tier` | `quick`, `standard` or `full` | the tier the tier step chose |
 | `X-Lkml-Tier-Reason` | one line, at most 200 characters | why, for the dashboard |
+| `X-Lkml-Series` | a series name, optional | the name a human's integration notes must carry; absent, the name ends in the root frozen head's first 7 hex |
 
 The roster is still the root's `Panel:` line (stamped as `X-Seats` too). A
 smaller tier is a smaller *named* roster, never "fewer seats happened to
