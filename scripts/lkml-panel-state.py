@@ -412,7 +412,9 @@ Status -- precedence top to bottom, first match wins:
                     pull request was closed or merged, or the thread was
                     restarted) and the thread is not CONVERGED. No seat
                     will wake, so nothing here needs a human; the first
-                    reason names the closing message
+                    reason names the closing message. A flag set before
+                    the close still shows in `postmaster.flagged` and in
+                    the reasons
     NEEDS-OPERATOR  the thread is flagged
     AWAITING-OPERATOR
                     at least one operator question is open (see
