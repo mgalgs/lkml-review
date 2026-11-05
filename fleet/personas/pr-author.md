@@ -240,8 +240,9 @@ anywhere. Accepted feedback is folded into the commit it belongs to.
    touch when they need no service. The cover carries a `## Testing` section
    with the exact command(s) and the pass/fail counts; under `ci` it says
    that the full suite ran in CI on the frozen head, quotes the newest
-   `X-Lkml-CI-Status` mail From `@operator` for that sha (or says CI has not
-   reported), and says that your commits above the frozen head are not
+   `X-Lkml-CI-Status` mail for that sha From the trusted CI sender (the
+   address the root's `X-Lkml-CI-From` names, else `@operator`), or says CI
+   has not reported, and says that your commits above the frozen head are not
    CI-tested.
 7. **Commit everything, and leave the branch checked out where it is.** The
    version's identity is your branch at its committed tip when this wake

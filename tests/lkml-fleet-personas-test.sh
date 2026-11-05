@@ -180,7 +180,7 @@ newcomer b16be7f450ebaca6554d5361f85c9c84345f3011faaf857cf3dcdf35de631223
 operability 340d564a46b6dced2b345c432dfe0cc42be5c731c29c3e60acc5f822af39e764
 second-opinion f5323cd5f38c122a04ddbe67d8d2201acc2f02ccde084ae790165a1bb3b80120
 security d1111f2d40d98a98a4d79e7a28c0579c77276208c895e66efffb4c995f1dbb53
-tests 54243e0da1dea3c576d5930249604e9cb28a4050d8a4215eb3e6a92d608f034f
+tests bb4fbcc5832d42239b969e67c28813eef940117420671a6b51eb9fff223f600c
 HASHES
 
 # The ci persona's suite source is a two-path contract: an executable
@@ -764,7 +764,9 @@ has_flat "$tst" '`X-Lkml-Suite-Source: ci`' "tests.md names the opt-in header"
 has_flat "$tst" "never run the project's full suite" "tests.md never runs the full suite under ci"
 has_flat "$tst" '`X-Lkml-CI-Status`' "tests.md reads the CI status header"
 has_flat "$tst" '`X-Lkml-CI-Head`' "tests.md matches the CI head to the frozen head"
-has_flat "$tst" 'From `@operator`' "tests.md trusts CI mail only From @operator"
+has_flat "$tst" 'the address the thread root'"'"'s `X-Lkml-CI-From` names, else `@operator`' "tests.md trusts CI mail only From the root's trusted CI sender"
+has_flat "$pra" 'the address the root'"'"'s `X-Lkml-CI-From` names, else `@operator`' "pr-author.md quotes CI mail only From the root's trusted CI sender"
+has_flat "$sec" 'the address the root'"'"'s `X-Lkml-CI-From` names, else `@operator`' "secretary.md reports CI mail only From the root's trusted CI sender"
 has_flat "$tst" "you do not re-run the project's tests, whole or in part" "tests.md re-runs no project tests under ci"
 has_flat "$tst" 'the way the kickoff'"'"'s "Verifying it yourself" says' "tests.md sends the seat to verify by hand"
 has_flat "$tst" 'a new test run against the code without the change' "tests.md keeps the fails-without-the-change check"
@@ -1189,15 +1191,15 @@ else
     no "every persona with the stanza warning says nothing retries" "$stanza_count of $check_count"
 fi
 
-# Contract header names: exactly ten X-Lkml-* names appear in fleet/, so
+# Contract header names: exactly eleven X-Lkml-* names appear in fleet/, so
 # a typo'd header never ships, and push modes / tier focus live only in
 # the files that own them (fleet/ includes fleet/prompts).
 lkml_headers="$(grep -rhoE 'X-Lkml-[A-Za-z-]+' "$repo_dir/fleet" | sed 's/-$//' | sort -u | tr '\n' ' ')"
-expected_headers='X-Lkml-Add-Seats X-Lkml-CI-Head X-Lkml-CI-Status X-Lkml-Push-Mode X-Lkml-Question-Timeout X-Lkml-Recheck-Seats X-Lkml-Series X-Lkml-Suite-Source X-Lkml-Tier X-Lkml-Tier-Reason '
+expected_headers='X-Lkml-Add-Seats X-Lkml-CI-From X-Lkml-CI-Head X-Lkml-CI-Status X-Lkml-Push-Mode X-Lkml-Question-Timeout X-Lkml-Recheck-Seats X-Lkml-Series X-Lkml-Suite-Source X-Lkml-Tier X-Lkml-Tier-Reason '
 if [[ "$lkml_headers" == "$expected_headers" ]]; then
-    ok "fleet/ spells only the ten contract X-Lkml-* headers"
+    ok "fleet/ spells only the eleven contract X-Lkml-* headers"
 else
-    no "fleet/ spells only the ten contract X-Lkml-* headers" "got: $lkml_headers"
+    no "fleet/ spells only the eleven contract X-Lkml-* headers" "got: $lkml_headers"
 fi
 push_files="$(grep -rlF 'X-Lkml-Push-Mode' "$repo_dir/fleet" | xargs -n1 basename | sort | tr '\n' ' ')"
 if [[ "$push_files" == 'pr-author.md secretary.md ' ]]; then

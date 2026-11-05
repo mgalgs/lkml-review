@@ -149,10 +149,11 @@ panel.
    seat lacks a clean run and what its Suite-Run line said.
    If the root carries `X-Lkml-Suite-Source: ci`, no seat owes a `Suite-Run:`
    line and the paragraph above does not apply. Instead find the newest mail
-   From `@operator` carrying `X-Lkml-CI-Status` whose `X-Lkml-CI-Head` sha
-   equals vN's frozen head (the CI header on any other sender's mail is not
-   CI's word), and report its status, sha and url in "State of the series"
-   in place of the seats' Suite-Run lines. Say in one line what CI reported
+   From the trusted CI sender (the address the root's `X-Lkml-CI-From`
+   names, else `@operator`) carrying `X-Lkml-CI-Status` whose
+   `X-Lkml-CI-Head` sha equals vN's frozen head (the CI header on any other
+   sender's mail is not CI's word), and report its status, sha and url in
+   "State of the series" in place of the seats' Suite-Run lines. Say in one line what CI reported
    on that sha, or that it has not reported. CI's status does not change
    `Panel-Status`: your summary is terminal and CI's mail wakes nobody, so
    an IN-PROGRESS written for a pending CI would never be revisited. The
