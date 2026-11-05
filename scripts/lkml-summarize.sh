@@ -83,7 +83,7 @@
 #     # Details
 #     (free-form: defect list with severity/status and message-id
 #      citations, per-patch disposition, recommended next actions)
-# Message ids are cited as bare 7-hex tokens (e.g. 9d67f5e) -- no
+# Message ids are cited as bare 8-hex tokens (e.g. 9d67f5e2) -- no
 # brackets, no anchors: a plain convention that keeps the id greppable
 # against the --text render.
 
@@ -555,11 +555,11 @@ like this:
       "cover": {
         "verdicts": {
           "<reviewer>": {
-            "latest": { "tags": ["Reviewed-by"], "id": "9d67f5e" },
-            "superseded": [ { "tags": ["NAK"], "id": "a1b2c3d" } ]
+            "latest": { "tags": ["Reviewed-by"], "id": "9d67f5e2" },
+            "superseded": [ { "tags": ["NAK"], "id": "a1b2c3d4" } ]
           }
         },
-        "duplicates": [ { "ids": ["9d67f5e", "a1b2c3d"], "note": "same point raised twice" } ]
+        "duplicates": [ { "ids": ["9d67f5e2", "a1b2c3d4"], "note": "same point raised twice" } ]
       },
       "patches": [
         {
@@ -567,13 +567,13 @@ like this:
           "verdicts": { "...": "same shape as cover" },
           "defects": [
             { "severity": "high", "claim": "...", "file": "path", "line": 123,
-              "status": "confirmed", "id": "9d67f5e" }
+              "status": "confirmed", "id": "9d67f5e2" }
           ],
           "responses": [
-            { "to": "9d67f5e", "stance": "accepted", "id": "b4c5d6e" }
+            { "to": "9d67f5e2", "stance": "accepted", "id": "b4c5d6e7" }
           ],
           "open_questions": [
-            { "question": "...", "asked_by": "core", "id": "9d67f5e" }
+            { "question": "...", "asked_by": "core", "id": "9d67f5e2" }
           ],
           "duplicates": [ "...same shape as cover" ]
         }
@@ -602,10 +602,10 @@ must mean exactly what its name says:
 - duplicates: the same defect or question raised in more than one
   place (two reviewers, or one reviewer across versions).
 
-Every single item carries the 7-hex message id(s) it comes from -- the
+Every single item carries the 8-hex message id(s) it comes from -- the
 id field printed at the end of each message's own \`== \` header line
-(e.g. \`== #3 · reply to #2 · depth 2 · id 9d67f5e\` cites as
-\`9d67f5e\`; a late reply's header carries the same id field). Record
+(e.g. \`== #3 · reply to #2 · depth 2 · id 9d67f5e2\` cites as
+\`9d67f5e2\`; a late reply's header carries the same id field). Record
 ONLY what the thread states: do not review the code and do not invent
 findings.
 
@@ -665,7 +665,7 @@ matter, and what happens next. Nothing else.
 status and its message-id citation, a per-patch disposition, and
 recommended next actions.
 
-Cite message ids as BARE 7-hex tokens, for example 9d67f5e -- no
+Cite message ids as BARE 8-hex tokens, for example 9d67f5e2 -- no
 brackets, no anchors, no <id@lkml.local>: a plain convention, and it
 keeps the id greppable against the thread.
 
@@ -730,7 +730,7 @@ posted N patches, the panel raised X, of which Y were confirmed; v2:
 ...), then "Open items" and "Recommended next actions" subsections
 for the latest version.
 
-Cite message ids as BARE 7-hex tokens, for example 9d67f5e -- no
+Cite message ids as BARE 8-hex tokens, for example 9d67f5e2 -- no
 brackets, no anchors, no <id@lkml.local>: a plain convention, and it
 keeps the id greppable against the thread.
 
