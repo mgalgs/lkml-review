@@ -138,7 +138,7 @@ written by the summarizer; a results-v<N>.json may sit next to it and
 is ignored except for the card's presence when the .md is absent), the
 HTML render adds an auto-summary card above the thread: the "# Summary"
 section sits in the visible card head, the "# Details" section inside a
-fold, and 7-hex message-id tokens that match a message in the mailbox
+fold, and 7- or 8-hex message-id tokens that match a message in the mailbox
 link to that message. --text prints the same sections as a bare
 'results' block (no links); an empty section is omitted in both
 backends. Without any results file there is no card at all.
@@ -161,6 +161,11 @@ import sys
 import argparse
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+
+# How many leading characters of a Message-ID every view a person reads
+# shows. Eight, because the commands those ids get copied into (answering
+# a seat's question, say) refuse fewer than eight hex characters.
+SHORT_ID_LEN = 8
 
 TAG_ORDER = ["Reviewed-by", "Acked-by", "Tested-by", "Changes-requested", "Question", "NAK"]
 TAG_CLASS = {
@@ -820,7 +825,7 @@ def require_full_coverage(series_dir, msgs, rendered_ids):
         f"{series_dir}: {len(missing)} of {len(msgs)} parsed message(s) never "
         "rendered under any version (an unreachable reference cycle, or a "
         "root whose version matches no [PATCH ...] cover): "
-        + ", ".join(sorted(m[:7] for m in missing))
+        + ", ".join(sorted(m[:SHORT_ID_LEN] for m in missing))
     )
 
 
@@ -972,7 +977,7 @@ def fleet_tier_info(roots, msgs):
     pushes = fleet_pushes(msgs)
     moded = [m for m in pushes if (m.get("x_push_mode") or "").strip()]
     for m in fleet_valid_escalates(root, msgs):
-        tier, at = m["x_tier"].strip(), m["id"][:7]
+        tier, at = m["x_tier"].strip(), m["id"][:SHORT_ID_LEN]
         if (m.get("x_tier_reason") or "").strip():
             reason = m["x_tier_reason"].strip()[:200]
     if not (root.get("x_tier") or root.get("x_tier_reason") or moded):
@@ -1044,7 +1049,7 @@ def fleet_ci_info(roots, msgs):
             continue
         trusted = {"status": status, "sha": head[1].lower()[:8],
                    "url": (m.get("x_ci_url") or "").strip() or None,
-                   "id": m["id"][:7], "untrusted_from": None,
+                   "id": m["id"][:SHORT_ID_LEN], "untrusted_from": None,
                    "sender": sender}
     if trusted:
         return trusted
@@ -1076,7 +1081,7 @@ def fleet_questions(roots, msgs, seated):
         if m["date"] is not None:
             when = m["date"] if m["date"].tzinfo else m["date"].replace(tzinfo=timezone.utc)
             age = int((now - when).total_seconds())
-        items.append({"seat": m["persona"], "id": m["id"][:7], "age": age,
+        items.append({"seat": m["persona"], "id": m["id"][:SHORT_ID_LEN], "age": age,
                       "timed_out": (timeout is not None and age is not None
                                     and age >= timeout * 3600)})
     return {"timeout": timeout, "items": items} if items else None
@@ -1348,23 +1353,32 @@ def split_results(text):
     return "\n".join(lines[s + 1:end_s]).rstrip("\n"), "\n".join(lines[d + 1:end_d]).rstrip("\n")
 
 
+# Prefix lengths the results card's autolinker resolves: the displayed
+# length, and seven, which is what summaries written while ids were
+# shown at seven characters cite.
+LINK_ID_LENS = (7, SHORT_ID_LEN)
+
+
 def id_prefix_map(msgs):
-    """Seven-hex message-id prefix to full id, for the results card's
-    autolinker. Ambiguous prefixes (two messages sharing their first
-    seven hex characters) are dropped rather than guessed at."""
+    """7- and 8-hex message-id prefix to full id, for the results card's
+    autolinker. Ambiguous prefixes (two messages sharing that prefix at
+    that length) are dropped rather than guessed at, per length: two ids
+    alike in seven hex but not eight link at eight only."""
     by_prefix = {}
     for m in msgs.values():
-        p = m["id"][:7]
-        if len(p) == 7:
-            by_prefix.setdefault(p, set()).add(m["id"])
+        for n in LINK_ID_LENS:
+            p = m["id"][:n]
+            if len(p) == n:
+                by_prefix.setdefault(p, set()).add(m["id"])
     return {p: next(iter(full)) for p, full in by_prefix.items() if len(full) == 1}
 
 
-HEX_TOKEN_RE = re.compile(r"(?<![0-9a-fA-F])[0-9a-f]{7}(?![0-9a-fA-F])")
+HEX_TOKEN_RE = re.compile(
+    r"(?<![0-9a-fA-F])[0-9a-f]{%d,%d}(?![0-9a-fA-F])" % (min(LINK_ID_LENS), max(LINK_ID_LENS)))
 
 
 def link_ids(escaped, id_map):
-    """Turn bare 7-hex message-id tokens in already-escaped text into
+    """Turn bare 7- or 8-hex message-id tokens in already-escaped text into
     links to the #m-<id> anchors the renderer itself constructs. The
     match runs on the ESCAPED text and inserts only those anchors, so a
     results file cannot smuggle markup through the linker; a token that
@@ -1380,7 +1394,7 @@ def render_summary_card(series_dir, version, id_map, series_name):
     results file exists (results-v<N>.md, or a bare results-v<N>.json
     when the .md is absent). The '# Summary' section sits visible in
     the card body, only the '# Details' section inside the fold, and
-    7-hex message-id tokens autolink to the thread's #m-<id> anchors.
+    7- or 8-hex message-id tokens autolink to the thread's #m-<id> anchors.
     Empty sections are omitted; with NO results file this returns ""
     -- no card at all, not an empty one. The id is namespaced per
     series (a multi-series page carries the same version twice)."""
@@ -1614,7 +1628,7 @@ def render_message(m, depth=0, series_name=""):
         f'  <summary>\n'
         f'    {badge(m["persona"])}\n'
         f'    <span class="line">\n'
-        f'      <span class="from">{who_of(m)} <span class="id">{esc(m["id"][:7])}</span>{chip}</span>\n'
+        f'      <span class="from">{who_of(m)} <span class="id">{esc(m["id"][:SHORT_ID_LEN])}</span>{chip}</span>\n'
         f'      <span class="gist">{esc(patch_label(m))}</span>\n'
         f'    </span>\n'
         f'    <span class="meta">{model_chip}</span>\n'
@@ -2338,7 +2352,7 @@ def render_text_message_body(out, m, header_line):
 
 def render_text_message(out, m, nums, depth, stop_ids=frozenset()):
     """One message of the --text thread: a numbered header ending in
-    the message's own short id (the same 7-hex Message-ID prefix the
+    the message's own short id (the same 8-character Message-ID prefix the
     HTML render's line shows -- it goes last so every existing
     substring match on the earlier fields still holds), then its body
     via render_text_message_body. `nums` maps id to (number, parent
@@ -2350,7 +2364,7 @@ def render_text_message(out, m, nums, depth, stop_ids=frozenset()):
     into it."""
     num, parent_num = nums[m["id"]]
     rel = f" · reply to #{parent_num}" if parent_num else ""
-    render_text_message_body(out, m, f"== #{num}{rel} · depth {depth} · id {m['id'][:7]}")
+    render_text_message_body(out, m, f"== #{num}{rel} · depth {depth} · id {m['id'][:SHORT_ID_LEN]}")
     for c in m["children"]:
         if c["id"] in stop_ids:
             continue
@@ -2367,7 +2381,7 @@ def render_text_late_message(out, m, home_version):
     the late-reply filter, never nested here."""
     render_text_message_body(
         out, m,
-        f"== late · in v{home_version} thread · reply to {m['parent'][:7]} · depth {m['depth']} · id {m['id'][:7]}")
+        f"== late · in v{home_version} thread · reply to {m['parent'][:SHORT_ID_LEN]} · depth {m['depth']} · id {m['id'][:SHORT_ID_LEN]}")
 
 
 def fit_tally_label(label, budget):
@@ -2691,7 +2705,7 @@ def message_json(m, series_dir):
     from_field = m["persona"] if m["persona"] else name_part
     return {
         "id": m["id"],
-        "short_id": m["id"][:7],
+        "short_id": m["id"][:SHORT_ID_LEN],
         "parent_id": m["parent"] or None,
         "version": m["version"],
         "from": from_field,

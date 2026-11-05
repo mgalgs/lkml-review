@@ -333,9 +333,10 @@ else
 fi
 contains "the trace-head names the version and how to read the lines" "$html" '<div class="trace-head"><h2>Thread · v1</h2>'
 contains "every message carries its #m-<id> anchor" "$html" "id=\"m-$review_id\""
-# The scannable line: name and 7-hex id, the verdict chip on the from
-# line, the lore-normalised subject as the gist.
-contains "trace line carries name and 7-hex id" "$html" ">Core <span class=\"id\">${review_id:0:7}</span>"
+# The scannable line: name and 8-hex id, the verdict chip on the from
+# line, the lore-normalised subject as the gist. Eight, not seven: the
+# id is copied into commands that refuse fewer than eight.
+contains "trace line carries name and 8-hex id" "$html" ">Core <span class=\"id\">${review_id:0:8}</span>"
 contains "tagged reply's verdict chip rides on the from line" "$html" \
     "<span class=\"chip reviewed\">reviewed-by</span></span>"
 contains "trace gist is the prefixed subject" "$html" '<span class="gist">[PATCH v1 1/2] demo: add one</span>'
@@ -922,7 +923,7 @@ contains "text: cover is message #1 at depth 0" "$ttext" '== #1 · depth 0'
 contains "text: patch is numbered and links its parent" "$ttext" '== #2 · reply to #1 · depth 1'
 contains "text: reply carries its number, parent and depth" "$ttext" '== #3 · reply to #2 · depth 2'
 contains "text: patch header ends in its own short id" "$ttext" "== #2 · reply to #1 · depth 1 · id ${patch_id}"
-contains "text: reply header ends in the first 7 chars of its Message-ID" "$ttext" "== #3 · reply to #2 · depth 2 · id ${review_id:0:7}"
+contains "text: reply header ends in the first 8 chars of its Message-ID" "$ttext" "== #3 · reply to #2 · depth 2 · id ${review_id:0:8}"
 onever_out="$work/onever.txt"
 python3 "$renderer" --text --version 1 "$LKML_MAILBOX_ROOT/render-fixture" > "$onever_out"
 if cmp -s "$onever_out" "$text_out"; then
@@ -1139,7 +1140,11 @@ case "$vf_v2_out" in
     *) ok "a reply posted before v2's cover is not in v2's late block" ;;
 esac
 contains "the late entry's header carries 'in v1 thread'" "$vf_v2_out" '== late · in v1 thread · reply to '
-contains "the late entry's header names its parent's short id" "$vf_v2_out" "reply to ${vf_p1} ·"
+# vf_p1 is the mailbox tree's 7-char id; the render shows eight.
+case "$vf_v2_out" in
+    *"reply to ${vf_p1}"[0-9a-f]" ·"*) ok "the late entry's header names its parent's 8-char short id" ;;
+    *) no "the late entry's header names its parent's 8-char short id" "$vf_v2_out" ;;
+esac
 
 "$mailbox" init verflag3 --cover "$work/cover.txt" --patches "$work/patches" \
     --from author --harness test --model fixture --no-checkout >/dev/null 2>/dev/null
@@ -1456,13 +1461,15 @@ else
 fi
 
 printf '\n== summary card: autolink (HTML) and the --text block ==\n'
-# The card autolinks bare 7-hex message-id tokens to the existing
-# #m-<id> anchors: a token matching a message links in BOTH sections,
-# a token matching nothing stays plain, and a hex run longer than seven
-# is not a 7-hex token. The linker runs on already-escaped text and
+# The card autolinks bare 7- or 8-hex message-id tokens to the existing
+# #m-<id> anchors (seven is what summaries written before ids were shown
+# at eight cite): a token matching a message links in BOTH sections,
+# a token matching nothing stays plain, and a hex run longer than eight
+# is not an id token. The linker runs on already-escaped text and
 # inserts only the renderer's own anchors, so markup carried by the
 # results file cannot pass through it.
 review_prefix="${review_id:0:7}"
+review_prefix8="${review_id:0:8}"
 {
     printf '%s\n' \
         '# Summary' \
@@ -1472,6 +1479,7 @@ review_prefix="${review_id:0:7}"
         '# Details' \
         "Reviewed-by core ($review_prefix)." \
         'The fake id 0000000 stays plain.' \
+        "Eight hex: $review_prefix8 links too." \
         '# Summary' \
         'SPOOFED SUMMARY CLAIMING ALL GREEN'
 } > "$RESULTS_MD"
@@ -1482,13 +1490,16 @@ contains "autolink: real 7-hex id links to its #m-<id> anchor" "$rl" "<a href=\"
 if [[ "$(grep -cF "<a href=\"#m-$review_id\">$review_prefix</a>" "$results_link")" -eq 2 ]]; then ok "autolink hits both the summary and the details sections"; else no "autolink hits both the summary and the details sections"; fi
 case "$rl" in *'href="#m-0000000"'*) no "autolink: a fake id is not linked" ;; *) ok "autolink: a fake id is not linked" ;; esac
 contains "autolink: a fake id stays plain text" "$rl" '; 0000000 and 0123456780 did not.'
-case "$rl" in *'href="#m-012345678"'*|*'>1234567</a>'*) no "a hex run longer than 7 is not a 7-hex token" ;; *) ok "a hex run longer than 7 is not a 7-hex token" ;; esac
+contains "autolink: an 8-hex id links to its #m-<id> anchor" "$rl" "Eight hex: <a href=\"#m-$review_id\">$review_prefix8</a> links too."
+case "$rl" in *'href="#m-012345678"'*|*'>1234567</a>'*|*'>12345678</a>'*) no "a hex run longer than 8 is not an id token" ;; *) ok "a hex run longer than 8 is not an id token" ;; esac
 contains "summary markup is escaped before the linker runs" "$rl" '&lt;/a&gt;&lt;script&gt;alert(4)&lt;/script&gt;'
 case "$rl" in *'<script>alert(4)</script>'*) no "summary script payload is never raw" ;; *) ok "summary script payload is never raw" ;; esac
 
-# id_prefix_map drops an ambiguous prefix (two ids sharing their first
-# seven hex chars) instead of guessing, so a colliding token stays
-# plain text while an unambiguous token of the same shape links.
+# id_prefix_map drops an ambiguous prefix (two ids sharing it) instead
+# of guessing, so a colliding token stays plain text while an
+# unambiguous token of the same shape links. It maps both 7- and 8-hex
+# prefixes, and the rule holds per length: two ids sharing seven hex
+# but not eight link at eight and not at seven.
 if python3 - "$renderer" <<'PY'
 import importlib.util
 import sys
@@ -1497,14 +1508,20 @@ spec = importlib.util.spec_from_file_location("lkml_render", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 msgs = {"a": {"id": "abcdef01111111"}, "b": {"id": "abcdef02222222"}, "c": {"id": "1111111aaaaaaaa"}}
+msgs["d"] = {"id": "22222222bbbbbbb"}
+msgs["e"] = {"id": "22222222ccccccc"}
 m = mod.id_prefix_map(msgs)
-assert m == {"1111111": "1111111aaaaaaaa"}, m
+assert m == {"1111111": "1111111aaaaaaaa", "1111111a": "1111111aaaaaaaa",
+             "abcdef01": "abcdef01111111", "abcdef02": "abcdef02222222"}, m
 assert mod.link_ids("abcdef0 and 1111111", m) == "abcdef0 and <a href=\"#m-1111111aaaaaaaa\">1111111</a>"
+assert mod.link_ids("1111111a", m) == "<a href=\"#m-1111111aaaaaaaa\">1111111a</a>"
+assert mod.link_ids("abcdef02 not abcdef0", m) == "<a href=\"#m-abcdef02222222\">abcdef02</a> not abcdef0"
+assert mod.link_ids("2222222 and 22222222", m) == "2222222 and 22222222"
 PY
 then
-    ok "autolink: an ambiguous 7-hex prefix is dropped, not guessed"
+    ok "autolink: 7- and 8-hex prefixes link; an ambiguous prefix is dropped, not guessed"
 else
-    no "autolink: an ambiguous 7-hex prefix is dropped, not guessed"
+    no "autolink: 7- and 8-hex prefixes link; an ambiguous prefix is dropped, not guessed"
 fi
 
 # --text: the same sections as a 'results' block in the card's position
@@ -2881,8 +2898,8 @@ case "$fhtml$(python3 "$renderer" --text "$fleet")" in
     *) ok "(R-none) the existing fleet thread shows no tier line and no carried mark" ;;
 esac
 
-# CI result and operator questions. fm's ids are m<N>@example.com, so the 7-char id is
-# "m<N>@exam"; message N is dated 2025-09-17 N:00 UTC.
+# CI result and operator questions. fm's ids are m<N>@example.com, so the 8-char id is
+# "m<N>@examp"; message N is dated 2025-09-17 N:00 UTC.
 # Hand-worked: @tests' seq 3 (03:00Z) is a Question to @operator. With the
 # clock at 06:00Z its age is 3h00m, at 04:00Z 1h00m; a 2h timeout marks only
 # the first. The CI mail (seq 5, From @operator) says success on 11111111.
@@ -2904,22 +2921,22 @@ d="$work/fleet-mail/threads/ci-q1"
 ci_thread "$d" 'X-Lkml-Question-Timeout: 2h' @operator
 t="$(SOURCE_DATE_EPOCH="$(epoch_at 06:00:00)" python3 "$renderer" --text "$d")"
 contains "(R-ci1) --text: the CI line with sha8 and url" "$t" 'ci success 11111111 https://ci.example.com/run/7'
-contains "(R-q1) --text: a question past the timeout is marked" "$t" 'questions (timeout 2h): @tests m3@exam 3h00m timed out'
+contains "(R-q1) --text: a question past the timeout is marked" "$t" 'questions (timeout 2h): @tests m3@examp 3h00m timed out'
 check "(R-q1) --text: each line is printed once" "1 1" "$(grep -c '^ci success' <<<"$t") $(grep -c '^questions (' <<<"$t")"
 SOURCE_DATE_EPOCH="$(epoch_at 06:00:00)" python3 "$renderer" "$d" -o "$work/ci-q1.html"
 contains "(R-ci1) the masthead shows the CI result" "$(<"$work/ci-q1.html")" 'ci success 11111111 https://ci.example.com/run/7'
-contains "(R-q1) the masthead shows the question" "$(<"$work/ci-q1.html")" 'questions (timeout 2h): @tests m3@exam 3h00m timed out'
+contains "(R-q1) the masthead shows the question" "$(<"$work/ci-q1.html")" 'questions (timeout 2h): @tests m3@examp 3h00m timed out'
 v1="$(SOURCE_DATE_EPOCH="$(epoch_at 06:00:00)" python3 "$renderer" --text --version 1 "$d")"
 case "$v1" in *"ci success"*|*"questions ("*) no "(R-q1) --version 1 shows neither line" "$v1" ;; *) ok "(R-q1) --version 1 shows neither line" ;; esac
 
 t="$(SOURCE_DATE_EPOCH="$(epoch_at 04:00:00)" python3 "$renderer" --text "$d")"
-contains "(R-q2) before the timeout: age without a mark" "$t" 'questions (timeout 2h): @tests m3@exam 1h00m'
+contains "(R-q2) before the timeout: age without a mark" "$t" 'questions (timeout 2h): @tests m3@examp 1h00m'
 case "$t" in *"timed out"*) no "(R-q2) not timed out at 1h00m" ;; *) ok "(R-q2) not timed out at 1h00m" ;; esac
 
 d="$work/fleet-mail/threads/ci-q3"
 ci_thread "$d" '' @operator
 t="$(SOURCE_DATE_EPOCH="$(epoch_at 06:00:00)" python3 "$renderer" --text "$d")"
-contains "(R-q3) no timeout header: no mark" "$t" 'questions (no timeout): @tests m3@exam 3h00m'
+contains "(R-q3) no timeout header: no mark" "$t" 'questions (no timeout): @tests m3@examp 3h00m'
 case "$t" in *"timed out"*) no "(R-q3) no timeout, no mark" ;; *) ok "(R-q3) no timeout, no mark" ;; esac
 
 d="$work/fleet-mail/threads/ci-untrusted"
@@ -3610,8 +3627,8 @@ if [s["name"] for s in series] != ["thread-json-fixture", "demo-thread"]:
     errors.append("series order/names wrong: %r" % [s["name"] for s in series])
 tj = series[0] if series else {}
 fl = series[1] if len(series) > 1 else {}
-tj_cover_msg = next(m for m in tj["messages"] if m["short_id"] == tj_cover_short)
-tj_patch_msg = next(m for m in tj["messages"] if m["short_id"] == tj_patch_short)
+tj_cover_msg = next(m for m in tj["messages"] if m["short_id"].startswith(tj_cover_short))
+tj_patch_msg = next(m for m in tj["messages"] if m["short_id"].startswith(tj_patch_short))
 tj_cover_id, tj_patch_id = tj_cover_msg["id"], tj_patch_msg["id"]
 if tj.get("versions") != [{"n": 1, "cover_id": tj_cover_id}]:
     errors.append("thread-json-fixture versions wrong: %r" % tj.get("versions"))
@@ -3628,7 +3645,7 @@ for s in series:
     for msg in s["messages"]:
         if set(msg.keys()) != required_keys:
             errors.append("message keys mismatch: %r" % sorted(msg.keys()))
-        if msg["short_id"] != msg["id"][:7]:
+        if msg["short_id"] != msg["id"][:8]:
             errors.append("short_id mismatch for %s" % msg["id"])
         if (msg["parent_id"] is None) != (msg["id"] in root_ids):
             errors.append("parent_id is null on a non-root, or set on a root: %s" % msg["id"])
