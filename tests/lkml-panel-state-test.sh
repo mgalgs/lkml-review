@@ -3504,6 +3504,34 @@ reason_has "(adv17) a void ruling on a gating seat's question is a reason" \
     "Overrule in m010 from @core ignored: a question to @operator is the operator's to answer"
 check "(adv17) not CONVERGED" "false" "$(jr '.status == "CONVERGED"')"
 
+gen adv18 <<'PY'
+pos = msg(9, "@second", "Reviewed-by: S", sha=A, ver=1)
+os.makedirs(D + "-none", exist_ok=True)
+write(D + "-none", export(adv_case(pos)), status(seat_notes=[]))
+write(D, export(adv_case(pos)), status(seat_notes=[
+    {"agent": "core", "reason": "silent-wake", "at": "2026-03-02T10:04:00Z", "run_id": None},
+    {"agent": "second", "reason": "wake-exit", "at": "2026-03-02T10:05:00Z", "run_id": "r-77"}]))
+os.makedirs(D + "-all", exist_ok=True)
+write(D + "-all", export(adv_case(pos)), status(seat_notes=[
+    {"agent": "second", "reason": "wake-exit", "at": "2026-03-02T10:05:00Z", "run_id": "r-77"},
+    {"agent": "second", "reason": "malformed-reply", "at": "2026-03-02T10:09:00Z", "run_id": None}]))
+PY
+for sub in -none "" -all; do
+    gen_dir="$work/case-adv18$sub"; cases_run+=("adv18$sub")
+    OUT="$("$ps" --export-file "$gen_dir/export.json" --status-file "$gen_dir/status.json" 2>/dev/null)"
+    case "$sub" in
+    -none)
+        check "(adv18-none) no seat notes: no advisory notes" "[] CONVERGED" "$(j .advisory_notes) $(jr .status)" ;;
+    "")
+        # Hand-worked: @core's note is not an advisory seat's: ignored, and
+        # never a reason; @second's becomes a note with its run.
+        check "(adv18-some) only the advisory seat's note" '["@second: postmaster note wake-exit at 2026-03-02T10:05:00Z (run r-77)"]' "$(j .advisory_notes)"
+        check "(adv18-some) a note never blocks" "[] CONVERGED" "$(j .reasons) $(jr .status)" ;;
+    -all)
+        check "(adv18-all) every note, oldest first; no run when run_id is null" '["@second: postmaster note wake-exit at 2026-03-02T10:05:00Z (run r-77)","@second: postmaster note malformed-reply at 2026-03-02T10:09:00Z"]' "$(j .advisory_notes)" ;;
+    esac
+done
+
 printf '\n== invariants over every case above ==\n'
 inv_bad=""; inv_n=0; adv_bad=""; adv_n=0; inv_conv=0; diff_bad=""; diff_n=0
 # Opt-in differential check: LKML_PANEL_STATE_BASELINE names the script as

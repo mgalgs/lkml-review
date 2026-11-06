@@ -91,7 +91,10 @@ reason: each goes, in the same string style, to the top-level
 "secretary says CONVERGED but ..." check are over the gating seats only.
 Its operator question is listed but never open (the panel does not wait
 on it; a note says it is unanswered). An advisory @core cannot rule (see
-"Overrule").
+"Overrule"). Each entry of the postmaster status's `seat_notes` (a failed
+wake of an `on-failure: note` seat) for an advisory seat is a note too,
+oldest first: "@seat: postmaster note <keyword> at <time> (run <id>)",
+the run part only when run_id is set. Another seat's note is ignored.
 
 Tier -- the root's `X-Lkml-Tier: quick|standard|full` header says how big
 a panel the CI side chose for this thread, and `X-Lkml-Tier-Reason` (one
@@ -1863,6 +1866,22 @@ def postmaster_facts(status):
     return facts, reasons
 
 
+def seat_note_lines(status, advisory):
+    """The postmaster's seat_notes for the seats in `advisory`, oldest
+    first, as advisory_notes lines. A note of any other seat is left out."""
+    out = []
+    for n in status.get("seat_notes") or []:
+        if not (isinstance(n, dict) and isinstance(n.get("agent"), str)):
+            continue
+        seat = "@" + n["agent"]
+        if seat not in advisory:
+            continue
+        run = f" (run {n['run_id']})" if isinstance(n.get("run_id"), str) else ""
+        out.append(f"{seat}: postmaster note {opt_str(n.get('reason'))} "
+                   f"at {opt_str(n.get('at'))}{run}")
+    return out
+
+
 def upstream_state_of(status):
     u = status.get("upstream_state")
     if not isinstance(u, dict):
@@ -1914,6 +1933,7 @@ def build_state(export, status, now):
                          f"escalated it in; it gates")
     roster["advisory"] = [a for a in roster["advisory"] if a not in escalated]
     advisory = set(roster["advisory"])
+    notes += seat_note_lines(status, advisory)
 
     def note_or_reason(seat, why):
         (notes if seat in advisory else reasons).append(why)
