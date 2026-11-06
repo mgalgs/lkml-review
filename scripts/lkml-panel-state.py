@@ -29,7 +29,9 @@ demanded. So a panel is CONVERGED only when every panel seat holds a
 positive verdict on the CURRENT review target, and anything missing,
 stale, contradictory or unreadable pushes the answer AWAY from
 CONVERGED, with a reason string saying why. Every string in "reasons" is
-a condition that blocks CONVERGED; a CONVERGED object has none.
+a condition that blocks CONVERGED; a CONVERGED object has none. The one
+exception to "every panel seat" is a seat the root names Advisory (see
+"Advisory"): it is judged and reported, never counted.
 
 This is the judgment layer. lkml-fleet-status.sh is the human screen
 that deliberately never judges convergence; it is untouched, and the tag
@@ -47,6 +49,7 @@ case-sensitive, the first occurrence of a key wins:
     Frozen-Head: <40- or 64-hex sha>
     Suite: <command>
     Suite-Seats: @tests[, @other]
+    Advisory: @second-opinion[, @other]
 
 An address must match ^@[a-z0-9][a-z0-9-]*$; a malformed one is dropped
 with a reason (and, being a reason, blocks CONVERGED: a seat silently
@@ -65,6 +68,30 @@ but no Suite-Seats and @tests is not on the panel"): a suite nobody must
 run is a gap, not a pass. A Suite-Seats entry not on the panel is a
 reason and is dropped, and so is a Suite-Seats line that leaves no seat.
 roster.suite_seats is the RESOLVED list ([] with no Suite).
+
+Advisory -- panel seats that are woken and review like any other, whose
+verdicts are reported but never gate. Parsed like Suite-Seats: each entry
+an address, comma-separated, de-duplicated in first-seen order. An entry
+not on the root's Panel is a reason and is dropped. An entry that is a
+suite seat (the resolved roster.suite_seats) is a reason and the seat
+stays GATING: the suite must be run by a seat whose verdict counts. A
+line that would leave no gating seat on the panel is a reason, and every
+seat gates. A seat an escalate push's X-Lkml-Add-Seats names gates even
+when the root names it Advisory (escalation asks for its verdict on
+purpose); an advisory note says so. roster.advisory is the RESOLVED
+list of seats that are advisory ([] with no line). With no Advisory line
+nothing changes.
+
+An advisory seat's entry in "seats" is judged exactly as any other seat's
+(state, verdict, carry, staleness, Suite-Run) and has "advisory": true
+(false on every other seat). No condition about it -- silent, stale,
+blocking, a Question, unaddressed, an Overrule line it wrote -- is ever a
+reason: each goes, in the same string style, to the top-level
+"advisory_notes" (always present, [] when empty). CONVERGED and every
+"secretary says CONVERGED but ..." check are over the gating seats only.
+Its operator question is listed but never open (the panel does not wait
+on it; a note says it is unanswered). An advisory @core cannot rule (see
+"Overrule").
 
 Tier -- the root's `X-Lkml-Tier: quick|standard|full` header says how big
 a panel the CI side chose for this thread, and `X-Lkml-Tier-Reason` (one
@@ -231,8 +258,8 @@ Changes-requested, Question, then the -by trailers). state is:
 
 Overrule -- a seat's block can be ruled on, never ignored. A ruling is a
 line `Overrule: <message-id>` on a line of its own at the left margin, not
-quoted, in a message from @core (while @core is on the effective panel)
-or from @operator. It names the blocking or Question message it overturns,
+quoted, in a message from @core (while @core is on the effective panel
+and not advisory) or from @operator. It names the blocking or Question message it overturns,
 which must be an earlier message from another panel seat. When that
 message is still the seat's verdict on the current target (carried
 included), the seat is "overruled", with overruled_by {"seat",
@@ -419,8 +446,8 @@ Status -- precedence top to bottom, first match wins:
     AWAITING-OPERATOR
                     at least one operator question is open (see
                     "Operator questions and the timeout")
-    CONVERGED      usable roster; a current target; every panel seat
-                    positive or overruled; the secretary's message on
+    CONVERGED      usable roster; a current target; every gating panel
+                    seat (at least one) positive or overruled; the secretary's message on
                     target, well-formed and saying CONVERGED; quiescent; the
                     target sources agree; no other reason. verdict is
                     the secretary's Panel-Verdict -- but with a frozen
@@ -447,8 +474,10 @@ Output (null, never an omitted key, for what is unknown):
      "target": {"branch","sha","version","set_by","set_at","source"},
                                         # source: postmaster, mail or carry
      "roster": {"author","panel","secretary","version_limit","frozen_head",
-                "suite","suite_seats"},   # suite: string|null; suite_seats:
-                                          # the resolved list, [] w/o Suite
+                "suite","suite_seats","advisory"},
+                                          # suite: string|null; suite_seats:
+                                          # the resolved list, [] w/o Suite;
+                                          # advisory: resolved, see "Advisory"
      "tier": {"name","reason","source","message_id"},   # see "Tier"
      "panel": [...],                    # the effective roster: the root's
                                         # panel plus escalated-in seats
@@ -471,7 +500,7 @@ Output (null, never an omitted key, for what is unknown):
      "questions": [...],
      "now": "<ISO UTC>",                # the clock the ages were taken at
      "seats": [{"seat","state","verdict","message_id","version","sha",
-                "suite_run","carried","overruled_by"}],
+                "suite_run","carried","overruled_by","advisory"}],
                                  # suite_run: null, or {"status",
                                  # "passed","failed","detail"}; see "Suite
                                  # run". carried: false = the verdict was
@@ -489,7 +518,9 @@ Output (null, never an omitted key, for what is unknown):
                                           # the postmaster's, or null when
                                           # its status has none (a thread
                                           # that never saw X-Upstream-State)
-     "reasons": [...]}                    # empty only for CONVERGED
+     "reasons": [...],                    # empty only for CONVERGED
+     "advisory_notes": [...]}             # advisory seats' conditions;
+                                          # never block, see "Advisory"
 """
 
 import json
@@ -521,7 +552,7 @@ HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
 FROZEN_HEAD_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
 FROZEN_HEAD_LINE_RE = re.compile(r"^Frozen-Head:(.*)$")
 ROSTER_KEYS = ("Author", "Panel", "Secretary", "Version-Limit", "Frozen-Head",
-               "Suite", "Suite-Seats")
+               "Suite", "Suite-Seats", "Advisory")
 ROSTER_LINE_RE = re.compile(r"^(" + "|".join(ROSTER_KEYS) + r"):(.*)$")
 PANEL_LINE_RE = re.compile(r"^Panel-[A-Za-z]+:")
 PANEL_KNOWN_RE = re.compile(r"^Panel-(?:Version|Status|Verdict):")
@@ -874,7 +905,7 @@ def stamp(when):
 
 
 def operator_questions(msgs, panel, hours, now):
-    """Every operator question on the thread -> (list, reasons). A message
+    """Every operator question on the thread -> (list, [(seat, reason)]). A message
     from one of `panel` (the effective panel and the author) that carries
     the Question tag and names @operator among its recipients is one. When a timeout is set and
     the question is at least that old, its `Question` tag is dropped IN
@@ -893,8 +924,8 @@ def operator_questions(msgs, panel, hours, now):
             if hours is not None:
                 timed_out = age >= hours * 3600
         elif hours is not None:
-            reasons.append(f"question {m['id']} from {m['from']}: unreadable "
-                           f"Date; the timeout cannot apply")
+            reasons.append((m["from"], f"question {m['id']} from {m['from']}: "
+                                       f"unreadable Date; the timeout cannot apply"))
         if timed_out:
             m["tags"] = [t for t in m["tags"] if t != "Question"]
         out.append({"seat": m["from"], "message_id": m["id"],
@@ -948,17 +979,19 @@ def mark_open_questions(questions, seats, msgs, author=None, target=None):
                      and not operator_answered(q, msgs))
 
 
-def parse_overrules(msgs, panel, since=0):
+def parse_overrules(msgs, panel, since=0, advisory=()):
     """Every `Overrule: <message-id>` ruling -> ({overruled id: ruling
-    message}, reasons). See the module docstring, "Overrule". Only a
-    message at seq >= `since` raises a reason."""
+    message}, [(ruler, reason)]). See the module docstring, "Overrule".
+    Only a message at seq >= `since` raises a reason. An advisory @core
+    does not rule: its verdict does not count, so neither may its ruling."""
     by_id = {m["id"]: m for m in msgs if m["ok"] and m["id"]}
-    arbiters = {OPERATOR} | ({ARBITER} if ARBITER in panel else set())
+    arbiters = {OPERATOR} | ({ARBITER} if ARBITER in panel
+                             and ARBITER not in advisory else set())
     rulings, out = {}, []
     for m in msgs:
         if not m["ok"]:
             continue
-        reasons = out if m["seq"] >= since else []
+        reasons = []
         for line in m["body"].split("\n"):
             line = line.rstrip("\r")
             if QUOTED_RE.match(line) or not line.startswith(OVERRULE_PREFIX):
@@ -990,6 +1023,8 @@ def parse_overrules(msgs, panel, since=0):
                                f"is the operator's to answer")
             else:
                 rulings.setdefault(ruled["id"], m)
+        if m["seq"] >= since:
+            out += [(m["from"], r) for r in reasons]
     return rulings, out
 
 
@@ -1120,7 +1155,7 @@ def parse_roster(root):
     """The roster from the thread root -> (roster, reasons)."""
     roster = {"author": None, "panel": [], "secretary": None,
               "version_limit": None, "frozen_head": None,
-              "suite": None, "suite_seats": []}
+              "suite": None, "suite_seats": [], "advisory": []}
     reasons = []
     if root is None or not root["ok"]:
         reasons.append("thread root is unreadable; no panel roster")
@@ -1157,6 +1192,7 @@ def parse_roster(root):
     if not roster["panel"]:
         reasons.append("no panel roster on the thread root")
     reasons += resolve_suite(roster, seen)
+    reasons += resolve_advisory(roster, seen)
     return roster, reasons
 
 
@@ -1197,6 +1233,49 @@ def resolve_suite(roster, seen):
         reasons.append("roster: Suite: set but Suite-Seats names no seat "
                        "on the panel")
     return reasons
+
+
+def resolve_advisory(roster, seen):
+    """The Advisory line from the root's roster lines -> reasons; fills
+    roster["advisory"]. Runs after resolve_suite: a suite seat stays
+    gating. See the module docstring, "Advisory"."""
+    reasons = []
+    if "Advisory" not in seen:
+        return reasons
+    named = []
+    for tok in seen["Advisory"].split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        addr = address(tok, "Advisory", reasons)
+        if addr is None or addr in named:
+            continue
+        named.append(addr)
+        if addr not in roster["panel"]:
+            reasons.append(f"roster: Advisory names {addr}, "
+                           f"which is not on the panel; dropped")
+        elif addr in roster["suite_seats"]:
+            reasons.append(f"roster: Advisory names {addr}, which is a "
+                           f"suite seat; it stays gating")
+        else:
+            roster["advisory"].append(addr)
+    if roster["panel"] and all(s in roster["advisory"] for s in roster["panel"]):
+        reasons.append("roster: Advisory names every panel seat, which "
+                       "leaves nobody gating; every seat gates")
+        roster["advisory"] = []
+    return reasons
+
+
+def escalated_seats(msgs, pushes):
+    """{seat: push message id} for every seat a valid escalate push's
+    X-Lkml-Add-Seats names, seated already or not (first push wins)."""
+    by_id = {m["id"]: m for m in msgs if m["ok"] and m["id"]}
+    out = {}
+    for p in pushes:
+        if p["mode"] == "escalate" and p["message_id"] in by_id:
+            for a in seat_tokens(by_id[p["message_id"]], ADD_SEATS_HEADER, []):
+                out.setdefault(a, p["message_id"])
+    return out
 
 
 def opt_int(value):
@@ -1437,7 +1516,7 @@ def judge_on(entry, seat, m, tagged, target, suite_seats, source=None):
 
 
 def unaddressed_seats(seats, msgs, target, since):
-    """A reason per seat that owes a fresh verdict on `target` but that no
+    """A (seat, reason) per seat that owes a fresh verdict on `target` but that no
     message since seq `since` (the version's posting) names in To/Cc: the
     postmaster wakes only addressed seats, so nothing will ever wake it."""
     out = []
@@ -1446,9 +1525,10 @@ def unaddressed_seats(seats, msgs, target, since):
             continue
         if not any(m["ok"] and m["seq"] >= since and s["seat"] in m["to"] + m["cc"]
                    for m in msgs):
-            out.append(f"{s['seat']}: owed a verdict on {ver_label(target)}, but "
-                       f"nothing since {ver_label(target)} was posted is "
-                       f"addressed to it, so nothing will wake it")
+            out.append((s["seat"],
+                        f"{s['seat']}: owed a verdict on {ver_label(target)}, but "
+                        f"nothing since {ver_label(target)} was posted is "
+                        f"addressed to it, so nothing will wake it"))
     return out
 
 
@@ -1813,6 +1893,20 @@ def build_state(export, status, now):
     reasons += tier_reasons
     pushes, panel, tier, push_reasons = parse_pushes(msgs, roster["panel"], tier)
     reasons += push_reasons
+    # Advisory seats are judged like any other, but whatever they do or
+    # fail to do goes to advisory_notes, never to reasons. An escalate
+    # push asked for a seat's verdict on purpose, so it gates.
+    notes = []
+    escalated = escalated_seats(msgs, pushes)
+    for a in roster["advisory"]:
+        if a in escalated:
+            notes.append(f"{a}: named on Advisory, but push {escalated[a]} "
+                         f"escalated it in; it gates")
+    roster["advisory"] = [a for a in roster["advisory"] if a not in escalated]
+    advisory = set(roster["advisory"])
+
+    def note_or_reason(seat, why):
+        (notes if seat in advisory else reasons).append(why)
     source, source_reasons = parse_suite_source(root)
     reasons += source_reasons
     trusted, from_reasons = parse_ci_from(root)
@@ -1823,7 +1917,8 @@ def build_state(export, status, now):
     reasons += timeout_reasons
     askers = panel + ([roster["author"]] if roster["author"] else [])
     questions, question_reasons = operator_questions(msgs, askers, timeout, now)
-    reasons += question_reasons
+    for seat, why in question_reasons:
+        note_or_reason(seat, why)
 
     bad = [str(m["seq"]) for m in msgs if not m["ok"]]
     if bad:
@@ -1856,8 +1951,9 @@ def build_state(export, status, now):
     # seat owes a Suite-Run line, and none is read.
     suite_seats = () if source == "ci" else roster["suite_seats"]
     rulings, overrule_reasons = parse_overrules(
-        msgs, panel, versions[cur]["seq"] if cur is not None else 0)
-    reasons += overrule_reasons
+        msgs, panel, versions[cur]["seq"] if cur is not None else 0, advisory)
+    for seat, why in overrule_reasons:
+        note_or_reason(seat, why)
 
     seats = []
     for seat in panel:
@@ -1866,11 +1962,19 @@ def build_state(export, status, now):
         entry, why = judge_seat(seat, msgs, target, suite_seats,
                                 chain, rechecked)
         entry, why = apply_overrule(entry, why, rulings, suite_seats)
+        entry["advisory"] = seat in advisory
         seats.append(entry)
         if why:
-            reasons.append(why)
+            note_or_reason(seat, why)
+    gating = [s for s in seats if not s["advisory"]]
 
     mark_open_questions(questions, seats, msgs, roster["author"], target)
+    for q in questions:
+        if q["open"] and q["seat"] in advisory:
+            # The panel does not wait on an advisory seat's question.
+            q["open"] = False
+            notes.append(f"{q['seat']}: operator question {q['message_id']} "
+                         f"is unanswered")
 
     secretary, sec_reasons = judge_secretary(msgs, roster, target, carry_from)
     reasons += sec_reasons
@@ -1883,13 +1987,15 @@ def build_state(export, status, now):
         push = dict(pushes[-1], answered=(frozen_head is not None
                                           and frozen_head["sha"] == pushes[-1]["sha"]))
     if cur is not None and (push is None or push["answered"]):
-        reasons += unaddressed_seats(seats, msgs, target, versions[cur]["seq"])
+        for seat, why in unaddressed_seats(seats, msgs, target,
+                                           versions[cur]["seq"]):
+            note_or_reason(seat, why)
 
-    seats_ok = bool(seats) and all(s["state"] in SETTLED_STATES for s in seats)
+    seats_ok = bool(gating) and all(s["state"] in SETTLED_STATES for s in gating)
     sec_says_converged = (secretary is not None and secretary["on_target"]
                           and secretary["status"] == "CONVERGED")
     if sec_says_converged:
-        for s in seats:
+        for s in gating:
             if s["state"] not in SETTLED_STATES:
                 reasons.append(
                     f"secretary says CONVERGED but {s['seat']} {SEAT_PHRASE[s['state']]}")
@@ -1902,6 +2008,7 @@ def build_state(export, status, now):
             reasons.append(contradiction)
 
     reasons = list(dict.fromkeys(reasons))
+    notes = list(dict.fromkeys(notes))
     facts_ok = (bool(roster["panel"]) and target is not None and seats_ok
                 and sec_says_converged and bool(pm["quiescent"]))
     if not facts_ok and not reasons:
@@ -1957,6 +2064,7 @@ def build_state(export, status, now):
         "bundle": bundle,
         "upstream_state": upstream,
         "reasons": reasons,
+        "advisory_notes": notes,
     }
 
 

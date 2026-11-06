@@ -3265,14 +3265,188 @@ check "(cl7) a non-object upstream_state is ignored" "STALLED null" "$(jr '"\(.s
 run_case base
 check "(cl) a thread that never saw the header has upstream_state null" "null" "$(j .upstream_state)"
 
+printf '\n== Advisory: seats judged and reported, never gating ==\n'
+# A four-seat panel, @second on it and named Advisory. Unless a case says
+# otherwise @core, @tests and @docs are positive on v1 (A, the root's
+# Frozen-Head) and the secretary says CONVERGED SIGNED-OFF.
+cat >> "$work/fx.py" <<'FX5'
+def adv_root(advisory="Advisory: @second", panel="@core, @tests, @docs, @second",
+             lines=(), extra=()):
+    body = ROOT_BODY.replace("f" * 40, A).replace("@core, @tests, @docs", panel)
+    body = "\n".join([body] + list(lines) + ([advisory] if advisory else []))
+    return root(body=body, extra=extra)
+
+def adv_case(second=None, gating=("@core", "@tests", "@docs"), **kw):
+    e = [adv_root(**kw)] + panel_positive(who=gating)
+    if second is not None:
+        e.append(second)
+    return e + [sec(20)]
+FX5
+
+gen adv1 <<'PY'
+write(D, export(adv_case(msg(9, "@second", "Reviewed-by: S", sha=A, ver=1))), status())
+PY
+run_case adv1
+check "(adv1) every seat positive: CONVERGED" "CONVERGED" "$(jr .status)"
+check "(adv1) roster.advisory is the resolved list" '["@second"]' "$(j .roster.advisory)"
+check "(adv1) advisory flag per seat" '[["@core",false],["@tests",false],["@docs",false],["@second",true]]' "$(j '[.seats[] | [.seat, .advisory]]')"
+check "(adv1) no advisory notes" "[]" "$(j .advisory_notes)"
+
+gen adv2 <<'PY'
+write(D, export(adv_case()), status())
+PY
+run_case adv2
+check "(adv2) advisory seat silent, gating seats signed off: CONVERGED" "CONVERGED" "$(jr .status)"
+check "(adv2) reasons empty" "[]" "$(j .reasons)"
+check "(adv2) the advisory seat is still judged silent" "silent" "$(seat @second state)"
+check "(adv2) its silence is an advisory note" '["@second: no verdict on v1 (aaaaaaaa)","@second: owed a verdict on v1, but nothing since v1 was posted is addressed to it, so nothing will wake it"]' "$(j .advisory_notes)"
+
+gen adv3 <<'PY'
+write(D, export(adv_case(msg(9, "@second", "Reviewed-by: S", sha=B, ver=1))), status())
+PY
+run_case adv3
+check "(adv3) advisory seat stale: CONVERGED" "CONVERGED" "$(jr .status)"
+check "(adv3) judged stale" "stale" "$(seat @second state)"
+check "(adv3) the staleness is a note" '["@second: verdict is on v1 (bbbbbbbb), none on v1 (aaaaaaaa)","@second: owed a verdict on v1, but nothing since v1 was posted is addressed to it, so nothing will wake it"]' "$(j .advisory_notes)"
+
+gen adv4 <<'PY'
+write(D, export(adv_case(msg(9, "@second", "Looks wrong.\n\nChanges-requested", sha=A, ver=1))), status())
+PY
+run_case adv4
+check "(adv4) advisory seat Changes-requested: CONVERGED SIGNED-OFF" "CONVERGED SIGNED-OFF" "$(jr '"\(.status) \(.verdict)"')"
+check "(adv4) reasons empty" "[]" "$(j .reasons)"
+check "(adv4) judged blocking with its tag" "blocking Changes-requested" "$(jr '.seats[] | select(.seat == "@second") | "\(.state) \(.verdict)"')"
+check "(adv4) the block is a note, not a reason, and the secretary is not caught" '["@second: Changes-requested on v1"]' "$(j .advisory_notes)"
+
+gen adv5 <<'PY'
+write(D, export(adv_case(msg(9, "@second", "NAK", sha=A, ver=1))), status())
+PY
+run_case adv5
+check "(adv5) advisory seat NAK: CONVERGED" "CONVERGED" "$(jr .status)"
+check "(adv5) the NAK is a note" '["@second: NAK on v1"]' "$(j .advisory_notes)"
+
+gen adv6 <<'PY'
+write(D, export(adv_case(msg(9, "@second", "Reviewed-by: S", sha=A, ver=1),
+                         gating=("@core", "@tests"))), status())
+PY
+run_case adv6
+check "(adv6) advisory signed off, gating @docs silent: not CONVERGED" "STALLED" "$(jr .status)"
+reason_has "(adv6) the gating seat's silence is a reason" "@docs: no verdict on v1 (aaaaaaaa)"
+reason_has "(adv6) the secretary's CONVERGED is caught" "secretary says CONVERGED but @docs is silent"
+reason_lacks "(adv6) nothing about the advisory seat" "@second"
+
+gen adv7 <<'PY'
+e = adv_case(advisory="Advisory: @core, @tests, @docs, @second")
+e[1:1] = [msg(9, "@second", "Reviewed-by: S", sha=A, ver=1)]
+write(D, export(e), status())
+PY
+run_case adv7
+check "(adv7) the whole panel advisory: not CONVERGED" "STALLED" "$(jr .status)"
+reason_has "(adv7) is a reason" "roster: Advisory names every panel seat, which leaves nobody gating; every seat gates"
+check "(adv7) and nobody is advisory" '[] [false,false,false,false]' "$(jr '"\(.roster.advisory | tojson) \([.seats[].advisory] | tojson)"')"
+
+gen adv8 <<'PY'
+write(D, export(adv_case(advisory="Advisory: @second, @nobody, @Bad")), status())
+PY
+run_case adv8
+reason_has "(adv8) an entry not on the panel is a reason" "roster: Advisory names @nobody, which is not on the panel; dropped"
+reason_has "(adv8) a malformed entry is a reason" "roster: malformed Advisory address '@Bad' dropped"
+check "(adv8) the good entry stands" '["@second"]' "$(j .roster.advisory)"
+check "(adv8) not CONVERGED" "STALLED" "$(jr .status)"
+
+gen adv9 <<'PY'
+write(D, export(adv_case(msg(9, "@second", "Reviewed-by: S", sha=A, ver=1),
+                         gating=("@core", "@docs"), advisory="Advisory: @tests, @second",
+                         lines=("Suite: pytest -q", "Suite-Seats: @tests"))), status())
+PY
+run_case adv9
+reason_has "(adv9) an advisory suite seat is a reason" "roster: Advisory names @tests, which is a suite seat; it stays gating"
+check "(adv9) @tests stays gating" "false" "$(seat @tests advisory)"
+check "(adv9) roster.advisory keeps only @second" '["@second"]' "$(j .roster.advisory)"
+reason_has "(adv9) and its silence still gates" "@tests: no verdict on v1 (aaaaaaaa)"
+
+gen adv10 <<'PY'
+write(D, export(adv_case(advisory="Advisory: @tests", lines=("Suite: pytest -q",))), status())
+PY
+run_case adv10
+reason_has "(adv10) the default suite seat cannot be advisory either" "roster: Advisory names @tests, which is a suite seat; it stays gating"
+check "(adv10) roster.advisory empty" "[]" "$(j .roster.advisory)"
+
+gen adv11 <<'PY'
+e = adv_case(msg(9, "@second", "Reviewed-by: S", sha=A, ver=1))
+e.append(upstream(30, H, mode="escalate",
+                  extra=[["X-Lkml-Tier", "full"], ["X-Lkml-Add-Seats", "second"]]))
+e.append(cover(31, H, 2, "Human integration.\n\nFrozen-Head: " + H))
+e += panel_positive(sha=H, ver=2, start=40)
+e.append(sec(50, "CONVERGED", 2, "SIGNED-OFF", H, 2))
+write(D, export(e), status(sha=H, ver=2))
+PY
+run_case adv11
+# Hand-worked: as esc3, but @second sits on the root's panel and is named
+# Advisory. The escalate push names it in X-Lkml-Add-Seats, so it gates: its v1
+# verdict is stale on v2, a reason, and the secretary's CONVERGED is caught.
+check "(adv11) an escalated seat named Advisory gates" "false" "$(seat @second advisory)"
+check "(adv11) roster.advisory drops it" "[]" "$(j .roster.advisory)"
+reason_has "(adv11) its stale verdict is a reason" "@second: verdict is on v1 (aaaaaaaa), none on v2 (11111111)"
+reason_has "(adv11) the secretary is caught" "secretary says CONVERGED but @second is stale"
+check "(adv11) a note says why it gates" '["@second: named on Advisory, but push m030 escalated it in; it gates"]' "$(j .advisory_notes)"
+check "(adv11) STALLED" "STALLED" "$(jr .status)"
+
+gen adv12 <<'PY'
+e = adv_case(advisory="Advisory: @security", panel="@core, @tests, @docs")
+e.append(upstream(30, H, mode="escalate",
+                  extra=[["X-Lkml-Tier", "full"], ["X-Lkml-Add-Seats", "security"]]))
+write(D, export(e), status())
+PY
+run_case adv12
+reason_has "(adv12) Advisory naming a seat only an escalate adds is dropped" "roster: Advisory names @security, which is not on the panel; dropped"
+check "(adv12) the escalated-in seat gates" "false" "$(seat @security advisory)"
+reason_has "(adv12) its silence is a reason" "@security: no verdict on v1 (aaaaaaaa)"
+
+gen adv13 <<'PY'
+e = adv_case(question(9, "@second", "Question: is the cache bound safe?"))
+write(D, export(e), status())
+PY
+run_case adv13 --now 2026-03-02T12:02:00Z
+check "(adv13) an advisory seat's operator question does not hold the panel" "CONVERGED" "$(jr .status)"
+check "(adv13) it is listed, not open" '"@second" false' "$(jr '"\"\(.questions[0].seat)\" \(.questions[0].open)"')"
+check "(adv13) notes: its Question and that it is unanswered" \
+    '["@second: unanswered Question on v1","@second: operator question m009 is unanswered"]' "$(j .advisory_notes)"
+
+gen adv14 <<'PY'
+e = adv_case(msg(9, "@second", "Reviewed-by: S", sha=A, ver=1))
+e.append(cover(31, T2, 2, "Re-roll after review."))
+e += panel_positive(sha=T2, ver=2, start=40)
+e.append(sec(50, "CONVERGED", 2, "RESPIN", T2, 2))
+write(D, export(e), status(sha=T2, ver=2))
+PY
+run_case adv14
+# Hand-worked: v2 is posted (to @panel, which names no seat) and the gating
+# seats answer it; @second owes a verdict on v2 and nothing addresses it.
+check "(adv14) an unaddressed advisory seat does not block" "CONVERGED RESPIN" "$(jr '"\(.status) \(.verdict)"')"
+check "(adv14) both its conditions are notes" \
+    '["@second: verdict is on v1 (aaaaaaaa), none on v2 (22222222)","@second: owed a verdict on v2, but nothing since v2 was posted is addressed to it, so nothing will wake it"]' "$(j .advisory_notes)"
+
+gen adv15 <<'PY'
+e = adv_case(advisory="Advisory: @core", gating=("@tests",))
+e[1:1] = [msg(5, "@docs", "Not yet.\n\nChanges-requested", sha=A, ver=1),
+          msg(6, "@core", "Overrule: m005\n\nReviewed-by: C", sha=A, ver=1)]
+write(D, export(e), status())
+PY
+run_case adv15
+check "(adv15) an advisory @core cannot overrule a gating block" "blocking" "$(seat @docs state)"
+reason_has "(adv15) the block stands" "@docs: Changes-requested on v1"
+check "(adv15) the ignored ruling is a note" '["Overrule in m006 from @core ignored: only @operator may rule"]' "$(j .advisory_notes)"
+check "(adv15) STALLED" "STALLED" "$(jr .status)"
+
 printf '\n== invariants over every case above ==\n'
-inv_bad=""; inv_n=0; inv_conv=0; diff_bad=""; diff_n=0
+inv_bad=""; inv_n=0; adv_bad=""; adv_n=0; inv_conv=0; diff_bad=""; diff_n=0
 # Opt-in differential check: LKML_PANEL_STATE_BASELINE names an earlier copy
 # of the script. For every case whose export carries no X-Lkml-* header the
 # new output, minus the keys this change added, must equal the old output
 # byte for byte. Unset, it did not run, and reports nothing.
 baseline="${LKML_PANEL_STATE_BASELINE:-}"
-strip_new='del(.tier, .panel, .push, .ci, .questions, .question_timeout_hours, .now, .upstream_state) | .postmaster |= del(.budget, .budget_source, .spawns_total, .grant_mode) | .seats |= map(del(.carried)) | if .secretary then .secretary |= del(.carried) else . end'
+strip_new='del(.tier, .panel, .push, .ci, .questions, .question_timeout_hours, .now, .upstream_state) | .postmaster |= del(.budget, .budget_source, .spawns_total, .grant_mode) | .seats |= map(del(.carried, .advisory)) | del(.advisory_notes) | .roster |= del(.advisory) | if .secretary then .secretary |= del(.carried) else . end'
 for c in "${cases_run[@]}"; do
     d="$work/case-$c"
     o="$("$ps" --export-file "$d/export.json" --status-file "$d/status.json" 2>/dev/null)" || { inv_bad+=" $c(exit)"; continue; }
@@ -3283,7 +3457,7 @@ for c in "${cases_run[@]}"; do
         [[ "$(jq -c "$strip_new" <<<"$o")" == "$ob" ]] || diff_bad+=" $c"
     fi
     if ! jq -e '
-        (["schema","thread","subject","status","verdict","target","roster","tier","panel","push","frozen_head","ci","question_timeout_hours","questions","now","seats","secretary","postmaster","bundle","upstream_state","reasons"]
+        (["schema","thread","subject","status","verdict","target","roster","tier","panel","push","frozen_head","ci","question_timeout_hours","questions","now","seats","secretary","postmaster","bundle","upstream_state","reasons","advisory_notes"]
          - keys | length) == 0
         and (.status | IN("CONVERGED","IN-PROGRESS","STALLED","NEEDS-OPERATOR","AWAITING-OPERATOR","CLOSED"))
         and ((.status == "CLOSED") == (.status != "CONVERGED" and .upstream_state.state == "closed"))
@@ -3295,8 +3469,8 @@ for c in "${cases_run[@]}"; do
              and has("pending_retries") and has("held") and has("unrouted")
              and has("budget") and has("budget_source") and has("spawns_total") and has("grant_mode"))
         and (.roster | has("author") and has("panel") and has("secretary") and has("version_limit") and has("frozen_head")
-             and has("suite") and has("suite_seats"))
-        and all(.seats[]; has("seat") and has("state") and has("verdict") and has("message_id") and has("version") and has("sha") and has("suite_run") and has("carried") and has("overruled_by"))
+             and has("suite") and has("suite_seats") and has("advisory"))
+        and all(.seats[]; has("seat") and has("state") and has("verdict") and has("message_id") and has("version") and has("sha") and has("suite_run") and has("carried") and has("overruled_by") and (.advisory | type == "boolean"))
         and all(.seats[]; (.state == "overruled") == (.overruled_by != null))
         and all(.seats[]; (.suite_run == null) or (.suite_run | has("status") and has("passed") and has("failed") and has("detail")))
         and (.status != "CONVERGED" or all(.seats[]; .suite_run == null or .suite_run.status == "clean"))
@@ -3312,13 +3486,22 @@ for c in "${cases_run[@]}"; do
         and (.push == null or (.push | has("mode") and has("message_id") and has("seq") and has("sha") and has("seats") and has("tier") and has("malformed") and has("answered")))
         and (.panel | type == "array") and (.panel[:(.roster.panel | length)] == .roster.panel)
         and (.target == null or (.target | has("branch") and has("sha") and has("version") and has("set_by") and has("set_at") and has("source")))
-        and (.status != "CONVERGED" or (.seats | length > 0 and all(.[]; .state == "positive" or .state == "overruled")))
+        and (.advisory_notes | type == "array")
+        and ([.seats[] | select(.advisory) | .seat] == .roster.advisory)
+        and (.roster.advisory - .roster.suite_seats == .roster.advisory)
+        and (.status != "CONVERGED" or (.seats | map(select(.advisory | not)) | length > 0 and all(.[]; .state == "positive" or .state == "overruled")))
         and (.status != "CONVERGED" or (.secretary.on_target == true and .secretary.status == "CONVERGED"))
         and (.status != "CONVERGED" or .postmaster.quiescent == true)
     ' <<<"$o" >/dev/null; then inv_bad+=" $c"; fi
+    if ! grep -q 'Advisory:' "$d/export.json"; then
+        adv_n=$(( adv_n + 1 ))
+        jq -e '.advisory_notes == [] and .roster.advisory == [] and all(.seats[]; .advisory == false)' \
+            <<<"$o" >/dev/null || adv_bad+=" $c"
+    fi
     [[ "$(jq -r .status <<<"$o")" == CONVERGED ]] && inv_conv=$(( inv_conv + 1 ))
 done
-check "every case obeys the output invariants (keys present; reasons empty iff CONVERGED; CONVERGED implies every seat positive or overruled, secretary on target, quiescent)" "" "$inv_bad"
+check "every case obeys the output invariants (keys present; reasons empty iff CONVERGED; CONVERGED implies every gating seat positive or overruled, secretary on target, quiescent)" "" "$inv_bad"
+check "no Advisory line: no advisory seat and no advisory note in any of $adv_n cases" "" "$adv_bad"
 if [[ "$inv_n" -ge 60 ]]; then ok "the invariants ran over $inv_n cases"; else no "the invariants ran over too few cases" "$inv_n"; fi
 if [[ "$inv_conv" -ge 5 ]]; then ok "and $inv_conv of them were CONVERGED (the check is not vacuous)"
 else no "too few CONVERGED cases for the invariants to bite" "$inv_conv"; fi
