@@ -2665,6 +2665,88 @@ python3 "$renderer" "$quietfull" -o "$quietfull_html"
 contains "quiet-full panel: converged once every X-Seats-named seat has replied non-blocking" \
     "$(<"$quietfull_html")" '<div class="fact"><span class="eyebrow">state</span><b><span class="chip reviewed">converged</span></b></div>'
 
+printf '\n== fleet-store thread: advisory seats are shown, never counted ==\n'
+# The root's Advisory: line names @second. Its NAK, or its silence, must
+# not stop the page reading converged, raise the NAK banner, or count as a
+# seat waited on; it is shown apart, under a heading that says so.
+adv_thread() { # adv_thread <dir> <advisory-line|''> <second-body|''>
+    local dir="$1" adv_line="$2" second_body="$3" i
+    local -a aid
+    mkdir -p "$dir"
+    for i in 1 2 3 4; do aid[i]="$(python3 -c 'import uuid; print(uuid.uuid4())')"; done
+    printf '%s\n' "Message-ID: ${aid[1]}" 'From: @author' 'To: @core, @tests, @second' \
+        'X-Seats: @core, @tests, @second' 'Date: Wed, 17 Sep 2025 00:00:00 +0000' \
+        'Subject: [PATCH v1 0/1] panel demo' '' 'kickoff' '' \
+        'Panel: @core, @tests, @second' "$adv_line" > "$dir/001-${aid[1]}.msg"
+    printf '%s\n' "Message-ID: ${aid[2]}" "In-Reply-To: ${aid[1]}" 'From: @core' 'To: @author' \
+        'Date: Wed, 17 Sep 2025 01:00:00 +0000' 'Subject: Re: [PATCH v1 0/1] panel demo' '' \
+        'Reviewed-by: core' > "$dir/002-${aid[2]}.msg"
+    printf '%s\n' "Message-ID: ${aid[3]}" "In-Reply-To: ${aid[1]}" 'From: @tests' 'To: @author' \
+        'Date: Wed, 17 Sep 2025 02:00:00 +0000' 'Subject: Re: [PATCH v1 0/1] panel demo' '' \
+        'Tested-by: tests' > "$dir/003-${aid[3]}.msg"
+    if [[ -n "$second_body" ]]; then
+        printf '%s\n' "Message-ID: ${aid[4]}" "In-Reply-To: ${aid[1]}" 'From: @second' 'To: @author' \
+            'Date: Wed, 17 Sep 2025 03:00:00 +0000' 'Subject: Re: [PATCH v1 0/1] panel demo' '' \
+            "$second_body" > "$dir/004-${aid[4]}.msg"
+    fi
+}
+conv_chip='<div class="fact"><span class="eyebrow">state</span><b><span class="chip reviewed">converged</span></b></div>'
+adv_nak="$work/fleet-mail/threads/adv-nak"
+adv_thread "$adv_nak" 'Advisory: @second' 'NAK'
+python3 "$renderer" "$adv_nak" -o "$work/adv-nak.html"
+an_html="$(<"$work/adv-nak.html")"
+contains "advisory NAK: the state chip still reads converged" "$an_html" "$conv_chip"
+case "$an_html" in
+    *'class="banner crit"'*) no "advisory NAK: no NAK banner" ;;
+    *) ok "advisory NAK: no NAK banner" ;;
+esac
+contains "advisory NAK: NAKs standing counts gating seats only" "$an_html" '<b>0</b><span>NAKs standing</span>'
+contains "advisory NAK: the seat is labelled advisory" "$an_html" "second (advisory)"
+contains "advisory NAK: the notes sit under a heading that says they do not block" "$an_html" \
+    '<p class="eyebrow">advisory seats · do not block convergence</p>'
+contains "advisory NAK: the note names the verdict" "$an_html" '<li>@second NAK</li>'
+an_text="$(python3 "$renderer" --text "$adv_nak")"
+contains "advisory NAK --text: the reviewer is labelled" "$an_text" "(second) (advisory)"
+contains "advisory NAK --text: the notes line" "$an_text" "advisory (does not block): @second NAK"
+
+adv_quiet="$work/fleet-mail/threads/adv-quiet"
+adv_thread "$adv_quiet" 'Advisory: @second' ''
+python3 "$renderer" "$adv_quiet" -o "$work/adv-quiet.html"
+aq_html="$(<"$work/adv-quiet.html")"
+contains "advisory silent: not waited on, the page reads converged" "$aq_html" "$conv_chip"
+contains "advisory silent: the note says it has no verdict" "$aq_html" '<li>@second has no verdict</li>'
+contains "advisory silent --text: the notes line" "$(python3 "$renderer" --text "$adv_quiet")" \
+    "advisory (does not block): @second has no verdict"
+
+adv_ok="$work/fleet-mail/threads/adv-ok"
+adv_thread "$adv_ok" 'Advisory: @second' 'Reviewed-by: second'
+python3 "$renderer" "$adv_ok" -o "$work/adv-ok.html"
+case "$(<"$work/adv-ok.html")" in
+    *'do not block convergence'*) no "advisory positive: no notes panel" ;;
+    *) ok "advisory positive: no notes panel" ;;
+esac
+
+# Controls: the same threads with no Advisory line gate on @second.
+adv_ctl="$work/fleet-mail/threads/adv-ctl"
+adv_thread "$adv_ctl" '' 'NAK'
+python3 "$renderer" "$adv_ctl" -o "$work/adv-ctl.html"
+ac_html="$(<"$work/adv-ctl.html")"
+contains "control: a gating NAK raises the banner" "$ac_html" 'class="banner crit"'
+case "$ac_html$(python3 "$renderer" --text "$adv_ctl")" in
+    *"(advisory)"*|*"does not block"*|*"do not block"*) no "control: nothing says advisory" ;;
+    *) ok "control: nothing says advisory" ;;
+esac
+adv_ctlq="$work/fleet-mail/threads/adv-ctlq"
+adv_thread "$adv_ctlq" '' ''
+python3 "$renderer" "$adv_ctlq" -o "$work/adv-ctlq.html"
+contains "control: a silent gating seat leaves the page pending" "$(<"$work/adv-ctlq.html")" \
+    '<b><span class="chip pending">pending</span></b>'
+# panel-state's rules: an Advisory entry that is the whole panel, or not on
+# it, is not advisory here either.
+adv_all="$work/fleet-mail/threads/adv-all"
+adv_thread "$adv_all" 'Advisory: @core, @tests, @second' 'NAK'
+contains "the whole panel advisory: every seat gates" "$(python3 "$renderer" "$adv_all" -o "$work/adv-all.html"; cat "$work/adv-all.html")" 'class="banner crit"'
+
 printf '\n== fleet-store thread: tier line and carried verdicts ==\n'
 # v1: @core, @tests, @docs all answer (root X-Seats names them). The push
 # mail (seq 5) says recheck @core; the author posts v2 (seq 6); only @core

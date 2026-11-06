@@ -69,6 +69,16 @@ headers alone, never a convergence judgment (lkml-panel-state.py owns
 that). A thread with none of those headers renders exactly as before, and
 the lkml-thread/1 block does not change.
 
+A fleet thread whose root carries an `Advisory: @a[, @b]` line (resolved
+as lkml-panel-state.py does: on the root's X-Seats, not a suite seat, not
+escalated in, never the whole panel) labels those seats "(advisory)" in
+the reviewer matrix and --text's reviewers block. Their verdicts, and
+their silence, never move the state chip, the NAK banner or the
+NAKs-standing count; each advisory seat that is not positive is listed in
+a separate "advisory seats · do not block convergence" rail panel (HTML)
+and one 'advisory (does not block): ...' line under the current version's
+counts (--text). A thread with no Advisory line renders exactly as before.
+
 A fleet thread also shows, in the same two places, one 'ci <status> <sha8>
 [<url>]' line when a mail From the CI sender carries X-Lkml-CI-Status and
 X-Lkml-CI-Head (the newest such; a CI header on any other sender's mail
@@ -955,6 +965,54 @@ def fleet_seated(roots, msgs=None):
     return None
 
 
+def fleet_root_line(root, key):
+    """The value of the root body's first `<key>: ...` line (alone on its
+    line, whitespace ignored), or None: the roster line rule
+    lkml-panel-state.py reads."""
+    for line in (root.get("body") or "").split("\n"):
+        line = line.strip(" \t\r")
+        if line.startswith(key + ":"):
+            return line[len(key) + 1:].strip(" \t\r")
+    return None
+
+
+def fleet_advisory(roots, msgs):
+    """The advisory seats (bare names) from the genuine root's Advisory:
+    line, as lkml-panel-state.py resolves them: each on the root's seated
+    panel, not a suite seat, not added by a valid escalate, and never the
+    whole panel. An empty set when the root has none. A display fact, not
+    a judgment: panel-state reports what this drops."""
+    root = fleet_root(roots)
+    seated = fleet_seated(roots)
+    raw = fleet_root_line(root, "Advisory") if root is not None else None
+    if not seated or raw is None:
+        return set()
+    suite = set()
+    if fleet_root_line(root, "Suite"):
+        listed = fleet_root_line(root, "Suite-Seats")
+        suite = (set(fleet_addr_list(listed)) if listed is not None
+                 else {"tests"} & seated)
+    escalated = {a for m in fleet_valid_escalates(root, msgs)
+                 for a in fleet_addr_list(m.get("x_add_seats") or "")}
+    out = {a for a in fleet_addr_list(raw)
+           if re.fullmatch(r"[a-z0-9][a-z0-9-]*", a) and a in seated
+           and a not in suite and a not in escalated}
+    return set() if out >= seated else out
+
+
+def advisory_notes(advisory, strongest, silent):
+    """One display line per advisory seat that is not positive on the
+    current version: its verdict, or that it has none. Never blocking."""
+    out = []
+    for p in sorted(advisory):
+        tag = strongest.get(p)
+        if p in silent or tag is None:
+            out.append(f"@{p} has no verdict")
+        elif tag not in POSITIVE_TAGS:
+            out.append(f"@{p} {tag}")
+    return out
+
+
 def fleet_pushes(msgs):
     """Upstream-moved mails (X-Upstream-Head), oldest first."""
     return sorted((m for m in msgs.values() if m.get("x_upstream_head")),
@@ -1177,11 +1235,12 @@ def fleet_push_permits(push, persona, seated, author):
     return bool(listed & (seated - {author})) and persona not in listed
 
 
-def apply_carried(entries, strongest, carried):
+def apply_carried(entries, strongest, carried, skip=frozenset()):
     """Mark the current version's reviewer entries that carried, and add
     an entry (0 messages, the carried verdict) for each carried seat that
     has none. Returns the carried tags that are NOT already in the
-    version's own tally rows, which the state chip must still weigh."""
+    version's own tally rows, which the state chip must still weigh,
+    leaving out those of the seats in `skip` (advisory seats)."""
     have = {r["persona"] for r in entries}
     extra_tags = []
     for r in entries:
@@ -1196,7 +1255,8 @@ def apply_carried(entries, strongest, carried):
         # the version): the carried tag must still be weighed.
         if info["tag"] and persona not in strongest:
             strongest[persona] = info["tag"]
-            extra_tags.append(info["tag"])
+            if persona not in skip:
+                extra_tags.append(info["tag"])
     entries.sort(key=lambda r: r["persona"])
     return extra_tags
 
@@ -1484,12 +1544,15 @@ def render_versions_panel(versions, current, version_counts, series_name):
             f'    </section>')
 
 
-def render_reviewer_panel(series_dir, version, reviewer_entries, strongest):
+def render_reviewer_panel(series_dir, version, reviewer_entries, strongest,
+                          advisory=frozenset()):
     if not reviewer_entries:
         return ""
     rows = []
     for r in reviewer_entries:
         role = persona_role(series_dir, r["persona"]) or r["persona"]
+        if r["persona"] in advisory:
+            role += " (advisory)"
         small = f'<small>{esc(" · ".join(x for x in (role, seat_meta(r)) if x))}</small>'
         tag = strongest.get(r["persona"])
         chip = chip_html(tag) if tag else '<span class="chip pending">pending</span>'
@@ -1503,6 +1566,17 @@ def render_reviewer_panel(series_dir, version, reviewer_entries, strongest):
     return (f'    <section class="panel">\n'
             f'      <p class="eyebrow">where each reviewer stands \u00b7 v{version}</p>\n'
             f'      <div class="matrix">\n' + "\n".join(rows) + "\n      </div>\n"
+            f'    </section>')
+
+
+def render_advisory_panel(notes):
+    """The advisory seats' standing, apart from anything that blocks."""
+    if not notes:
+        return ""
+    items = "\n".join(f"        <li>{esc(n)}</li>" for n in notes)
+    return (f'    <section class="panel">\n'
+            f'      <p class="eyebrow">advisory seats \u00b7 do not block convergence</p>\n'
+            f'      <ul class="advisory">\n{items}\n      </ul>\n'
             f'    </section>')
 
 
@@ -1669,6 +1743,9 @@ def render_series(series_dir, assume_root_version=None):
     fleet_cover_ids = {c["id"] for c in covers if c.get("fleet")}
     versions = sorted({c["version"] for c in covers})
     current = versions[-1] if versions else 1
+    # Advisory seats are shown, but their verdicts never drive the state
+    # chip, the NAK banner or the NAKs-standing count.
+    advisory = fleet_advisory(roots, msgs)
     # The current version's state drives the rail, the banner and the
     # state chip: the page reports where the series stands NOW.
     version_data = {}
@@ -1719,12 +1796,13 @@ def render_series(series_dir, assume_root_version=None):
         open_pidx.discard(None)
         open_patch_idx = (next(iter(open_pidx))
                           if all_on_patch and len(open_pidx) == 1 else None)
-        naks = sum(r["nak"] for r in reviewer_entries)
-        nak_names = sorted(r["persona"] for r in reviewer_entries if r["nak"])
+        naks = sum(r["nak"] for r in reviewer_entries if r["persona"] not in advisory)
+        nak_names = sorted(r["persona"] for r in reviewer_entries
+                           if r["nak"] and r["persona"] not in advisory)
         nak_d1 = set()
         for _t, latest in rows:
             for _p, (_seq, _mid, tags) in latest.items():
-                if "NAK" in tags:
+                if "NAK" in tags and _p not in advisory:
                     d1 = d1map.get(_mid)
                     if d1 is not None:
                         nak_d1.add(d1["id"])
@@ -1784,13 +1862,17 @@ def render_series(series_dir, assume_root_version=None):
         # A carried verdict is still a verdict: its tag weighs in the
         # state chip like any other, so a carried blocker cannot read
         # as converged.
-        carried_tags = apply_carried(cur["reviewer_entries"], cur["strongest"], carried)
+        carried_tags = apply_carried(cur["reviewer_entries"], cur["strongest"], carried,
+                                     advisory)
         s = strongest_tag([t for _t, latest in cur["rows"]
-                           for _p, _m, tags in latest.values() for t in tags] + carried_tags)
+                           for p, (_s, _m, tags) in latest.items() if p not in advisory
+                           for t in tags] + carried_tags)
         silent = set()
         if cur["cover"].get("fleet") and seated is not None:
             replied = {m["persona"] for m in cur["version_msgs"] if m["persona"]}
             silent = seated - replied - {cur["cover"]["persona"]} - set(carried)
+        cur["advisory_notes"] = advisory_notes(advisory, cur["strongest"], silent)
+        silent -= advisory
         if s == "NAK":
             state = '<span class="chip nak">nak</span>'
         elif s == "Changes-requested":
@@ -1842,7 +1924,9 @@ def render_series(series_dir, assume_root_version=None):
         rail = [render_versions_panel(versions, current,
                                       {v: len(d["version_msgs"]) for v, d in version_data.items()},
                                       name),
-                render_reviewer_panel(series_dir, current, cur["reviewer_entries"], cur["strongest"]),
+                render_reviewer_panel(series_dir, current, cur["reviewer_entries"],
+                                      cur["strongest"], advisory),
+                render_advisory_panel(cur.get("advisory_notes")),
                 render_patch_panel(series_dir, current, cur["rows"], cur["reviewer_entries"]),
                 counts]
         banner = render_banner(cur["n_naks"], cur["nak_names"], cur["nak_idx"],
@@ -2032,6 +2116,7 @@ a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset:
 .vrow[aria-current="true"] .vn { color: var(--accent); }
 
 .matrix { display: flex; flex-direction: column; gap: 1px; }
+ul.advisory { margin: 0; padding-left: 1.1em; color: var(--ink-2); }
 .mrow {
   display: grid; grid-template-columns: 22px minmax(0,1fr) auto;
   align-items: center; gap: 9px; padding: 6px 2px;
@@ -2433,12 +2518,14 @@ def render_text_tally(out, rows, pcols):
         out.append("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip())
 
 
-def render_text_reviewers(out, name, series_dir, reviewer_entries):
+def render_text_reviewers(out, name, series_dir, reviewer_entries,
+                          advisory=frozenset()):
     """One block per reviewer, in the box's order. No brief inlining in
     text mode -- just a pointer to the file, when it exists."""
     out.append("reviewers")
     for r in reviewer_entries:
-        out.append(f"  {r['name']} ({r['persona']})")
+        mark = " (advisory)" if r["persona"] in advisory else ""
+        out.append(f"  {r['name']} ({r['persona']}){mark}")
         # The sealed fact in the same 'pi, sealed' spelling as the
         # per-message meta line: a message with no X-AI-Network header
         # (a pre-axis archive) renders exactly as before.
@@ -2498,7 +2585,8 @@ def compute_version_sections(series_dir, assume_root_version=None):
             "version_msgs": version_msgs, "rows": rows,
             "personas": personas, "reviewer_entries": reviewer_entries,
             "pcols": pcols, "tier_line": None, "ci_line": None,
-            "questions_line": None,
+            "questions_line": None, "advisory": frozenset(),
+            "advisory_line": None,
         }
     # Tier and carried verdicts belong to the CURRENT version's section
     # only (the same facts render_series shows in the HTML). Applied
@@ -2506,11 +2594,32 @@ def compute_version_sections(series_dir, assume_root_version=None):
     if versions and version_data[versions[-1]]["cover"].get("fleet"):
         cur = version_data[versions[-1]]
         seated = fleet_seated(roots, msgs)
+        carried = {}
         if seated:
-            apply_carried(cur["reviewer_entries"], {},
-                          fleet_carried(msgs, seated, cur["cover"]["persona"],
-                                        [(version_data[v]["cover"]["seq"], v)
-                                         for v in versions]))
+            carried = fleet_carried(msgs, seated, cur["cover"]["persona"],
+                                    [(version_data[v]["cover"]["seq"], v)
+                                     for v in versions])
+            apply_carried(cur["reviewer_entries"], {}, carried)
+        advisory = fleet_advisory(roots, msgs)
+        if advisory:
+            # The same standing the HTML's advisory panel shows.
+            strongest = {}
+            for _t, latest in cur["rows"]:
+                for p, (_seq, _mid, tags) in latest.items():
+                    t = strongest_tag(tags)
+                    if t and (p not in strongest or TAG_PRIORITY.index(t)
+                              < TAG_PRIORITY.index(strongest[p])):
+                        strongest[p] = t
+            for p, info in carried.items():
+                if info["tag"] and p not in strongest:
+                    strongest[p] = info["tag"]
+            replied = {m["persona"] for m in cur["version_msgs"] if m["persona"]}
+            silent = advisory - replied - set(carried)
+            notes = advisory_notes(advisory, strongest, silent)
+            cur["advisory"] = advisory
+            if notes:
+                cur["advisory_line"] = ("advisory (does not block): "
+                                        + ", ".join(notes))
         info = fleet_tier_info(roots, msgs)
         if info:
             bits = tier_summary(info)
@@ -2542,14 +2651,15 @@ def render_text_version_lines(series_dir, name, v, d, fleet_cover_ids):
              f"{n_patches} patches · {n_replies} replies · {len(reviewer_entries)} reviewers"]
     if d.get("tier_line"):
         lines.append(d["tier_line"])
-    for key in ("ci_line", "questions_line"):
+    for key in ("ci_line", "questions_line", "advisory_line"):
         if d.get(key):
             lines.append(d[key])
     lines.append("")
     render_text_tally(lines, rows, d["pcols"])
     lines.append("")
     if reviewer_entries:
-        render_text_reviewers(lines, name, series_dir, reviewer_entries)
+        render_text_reviewers(lines, name, series_dir, reviewer_entries,
+                              d.get("advisory", frozenset()))
         lines.append("")
     # The Results card's sections as a text block in the same
     # position: bare 'results' header, then the section labels
