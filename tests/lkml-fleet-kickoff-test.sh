@@ -1989,6 +1989,77 @@ printf 'PANEL=@rev-a\nSUITE_SEAT=@rev-a\n' > "$rdir/bad-suite-key.roster"
 kick "${rkick[@]}" --template "$rdir/bad-suite-key.md" --send
 refused "a misspelled suite roster key" "known: AUTHOR, PANEL, SECRETARY, VERSION_LIMIT, SUITE, SUITE_SEATS"
 
+printf '\n== roster templates: --advisory ==\n'
+kick "${rkick[@]}" "${pr_flags[@]}" --suite 'pytest -q' --advisory '@second-opinion, @newcomer,@second-opinion'
+check "--advisory composes" "0" "$k_rc"
+check "the Advisory line follows the suite lines, de-duplicated, comma-space" \
+    "Suite-Seats: @tests
+Advisory: @second-opinion, @newcomer
+
+Sum text." "$(body_of "$k_out" | sed -n '7,10p')"
+kick "${rkick[@]}" "${pr_flags[@]}" --advisory '@second-opinion'
+check "with no suite the Advisory line follows Frozen-Head" "Frozen-Head: $rt_tip
+Advisory: @second-opinion
+
+Sum text." "$(body_of "$k_out" | sed -n '5,8p')"
+case "$(body_of "$k_out")" in
+    *'${'*) no "an advisory body has no leftover placeholders" ;;
+    *) ok "an advisory body has no leftover placeholders" ;;
+esac
+kick "${rkick[@]}" "${pr_flags[@]}"
+check "without --advisory the root has no Advisory line" "0" "$(body_of "$k_out" | grep -c '^Advisory' || true)"
+
+# Absent: a template with ${ADVISORY} composes byte-identical to the same
+# template without it.
+printf 'Panel: ${PANEL}\n${SUITE}\n${ADVISORY}\n\nSummary: ${SUMMARY}\n' > "$rdir/adv.md"
+printf 'PANEL=@rev-a,@rev-b,@rev-c\n' > "$rdir/adv.roster"
+printf 'Panel: ${PANEL}\n${SUITE}\n\nSummary: ${SUMMARY}\n' > "$rdir/adv-none.md"
+printf 'PANEL=@rev-a,@rev-b,@rev-c\n' > "$rdir/adv-none.roster"
+kick "${rkick[@]}" --template "$rdir/adv-none.md" --review-target "$rt_arg" --summary 's' --suite 'run'  --suite-seats '@rev-a'
+before="$(body_of "$k_out")"
+kick "${rkick[@]}" --template "$rdir/adv.md" --review-target "$rt_arg" --summary 's' --suite 'run'  --suite-seats '@rev-a'
+check "no advisory seats: the body is byte-identical to a template without \${ADVISORY}" "$before" "$(body_of "$k_out")"
+kick "${rkick[@]}" --template "$rdir/adv-none.md" --review-target "$rt_arg" --summary 's'
+before="$(body_of "$k_out")"
+kick "${rkick[@]}" --template "$rdir/adv.md" --review-target "$rt_arg" --summary 's'
+check "and with no suite either" "$before" "$(body_of "$k_out")"
+
+printf 'Panel: ${PANEL}\n${ADVISORY}\n\nSummary: ${SUMMARY}\n' > "$rdir/adv-file.md"
+printf 'PANEL=@rev-a,@rev-b,@rev-c\nADVISORY=@rev-b\n' > "$rdir/adv-file.roster"
+kick "${rkick[@]}" --template "$rdir/adv-file.md" --review-target "$rt_arg" --summary 's'
+check "ADVISORY from the roster file fills the root" "Panel: @rev-a, @rev-b, @rev-c
+Advisory: @rev-b
+
+Summary: s" "$(body_of "$k_out")"
+kick "${rkick[@]}" --template "$rdir/adv-file.md" --review-target "$rt_arg" --summary 's' --advisory '@rev-c'
+contains "--advisory overrides the roster file's ADVISORY" "$(body_of "$k_out")" "Advisory: @rev-c
+"
+
+# Refusals.
+kick "${rkick[@]}" "${pr_flags[@]}" --advisory 'second-opinion' --send
+refused "a malformed advisory address" "roster ADVISORY entry 'second-opinion' is not an address"
+kick "${rkick[@]}" "${pr_flags[@]}" --advisory '@ghost' --send
+refused "an advisory seat not on the panel" "roster ADVISORY entry '@ghost' is not on the PANEL"
+kick "${rkick[@]}" "${pr_flags[@]}" --suite 'pytest' --advisory '@tests' --send
+refused "an advisory suite seat" "roster ADVISORY entry '@tests' is a suite seat"
+kick "${rkick[@]}" "${pr_flags[@]}" --panel '@core,@docs' --advisory '@docs, @core' --send
+refused "the whole panel advisory" "names every PANEL seat"
+kick "${rkick[@]}" "${pr_flags[@]}" --advisory '@core,,@docs' --send
+refused "an empty advisory entry" "has an empty entry"
+kick "${rkick[@]}" "${pr_flags[@]}" --advisory '@core' --advisory '@docs' --send
+refused "a second --advisory" "--advisory may only be given once"
+kick "${rkick[@]}" --template "$rdir/pr-review.md" --review-target "$rt_arg" --advisory '@rev-a' --send
+refused "--advisory on a roster template with no \${ADVISORY}" "has no \${ADVISORY}"
+printf 'Panel: ${PANEL}\n' > "$rdir/adv-noph.md"
+printf 'PANEL=@rev-a,@rev-b\nADVISORY=@rev-b\n' > "$rdir/adv-noph.roster"
+kick "${rkick[@]}" --template "$rdir/adv-noph.md" --send
+refused "ADVISORY in the roster file of a template with no \${ADVISORY}" "has no \${ADVISORY}"
+kick "${kick_base[@]}" --advisory '@a' --send
+refused "--advisory on a template with no \${PANEL}" "has no \${PANEL}"
+printf 'x\n${ADVISORY}\n' > "$rdir/adv-nopanel.md"
+kick "${rkick[@]}" --template "$rdir/adv-nopanel.md" --to '@x' --send
+refused "\${ADVISORY} in a template with no \${PANEL}" "uses \${ADVISORY} but no \${PANEL}"
+
 printf '\n== a roster template sizes --hops from its VERSION_LIMIT ==\n'
 # The transport's default of 8 hops ran out at v4 on a real five-version
 # PR (each round spends two hops), so a roster kickoff with no --hops

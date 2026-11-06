@@ -17,6 +17,7 @@
 #            [--review-target <branch>:<sha>] [--header "Name: value"]...
 #            [--author <addr>] [--panel <addr-list>] [--secretary <addr>]
 #            [--version-limit <n>] [--suite <command>] [--suite-seats <addr-list>]
+#            [--advisory <addr-list>]
 #            [--remote] [--send] [--unless-exists]
 #
 # <repo>       path to a local git repository.
@@ -107,6 +108,20 @@
 #              refused. Both flags are refused with a template that has no
 #              ${SUITE}, since they would silently do nothing, and each
 #              may be given once.
+# --advisory   panel seats that review like any other but whose verdicts
+#              never gate convergence: the roster template's ${ADVISORY}
+#              line fills with "Advisory: <seats, comma-space>", which
+#              lkml-panel-state.py reads off the thread root. Comma-
+#              separated addresses, each on the resolved PANEL, none a
+#              suite seat, de-duplicated, and not the whole PANEL (a
+#              panel with nobody gating is not a review); any of those
+#              mistakes refuses the kickoff. It may also be set as
+#              ADVISORY in the roster file; the flag overrides. No
+#              roster file in this repo sets it: callers choose it per
+#              panel. With none the line is absent and the body is
+#              byte-for-byte what it was before this flag existed. The
+#              flag (or the roster key) is refused with a template that
+#              has no ${ADVISORY}, and may be given once.
 # --hops       non-negative mail reply-hop budget. Omitted, a roster
 #              template with a VERSION_LIMIT gets 4 * VERSION_LIMIT + 2
 #              (18 for a limit of 4): two hops per version round and room
@@ -479,13 +494,14 @@ roster_secretary=""
 roster_version_limit=""
 roster_suite=""
 roster_suite_seats=""
+roster_advisory=""
 review_target=""
 review_target_given=0
 unless_exists=0
 
 while (( $# > 0 )); do
     case "$1" in
-        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats|--header|--author|--panel|--secretary|--version-limit|--suite|--suite-seats|--allow-namespace|--reach-probe|--host-alias|--seat-resources|--services-env|--context-ro|--context-secret|--budget|--review-target|--attach-file)
+        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats|--header|--author|--panel|--secretary|--version-limit|--suite|--suite-seats|--advisory|--allow-namespace|--reach-probe|--host-alias|--seat-resources|--services-env|--context-ro|--context-secret|--budget|--review-target|--attach-file)
             (( $# >= 2 )) || { echo "Error: $1 requires a value. See --help." >&2; exit 1; }
             ;;
     esac
@@ -521,7 +537,7 @@ while (( $# > 0 )); do
         --review-target)
             (( ! review_target_given )) || { echo "Error: --review-target may only be given once. See --help." >&2; exit 1; }
             review_target="$2"; review_target_given=1; shift 2 ;;
-        --author|--panel|--secretary|--version-limit|--suite|--suite-seats)
+        --author|--panel|--secretary|--version-limit|--suite|--suite-seats|--advisory)
             roster_var="roster_${1#--}"; roster_var="${roster_var//-/_}"
             [[ -z "${!roster_var}" ]] || { echo "Error: $1 may only be given once. See --help." >&2; exit 1; }
             [[ -n "$2" ]] || { echo "Error: $1 requires a non-empty value. See --help." >&2; exit 1; }
@@ -597,11 +613,11 @@ has_placeholder() { [[ "$body" == *'${'"$1"'}'* ]]; }
 roster_mode=0
 has_placeholder PANEL && roster_mode=1
 if (( ! roster_mode )); then
-    if [[ -n "$roster_author$roster_panel$roster_secretary$roster_version_limit$roster_suite$roster_suite_seats" ]]; then
-        echo "Error: --author/--panel/--secretary/--version-limit/--suite/--suite-seats given but template '$template' has no \${PANEL}; they would silently do nothing. Use a roster template. See --help." >&2
+    if [[ -n "$roster_author$roster_panel$roster_secretary$roster_version_limit$roster_suite$roster_suite_seats$roster_advisory" ]]; then
+        echo "Error: --author/--panel/--secretary/--version-limit/--suite/--suite-seats/--advisory given but template '$template' has no \${PANEL}; they would silently do nothing. Use a roster template. See --help." >&2
         exit 1
     fi
-    for roster_ph in AUTHOR SECRETARY VERSION_LIMIT SUITE; do
+    for roster_ph in AUTHOR SECRETARY VERSION_LIMIT SUITE ADVISORY; do
         if has_placeholder "$roster_ph"; then
             echo "Error: template '$template' uses \${$roster_ph} but no \${PANEL}; the roster placeholders are only filled for a template that has \${PANEL}." >&2
             exit 1
@@ -618,9 +634,14 @@ roster_author_value=""
 roster_secretary_value=""
 roster_version_limit_value=""
 roster_suite_block=""
+roster_advisory_block=""
 if (( roster_mode )); then
     if [[ -n "$roster_suite$roster_suite_seats" ]] && ! has_placeholder SUITE; then
         echo "Error: --suite/--suite-seats given but template '$template' has no \${SUITE}; they would silently do nothing. Use a template with \${SUITE}. See --help." >&2
+        exit 1
+    fi
+    if [[ -n "$roster_advisory" ]] && ! has_placeholder ADVISORY; then
+        echo "Error: --advisory given but template '$template' has no \${ADVISORY}; it would silently do nothing. Use a template with \${ADVISORY}. See --help." >&2
         exit 1
     fi
     if [[ -n "$to" ]]; then
@@ -659,8 +680,8 @@ if (( roster_mode )); then
             roster_val="${BASH_REMATCH[2]}"
             roster_val="${roster_val#"${roster_val%%[![:space:]]*}"}"
             case "$roster_key" in
-                AUTHOR|PANEL|SECRETARY|VERSION_LIMIT|SUITE|SUITE_SEATS) ;;
-                *) echo "Error: $roster_file:$roster_lineno: unknown roster key '$roster_key' (known: AUTHOR, PANEL, SECRETARY, VERSION_LIMIT, SUITE, SUITE_SEATS)." >&2; exit 1 ;;
+                AUTHOR|PANEL|SECRETARY|VERSION_LIMIT|SUITE|SUITE_SEATS|ADVISORY) ;;
+                *) echo "Error: $roster_file:$roster_lineno: unknown roster key '$roster_key' (known: AUTHOR, PANEL, SECRETARY, VERSION_LIMIT, SUITE, SUITE_SEATS, ADVISORY)." >&2; exit 1 ;;
             esac
             if [[ -n "${roster_kv[$roster_key]+x}" ]]; then
                 echo "Error: $roster_file:$roster_lineno: roster key '$roster_key' is set twice." >&2
@@ -675,6 +696,7 @@ if (( roster_mode )); then
     [[ -n "$roster_version_limit" ]] && roster_kv[VERSION_LIMIT]="$roster_version_limit"
     [[ -n "$roster_suite" ]] && roster_kv[SUITE]="$roster_suite"
     [[ -n "$roster_suite_seats" ]] && roster_kv[SUITE_SEATS]="$roster_suite_seats"
+    [[ -n "$roster_advisory" ]] && roster_kv[ADVISORY]="$roster_advisory"
 
     roster_needed=(PANEL)
     for roster_ph in AUTHOR SECRETARY VERSION_LIMIT; do
@@ -738,6 +760,7 @@ if (( roster_mode )); then
 
     # The suite is validated only when one is in effect: a SUITE_SEATS
     # default in the roster file means nothing to a panel running none.
+    declare -A roster_suite_seen=()
     roster_suite_value="${roster_kv[SUITE]-}"
     roster_suite_value="${roster_suite_value#"${roster_suite_value%%[![:space:]]*}"}"
     roster_suite_value="${roster_suite_value%"${roster_suite_value##*[![:space:]]}"}"
@@ -768,7 +791,6 @@ if (( roster_mode )); then
             echo "Error: roster SUITE_SEATS '$roster_suite_seats_raw' has an empty entry (a stray comma)." >&2
             exit 1
         fi
-        declare -A roster_suite_seen=()
         roster_suite_list=()
         IFS=',' read -r -a roster_suite_items <<<"$roster_suite_seats_raw"
         for roster_addr in "${roster_suite_items[@]}"; do
@@ -789,6 +811,49 @@ if (( roster_mode )); then
         done
         roster_suite_joined="$(IFS=,; printf '%s' "${roster_suite_list[*]}")"
         roster_suite_block="Suite: $roster_suite_value"$'\n'"Suite-Seats: ${roster_suite_joined//,/, }"
+    fi
+
+    # The rules lkml-panel-state.py applies to the root's Advisory: line,
+    # refused here instead: a mistake caught at compose time costs nothing.
+    roster_advisory_raw="${roster_kv[ADVISORY]-}"
+    if [[ -n "${roster_advisory_raw//[[:space:]]/}" ]]; then
+        if ! has_placeholder ADVISORY; then
+            echo "Error: roster ADVISORY is set in '$roster_file' but template '$template' has no \${ADVISORY}; it would silently do nothing." >&2
+            exit 1
+        fi
+        if [[ "$roster_advisory_raw" =~ (^|,)[[:space:]]*(,|$) ]]; then
+            echo "Error: roster ADVISORY '$roster_advisory_raw' has an empty entry (a stray comma)." >&2
+            exit 1
+        fi
+        declare -A roster_advisory_seen=()
+        roster_advisory_list=()
+        IFS=',' read -r -a roster_advisory_items <<<"$roster_advisory_raw"
+        for roster_addr in "${roster_advisory_items[@]}"; do
+            roster_addr="${roster_addr#"${roster_addr%%[![:space:]]*}"}"
+            roster_addr="${roster_addr%"${roster_addr##*[![:space:]]}"}"
+            if [[ ! "$roster_addr" =~ $roster_addr_re ]]; then
+                echo "Error: roster ADVISORY entry '$roster_addr' is not an address like @name (^@[a-z0-9][a-z0-9-]*\$)." >&2
+                exit 1
+            fi
+            if [[ -z "${roster_seen[$roster_addr]+x}" ]]; then
+                echo "Error: roster ADVISORY entry '$roster_addr' is not on the PANEL ($roster_panel_spaced); only a reviewing seat can be advisory." >&2
+                exit 1
+            fi
+            if [[ -n "${roster_suite_seen[$roster_addr]+x}" ]]; then
+                echo "Error: roster ADVISORY entry '$roster_addr' is a suite seat; the suite must be run by a seat whose verdict counts." >&2
+                exit 1
+            fi
+            if [[ -z "${roster_advisory_seen[$roster_addr]+x}" ]]; then
+                roster_advisory_seen[$roster_addr]=1
+                roster_advisory_list+=("$roster_addr")
+            fi
+        done
+        if (( ${#roster_advisory_list[@]} == ${#roster_panel_list[@]} )); then
+            echo "Error: roster ADVISORY names every PANEL seat; a panel with nobody gating is not a review." >&2
+            exit 1
+        fi
+        roster_advisory_joined="$(IFS=,; printf '%s' "${roster_advisory_list[*]}")"
+        roster_advisory_block="Advisory: ${roster_advisory_joined//,/, }"
     fi
 fi
 [[ -n "$to" || "$roster_mode" == 1 ]] || { echo "Error: --to is required. See --help." >&2; exit 1; }
@@ -1507,6 +1572,11 @@ if [[ -n "$roster_suite_block" ]]; then
     fill body SUITE "$roster_suite_block"
 else
     drop_own_line body SUITE
+fi
+if [[ -n "$roster_advisory_block" ]]; then
+    fill body ADVISORY "$roster_advisory_block"
+else
+    drop_own_line body ADVISORY
 fi
 fill body HANDOFF "$handoff"
 

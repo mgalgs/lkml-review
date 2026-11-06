@@ -9,7 +9,8 @@ Send with `lkml-fleet-kickoff.sh --template pr-review --review-target
 <branch>:<sha> ...`, which fills every placeholder below: the roster
 from pr-review.roster (or --author/--panel/--secretary/--version-limit),
 ${FROZEN_HEAD} from the --review-target sha, ${SUITE} from --suite and
---suite-seats. docs/cluster-panel.md walks through the whole flow.
+--suite-seats, ${ADVISORY} from --advisory. docs/cluster-panel.md walks
+through the whole flow.
 
 The tier step feeds the Review tier section through the kickoff script's
 `--header "X-Lkml-Tier: <tier>"`, `--header "X-Lkml-Tier-Reason: <why>"`
@@ -36,6 +37,10 @@ Placeholders (dumb substitution, not a template engine):
                    "Suite: <command>" and "Suite-Seats: <seats>", which
                    name the test command the seats on Suite-Seats must
                    run and report; without it, the line is removed
+  ${ADVISORY}      alone on its line: with --advisory, the roster line
+                   "Advisory: <seats>", naming panel seats whose
+                   verdicts are reported but never gate convergence;
+                   without it, the line is removed
   ${SUMMARY}       one paragraph: what the PR does and why
   ${BASE}          the base ref/commit the PR applies on top of
   ${BRANCH}        the PR's branch name
@@ -59,6 +64,7 @@ Secretary: ${SECRETARY}
 Version-Limit: ${VERSION_LIMIT}
 Frozen-Head: ${FROZEN_HEAD}
 ${SUITE}
+${ADVISORY}
 
 ${SUMMARY}
 
