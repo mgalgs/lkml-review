@@ -981,9 +981,12 @@ def mark_open_questions(questions, seats, msgs, author=None, target=None):
 
 def parse_overrules(msgs, panel, since=0, advisory=()):
     """Every `Overrule: <message-id>` ruling -> ({overruled id: ruling
-    message}, [(ruler, reason)]). See the module docstring, "Overrule".
+    message}, [(seat, reason)]). See the module docstring, "Overrule".
     Only a message at seq >= `since` raises a reason. An advisory @core
-    does not rule: its verdict does not count, so neither may its ruling."""
+    does not rule: its verdict does not count, so neither may its ruling.
+    A reason about a ruling on an advisory seat's message is filed under
+    that seat, so it lands in advisory_notes: a ruling that fails to
+    overturn an advisory verdict blocks nothing."""
     by_id = {m["id"]: m for m in msgs if m["ok"] and m["id"]}
     arbiters = {OPERATOR} | ({ARBITER} if ARBITER in panel
                              and ARBITER not in advisory else set())
@@ -998,33 +1001,37 @@ def parse_overrules(msgs, panel, since=0, advisory=()):
                 continue
             where = f"Overrule in {m['id']} from {m['from']}"
             if m["from"] not in arbiters:
-                reasons.append(f"{where} ignored: only "
-                               f"{' or '.join(sorted(arbiters))} may rule")
+                reasons.append((m["from"], f"{where} ignored: only "
+                                f"{' or '.join(sorted(arbiters))} may rule"))
                 continue
             mt = OVERRULE_RE.fullmatch(line)
             if not mt:
-                reasons.append(f"{where} ignored: malformed {clip(line, 80)!r}")
+                reasons.append((m["from"],
+                                f"{where} ignored: malformed {clip(line, 80)!r}"))
                 continue
             ruled = by_id.get(mt.group(1))
+            # A ruling on an advisory seat's message is filed under that
+            # seat: see above.
+            who = (ruled["from"] if ruled is not None
+                   and ruled["from"] in advisory else m["from"])
+            why = None
             if ruled is None:
-                reasons.append(f"{where} ignored: no message {mt.group(1)} "
-                               f"on the thread")
+                why = f"no message {mt.group(1)} on the thread"
             elif ruled["seq"] >= m["seq"]:
-                reasons.append(f"{where} ignored: it rules on a later message")
+                why = "it rules on a later message"
             elif ruled["from"] == m["from"]:
-                reasons.append(f"{where} ignored: a seat cannot overrule "
-                               f"its own verdict")
+                why = "a seat cannot overrule its own verdict"
             elif ruled["from"] not in panel:
-                reasons.append(f"{where} ignored: {ruled['id']} is not "
-                               f"a panel seat's")
+                why = f"{ruled['id']} is not a panel seat's"
             elif (m["from"] != OPERATOR and "Question" in ruled["tags"]
                   and OPERATOR in ruled["to"] + ruled["cc"]):
-                reasons.append(f"{where} ignored: a question to {OPERATOR} "
-                               f"is the operator's to answer")
+                why = f"a question to {OPERATOR} is the operator's to answer"
             else:
                 rulings.setdefault(ruled["id"], m)
+            if why:
+                reasons.append((who, f"{where} ignored: {why}"))
         if m["seq"] >= since:
-            out += [(m["from"], r) for r in reasons]
+            out += reasons
     return rulings, out
 
 

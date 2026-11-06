@@ -3439,22 +3439,50 @@ reason_has "(adv15) the block stands" "@docs: Changes-requested on v1"
 check "(adv15) the ignored ruling is a note" '["Overrule in m006 from @core ignored: only @operator may rule"]' "$(j .advisory_notes)"
 check "(adv15) STALLED" "STALLED" "$(jr .status)"
 
+gen adv16 <<'PY'
+e = adv_case(question(9, "@second", "Question: is the cache bound safe?"))
+e[-1:-1] = [msg(10, "@core", "Overrule: m009\n\nReviewed-by: C", sha=A, ver=1)]
+write(D, export(e), status())
+PY
+run_case adv16 --now 2026-03-02T12:02:00Z
+check "(adv16) a void ruling on an advisory seat's question does not hold the panel" "CONVERGED" "$(jr .status)"
+check "(adv16) reasons empty" "[]" "$(j .reasons)"
+check "(adv16) the void ruling is an advisory note" \
+    '["Overrule in m010 from @core ignored: a question to @operator is the operator'"'"'s to answer"]' \
+    "$(j '[.advisory_notes[] | select(startswith("Overrule"))]')"
+
+gen adv17 <<'PY'
+e = adv_case(gating=("@core", "@docs"))
+e[-1:-1] = [question(9, "@tests", "Question: is the cache bound safe?"),
+            msg(10, "@core", "Overrule: m009\n\nReviewed-by: C", sha=A, ver=1)]
+write(D, export(e), status())
+PY
+run_case adv17 --now 2026-03-02T12:02:00Z
+# Contrast with adv16: the same ruling on a gating seat's question blocks.
+reason_has "(adv17) a void ruling on a gating seat's question is a reason" \
+    "Overrule in m010 from @core ignored: a question to @operator is the operator's to answer"
+check "(adv17) not CONVERGED" "false" "$(jr '.status == "CONVERGED"')"
+
 printf '\n== invariants over every case above ==\n'
 inv_bad=""; inv_n=0; adv_bad=""; adv_n=0; inv_conv=0; diff_bad=""; diff_n=0
-# Opt-in differential check: LKML_PANEL_STATE_BASELINE names an earlier copy
-# of the script. For every case whose export carries no X-Lkml-* header the
-# new output, minus the keys this change added, must equal the old output
-# byte for byte. Unset, it did not run, and reports nothing.
+# Opt-in differential check: LKML_PANEL_STATE_BASELINE names the script as
+# it was before advisory seats (e.g. `git show <base>:scripts/...`). For
+# every case whose export carries no Advisory: line the new output, minus
+# the three keys advisory seats added, must equal the old output byte for
+# byte, both run at one fixed --now. Unset, it did not run, and reports
+# nothing.
 baseline="${LKML_PANEL_STATE_BASELINE:-}"
-strip_new='del(.tier, .panel, .push, .ci, .questions, .question_timeout_hours, .now, .upstream_state) | .postmaster |= del(.budget, .budget_source, .spawns_total, .grant_mode) | .seats |= map(del(.carried, .advisory)) | del(.advisory_notes) | .roster |= del(.advisory) | if .secretary then .secretary |= del(.carried) else . end'
+diff_now=2026-03-02T12:02:00Z
+strip_new='del(.advisory_notes) | .roster |= del(.advisory) | .seats |= map(del(.advisory))'
 for c in "${cases_run[@]}"; do
     d="$work/case-$c"
     o="$("$ps" --export-file "$d/export.json" --status-file "$d/status.json" 2>/dev/null)" || { inv_bad+=" $c(exit)"; continue; }
     inv_n=$(( inv_n + 1 ))
-    if [[ -n "$baseline" ]] && ! grep -q 'X-Lkml-' "$d/export.json"; then
-        ob="$(python3 "$baseline" --export-file "$d/export.json" --status-file "$d/status.json" 2>/dev/null)"
+    if [[ -n "$baseline" ]] && ! grep -q 'Advisory:' "$d/export.json"; then
+        on="$("$ps" --export-file "$d/export.json" --status-file "$d/status.json" --now "$diff_now" 2>/dev/null)"
+        ob="$(python3 "$baseline" --export-file "$d/export.json" --status-file "$d/status.json" --now "$diff_now" 2>/dev/null)"
         diff_n=$(( diff_n + 1 ))
-        [[ "$(jq -c "$strip_new" <<<"$o")" == "$ob" ]] || diff_bad+=" $c"
+        [[ "$(jq -c "$strip_new" <<<"$on")" == "$(jq -c . <<<"$ob")" ]] || diff_bad+=" $c"
     fi
     if ! jq -e '
         (["schema","thread","subject","status","verdict","target","roster","tier","panel","push","frozen_head","ci","question_timeout_hours","questions","now","seats","secretary","postmaster","bundle","upstream_state","reasons","advisory_notes"]
@@ -3506,7 +3534,7 @@ if [[ "$inv_n" -ge 60 ]]; then ok "the invariants ran over $inv_n cases"; else n
 if [[ "$inv_conv" -ge 5 ]]; then ok "and $inv_conv of them were CONVERGED (the check is not vacuous)"
 else no "too few CONVERGED cases for the invariants to bite" "$inv_conv"; fi
 if [[ -n "$baseline" ]]; then
-    check "differential: $diff_n header-free cases match the baseline apart from the new keys" "" "$diff_bad"
+    check "differential: $diff_n cases with no Advisory line match the baseline apart from the new keys" "" "$diff_bad"
 fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
