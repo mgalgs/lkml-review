@@ -709,5 +709,54 @@ contains "--help says a carried verdict counts as answered" "$HELP" "carried"
 contains "--help documents exit 3" "$HELP" "3 skips"
 check "-h prints the same text" "$HELP" "$("$gate_src" -h 2>&1)"
 
+printf '\n== advisory seats are never waited for ==\n'
+# @second sits on the panel and the root names it Advisory; the gating
+# seats @core, @tests and @docs answer, @second has not.
+cat >> "$work/fx.py" <<'FX2'
+ADV_BODY = ROOT_BODY.replace("@core, @tests, @docs", "@core, @tests, @docs, @second")
+
+def adv(extra=(), advisory=True, cc=("@secretary",), tests="Reviewed-by: T"):
+    body = ADV_BODY + ("\nAdvisory: @second" if advisory else "")
+    return export([root(body=body), reviewed(2, "@core"),
+                   msg(3, "@tests", tests, sha=A, ver=1),
+                   reviewed(4, "@docs", cc=cc)] + list(extra))
+FX2
+gen advsilent <<'PY'
+write(D, adv(), status())
+PY
+run advsilent FS_HOOK_MESSAGE=m004
+expect "advisory seat silent, gating seats settled, Cc the secretary" 3 "i"
+run advsilent FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "secretary: woken though the advisory seat is silent" 0 "o"
+case "$ERR" in
+    *@second*) no "secretary: the advisory seat is not named" "$ERR" ;;
+    *) ok "secretary: the advisory seat is not named" ;;
+esac
+
+gen advsilentnocc <<'PY'
+write(D, adv(cc=()), status())
+PY
+run advsilentnocc FS_HOOK_MESSAGE=m004
+expect "advisory seat silent, gating seats settled, secretary missed: wake the author" 0 "f"
+
+gen advblocked <<'PY'
+write(D, adv(tests="Changes-requested: no."), status())
+PY
+run advblocked FS_HOOK_MESSAGE=m004
+expect "advisory seat silent, a gating seat blocks: every gating seat answered, wake the author" 0 "f"
+gen advblockedctl <<'PY'
+write(D, adv(tests="Changes-requested: no.", advisory=False), status())
+PY
+run advblockedctl FS_HOOK_MESSAGE=m004
+expect "control: the same seat gating is waited for" 1 "h" "@second (silent)"
+
+gen advlate <<'PY'
+write(D, adv(extra=[msg(5, "@second", "NAK", sha=A, ver=1, to=["@pr-author"])], cc=()), status())
+PY
+run advlate FS_HOOK_MESSAGE=m005
+expect "an advisory seat's later reply still wakes the author under the usual rules" 0 "f"
+run advlate FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m005
+expect "secretary: an advisory NAK does not hold the panel open" 0 "o"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

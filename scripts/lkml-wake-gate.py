@@ -66,6 +66,12 @@ and the status only for the runs[] and retries[] of rules g and m.
 "Settled" is panel-state's own word: a seat whose state is positive or
 overruled on the current target (carried included).
 
+"Every seat" below means every GATING seat: a seat panel-state marks
+"advisory" (named on the root's Advisory: line) is never waited for and
+never counted, settled or not. Its reply is still a panel reviewer's
+reply, so it reaches rule d like any other and wakes the author when the
+gating seats warrant it.
+
 Rules, in order; the first match decides, and every path prints exactly
 one "lkml-wake-gate: ..." line on stderr naming the decision and rule:
 
@@ -267,12 +273,18 @@ def secretary_run(status, seat, woken_on=None):
     return None
 
 
+def gating_seats(state):
+    """The seats whose verdicts count: every seat but an advisory one."""
+    return [s for s in state.get("seats") or []
+            if isinstance(s, dict) and s.get("advisory") is not True]
+
+
 def secretary_skip(state, status, secretary, woken_on=None):
     """Rules k-n: (rule, why) when the secretary is not woken on a
     reviewer's trigger, or None when the panel is ready to close.
     woken_on is passed by rule i; see secretary_run."""
     target = state.get("target")
-    seats = state.get("seats") or []
+    seats = gating_seats(state)
     if not target or not target.get("sha"):
         return "k", "the thread has no review target"
     open_ = sorted((s for s in seats if s.get("state") not in SETTLED),
@@ -336,7 +348,7 @@ def decide(env):
     target = state.get("target")
     if not target or not target.get("sha"):
         raise Done(0, "wake: the thread has no review target (rule e)")
-    seats = state.get("seats") or []
+    seats = gating_seats(state)
     waiting = [s for s in seats if s.get("state") not in ANSWERED]
     if not waiting:
         if (secretary is not None and seats
