@@ -122,6 +122,9 @@ panel.
    convergence and is not waited for. Weigh an advisory seat's finding on
    its merits. If you agree it must block, adopt it as your own: say so in
    "State of the series", naming the finding, and report `IN-PROGRESS`.
+   Your summary is terminal and goes only to `@operator`, so adopting a
+   finding does not send it back to the Author: it holds the panel for the
+   operator to decide, and nothing re-reviews it on its own.
 2. For each Panel seat, find its latest reply carrying `X-Version: N`
    (in the thread render each `X-*` header is its own unquoted line after
    `Hops:`, such as `X-Version: 3`; a `> `-quoted one is body text). Its verdict is

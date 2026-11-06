@@ -120,7 +120,9 @@ reports it with `"advisory": true` on its seat entry; each condition that
 would have been a reason for a gating seat goes to `advisory_notes`, never
 to `reasons`. The wake gate does not wait for it, and the render labels it
 and lists its standing apart, under a heading that says it does not block.
-The secretary may adopt an advisory finding as its own blocking one.
+The secretary may adopt an advisory finding as its own blocking one. Its
+summary goes only to `@operator`, so an adopted finding holds the panel for
+the operator to decide; it does not send the series back to the author.
 
 The kickoff refuses an advisory entry that is not on the panel, one that is a
 suite seat (the suite must be run by a seat whose verdict counts), and a list
