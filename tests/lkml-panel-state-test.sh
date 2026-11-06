@@ -2971,6 +2971,47 @@ run_case aw_superseded --now 2026-03-02T12:00:00Z
 # positive and the secretary says CONVERGED.
 check "(aw-superseded) the seat's newer verdict closes it" "false CONVERGED" "$(jr '"\(.questions[0].open) \(.status)"')"
 
+gen aw_block <<'PY'
+write(D, export(qthread(Q + "\nChanges-requested", hours="2h")), status())
+PY
+run_case aw_block --now 2026-03-02T11:00:00Z
+# Hand-worked: the question rides beside Changes-requested on m002, as the
+# reviewer prompt asks. The blocking tag outranks Question, so @core blocks
+# from m002, and its question is still open (3480 s < 7200): the panel
+# waits on the operator, not STALLED.
+check "(aw-block) the seat blocks from the question's message" "blocking m002" "$(seat @core state) $(seat @core message_id)"
+check "(aw-block) the question beside a block is open" "true AWAITING-OPERATOR" "$(jr '"\(.questions[0].open) \(.status)"')"
+run_case aw_block --now 2026-03-02T13:00:00Z
+# Hand-worked: 10680 s >= 7200: timed out; Changes-requested decides alone.
+check "(aw-block) after the timeout the block decides" "false blocking STALLED" "$(jr '"\(.questions[0].open)"') $(seat @core state) $(jr .status)"
+
+gen aw_nak <<'PY'
+write(D, export(qthread(Q + "\nNAK", hours=None)), status())
+PY
+run_case aw_nak --now 2026-03-02T12:00:00Z
+check "(aw-nak) a question beside a NAK is open" "true AWAITING-OPERATOR" "$(jr '"\(.questions[0].open) \(.status)"')"
+
+gen aw_block_reply <<'PY'
+e = qthread(Q + "\nChanges-requested", hours=None)
+r = msg(10, "@operator", "No, leave it.", to=["@core"])
+r["in_reply_to"] = "m002"
+e.insert(2, r)
+write(D, export(e), status())
+PY
+run_case aw_block_reply --now 2026-03-02T12:00:00Z
+# Hand-worked: answered; @core still blocks and owes the next move: STALLED.
+check "(aw-block-reply) an answer closes it; the block stands" "false blocking STALLED" "$(jr '"\(.questions[0].open)"') $(seat @core state) $(jr .status)"
+
+gen aw_block_newer <<'PY'
+e = qthread(Q + "\nChanges-requested", hours=None)
+e.insert(4, msg(5, "@core", "Changes-requested", sha=A, ver=1))
+write(D, export(e), status())
+PY
+run_case aw_block_newer --now 2026-03-02T12:00:00Z
+# Hand-worked: @core's newer verdict m005 blocks without a question: its
+# entry is m005, so m002's question is no longer its verdict and not open.
+check "(aw-block-newer) a newer blocking verdict closes it" "false m005 STALLED" "$(jr '"\(.questions[0].open)"') $(seat @core message_id) $(jr .status)"
+
 gen aw_old_version <<'PY'
 e = [frozen_root(), question(2, "@core", Q, sha=F, ver=1), cover(10, T2, 2, "Re-roll after review.")]
 e += panel_positive(sha=T2, ver=2, start=11) + [sec(20, "CONVERGED", 2, "RESPIN", T2, 2)]

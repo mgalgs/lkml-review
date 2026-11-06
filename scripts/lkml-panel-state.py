@@ -389,7 +389,8 @@ A question is open -- the panel waits on the operator -- when all hold:
 
   - it is not timed out (timed_out false or null);
   - it is still the asking seat's verdict on the current target: the
-    seat's entry is in state question with this message_id. A newer
+    seat's entry has this message_id, in state question, or blocking
+    when the same message also carries Changes-requested or NAK. A newer
     verdict from the seat, or a question on an older version that did
     not carry, closes it. A carried question stays open. The Author
     holds no verdict: its question needs only an X-Review-Target sha
@@ -962,8 +963,10 @@ def operator_answered(q, msgs):
 def mark_open_questions(questions, seats, msgs, author=None, target=None):
     """Set each question's "open" flag in place. See the module docstring,
     "Operator questions and the timeout"."""
+    # A blocking tag outranks Question on the same message, so a question
+    # given beside Changes-requested or NAK leaves its seat "blocking".
     holding = {(s["seat"], s["message_id"]) for s in seats
-               if s["state"] == "question"}
+               if s["state"] in ("question", "blocking")}
     by_id = {m["id"]: m for m in msgs if m["ok"] and m["id"]}
     tsha = target["sha"] if target else None
     for q in questions:
