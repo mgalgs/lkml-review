@@ -110,6 +110,25 @@ review, never from this repo, so the caller passes it on each kickoff.
 A root that says `X-Lkml-Suite-Source: ci` takes the suite's result from CI
 instead; see "Suite source, CI results and operator questions".
 
+`--advisory "@a,@b"` (or `ADVISORY=` in the roster file; the flag wins) adds
+an `Advisory: @a, @b` line to the root. An advisory seat is woken and reviews
+like any other, but its verdict never gates convergence: nothing it does or
+fails to do keeps the panel from `CONVERGED`. It is for an experimental
+reviewer whose opinion is worth reading but whose crash, silence or stale
+answer must not cost a review. `lkml-panel-state.py` still judges it and
+reports it with `"advisory": true` on its seat entry; each condition that
+would have been a reason for a gating seat goes to `advisory_notes`, never
+to `reasons`. The wake gate does not wait for it, and the render labels it
+and lists its standing apart, under a heading that says it does not block.
+The secretary may adopt an advisory finding as its own blocking one.
+
+The kickoff refuses an advisory entry that is not on the panel, one that is a
+suite seat (the suite must be run by a seat whose verdict counts), and a list
+that covers the whole panel. Panel-state applies the same rules to the root
+it reads, as reasons, keeping such a seat gating; and a seat an escalate push
+adds gates even when the root names it advisory. `pr-review.roster` sets no
+`ADVISORY`: callers choose it per panel. Without the line nothing changes.
+
 ### Sizing the panel
 
 Not every PR needs nine reviewers. Sizing is the caller's job: whatever kicks
