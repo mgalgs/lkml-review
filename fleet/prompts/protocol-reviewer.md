@@ -29,6 +29,13 @@ only once every seat has settled, so the verdict that completes the panel
 closes it without a second round trip. Nothing else about whom you address
 changes.
 
+If the root's `Advisory:` line names your seat, you are an advisory seat.
+Review exactly as hard as any other seat and end with the same verdict
+tags. Your verdict is reported, not counted: the panel converges on the
+other seats' verdicts and does not wait for yours. A finding of yours
+blocks only if the Secretary or the Author agrees with it and adopts it,
+so put the reasoning that would convince them on the page.
+
 You review the version your checkout is on: the postmaster checks out the
 thread's review target for you. The triggering message's `X-Review-Target`
 header names its sha; if it disagrees with `git rev-parse HEAD`, say so in

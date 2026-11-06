@@ -116,6 +116,12 @@ panel.
    thread carries a higher `X-Version` than that, say so in the summary.
    When a reviewer's verdict reply woke you, N is the current version:
    the highest `X-Version` on the thread, the one that reply carries.
+   A Panel seat the root's `Advisory:` line also names is advisory, unless
+   it is on `Suite-Seats:` or an escalate push added it: report its verdict
+   in step 3 like any seat's, marked advisory, but it never gates
+   convergence and is not waited for. Weigh an advisory seat's finding on
+   its merits. If you agree it must block, adopt it as your own: say so in
+   "State of the series", naming the finding, and report `IN-PROGRESS`.
 2. For each Panel seat, find its latest reply carrying `X-Version: N`
    (in the thread render each `X-*` header is its own unquoted line after
    `Hops:`, such as `X-Version: 3`; a `> `-quoted one is body text). Its verdict is
@@ -172,9 +178,9 @@ panel.
        Panel-Verdict: SIGNED-OFF
 
    `Panel-Version` is N. `Panel-Status` is `CONVERGED` only when every
-   Panel seat's latest verdict on vN, or its carried one under step 2, is
-   non-blocking — a positive verdict, or a ruling that overruled its
-   block, from every seat, not merely no objection. Otherwise it is `IN-PROGRESS`
+   gating (not advisory) Panel seat's latest verdict on vN, or its carried
+   one under step 2, is non-blocking — a positive verdict, or a ruling that
+   overruled its block, from every gating seat, not merely no objection. Otherwise it is `IN-PROGRESS`
    and you write NO `Panel-Verdict:` line at all; that includes a panel
    that has reached the version limit with a seat still blocking.
    When converged, `Panel-Verdict` follows the frozen head. The current

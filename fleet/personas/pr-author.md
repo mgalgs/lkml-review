@@ -59,7 +59,11 @@ re-read the tree or re-run anything until step 4 says you must.
    an escalate adds is owed from the version that answers that escalate, not
    before: while the escalate is unanswered, the roster for steps 3-4 is the
    one N was posted to. Where these steps say "the Panel", they mean the
-   roster so read.
+   roster so read, less any advisory seat: one the root's `Advisory:` line
+   names, unless `Suite-Seats:` names it or an escalate added it. An
+   advisory seat's verdict never gates convergence and is never waited
+   for. Still read its review, and weigh each finding on its merits: one
+   you agree with is worth fixing in your next version like any other.
 2. **Find the current version N.** It is the highest `X-Version` header on
    any message on the thread, your own covers included. A reply is "on
    version n" when it carries `X-Version: n`. In the thread render, every
