@@ -174,7 +174,10 @@ run() {
     local -A envs=([FS_HOOK_EVENT]=wake-when [FS_HOOK_THREAD]=t-example
                    [FS_HOOK_AGENT]=pr-author [FS_HOOK_MESSAGE]=m002
                    [FS_HOOK_EXPORT_FILE]="$d/export.json"
-                   [FS_HOOK_STATUS_FILE]="$d/status.json")
+                   [FS_HOOK_STATUS_FILE]="$d/status.json"
+                   [LKML_CAPACITY_PROMETHEUS]="$prom_url"
+                   [LKML_CAPACITY_SELECTOR]='{instance=~"gpu-a:.*"}'
+                   [FORK_SANDBOX_HOOKS_DIR]="$work/hooks-none")
     local args=()
     for v in "$@"; do envs["${v%%=*}"]="${v#*=}"; done
     [[ -n "$UNSET" ]] && unset "envs[$UNSET]"
@@ -194,6 +197,75 @@ expect() {
 }
 
 [[ -x "$gate_src" ]] || { echo "not executable: $gate_src" >&2; exit 1; }
+
+# A real Prometheus stand-in on 127.0.0.1 for the capacity read on child
+# threads. It answers /api/v1/query with instant-query JSON from
+# $work/prom.json, which `prom` rewrites between cases, and logs each
+# PromQL it receives to $work/prom.log, which `promql` reads back.
+# prom.json is {"waiting": V, "preempt": V, "fail": MODE, "on": WHICH}:
+# V is the value string answered; MODE, when set, replaces the answer
+# for the query WHICH ("waiting", "preempt" or "all") with a failure.
+cat > "$work/prom.py" <<'PROM'
+import http.server, json, os, sys, time, urllib.parse
+W = sys.argv[1]
+
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def send(self, code, body, ctype="application/json"):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        u = urllib.parse.urlsplit(self.path)
+        q = urllib.parse.parse_qs(u.query).get("query", [""])[0]
+        with open(os.path.join(W, "prom.log"), "a") as f:
+            f.write(u.path + " " + q + "\n")
+        with open(os.path.join(W, "prom.json")) as f:
+            mode = json.load(f)
+        which = "preempt" if "preemptions" in q else "waiting"
+        fail = mode.get("fail") if mode.get("on") in ("all", which) else None
+        vec = lambda r: json.dumps({"status": "success", "data": {
+            "resultType": "vector", "result": r}}).encode()
+        if fail == "500":
+            return self.send(500, b"internal error", "text/plain")
+        if fail == "hang":
+            time.sleep(20)
+            return self.send(200, vec([]))
+        if fail == "nonjson":
+            return self.send(200, b"<html>not json</html>", "text/html")
+        if fail == "error":
+            return self.send(400, json.dumps({"status": "error", "errorType":
+                             "bad_data", "error": "parse error"}).encode())
+        if fail == "error200":
+            return self.send(200, json.dumps({"status": "error", "errorType":
+                             "bad_data", "error": "parse error"}).encode())
+        if fail == "empty":
+            return self.send(200, vec([]))
+        v = mode[which] if fail is None else fail.split(":", 1)[1]
+        self.send(200, vec([{"metric": {}, "value": [1767225600.123, v]}]))
+
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+srv.daemon_threads = True
+with open(os.path.join(W, "prom.port.tmp"), "w") as f:
+    f.write(str(srv.server_address[1]))
+os.rename(os.path.join(W, "prom.port.tmp"), os.path.join(W, "prom.port"))
+srv.serve_forever()
+PROM
+prom() { printf '%s\n' "$1" > "$work/prom.json"; : > "$work/prom.log"; }
+promql() { cat -- "$work/prom.log"; }
+# Busy by default: a capacity read that leaks onto a main thread defers
+# a wake there, and shows in prom.log.
+prom '{"waiting": "5", "preempt": "5"}'
+python3 "$work/prom.py" "$work" & prom_pid=$!
+trap 'kill "$prom_pid" 2>/dev/null; cleanup' EXIT
+for _ in $(seq 100); do [[ -s "$work/prom.port" ]] && break; sleep 0.05; done
+[[ -s "$work/prom.port" ]] || { echo "the test Prometheus did not start" >&2; exit 1; }
+prom_url="http://127.0.0.1:$(cat "$work/prom.port")"
 
 # The standard panel is @core, @tests, @docs; the trigger is m002.
 gen silent <<'PY'
@@ -860,6 +932,7 @@ expect "an attached digest: the settling reply wakes the author" 0 "f"
 run attached FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
 expect "an attached digest holds the secretary" 3 "q" "m001"
 
+check "main threads: no capacity read, with every variable set" "" "$(promql)"
 gen childpart <<'PY'
 write(D, export([sub_root(), sub_seat(2, "@core", "Changes-requested"),
                  sub_seat(3, "@tests", "Reviewed-by: T")]), status())
@@ -875,6 +948,8 @@ write(D, export([sub_root(), sub_seat(2, "@core", "Changes-requested"),
                  sub_seat(3, "@tests", "Reviewed-by: T"), sub_seat(4, "@docs", "NAK")]),
       status())
 PY
+check "child: a rule k skip reads no capacity" "" "$(promql)"
+prom '{"waiting": "0", "preempt": "0"}'
 run childall FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
 expect "child: the secretary wakes once every seat has replied, whatever the verdicts" 0 "o"
 gen childdone <<'PY'
@@ -885,10 +960,216 @@ write(D, export([sub_root(), sub_seat(2, "@core", "Changes-requested"),
                  sub_seat(3, "@tests", "Reviewed-by: T"), sub_seat(4, "@docs", "NAK"), d,
                  sub_seat(6, "@docs", "NAK again")]), status())
 PY
+prom '{"waiting": "0", "preempt": "0"}'
 run childdone FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m006
 expect "child: one digest; a later reply does not wake the secretary again" 3 "n"
+check "child: a skip reads no capacity" "" "$(promql)"
 run childall FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004 FS_HOOK_AGENT=core
-expect "child: a reviewer seat is not gated" 0 "b"
+expect "child: a reviewer seat passes the rules by rule b" 0 "b"
+# Rule h is the one rule that defers before the capacity read: an author
+# seat on a child whose root wrongly names an Author.
+gen childauthor <<'PY'
+r = sub_root()
+r["body"] = SUB_BODY + "\nAuthor: @pr-author"
+write(D, export([r, sub_seat(2, "@core", "Reviewed-by: C")]), status())
+PY
+prom '{"waiting": "0", "preempt": "0"}'
+run childauthor
+expect "child: an Author seat waiting on reviewers defers by rule h" 1 "h" "@docs (silent)"
+check "child: a rule h defer reads no capacity" "" "$(promql)"
+
+printf '\n== child: a gate error defers ==\n'
+# The postmaster wakes a seat whose gate exits 2; on a child that would
+# spawn without a capacity check, so every gate error there defers.
+GATE="$work/stub-exit1/lkml-wake-gate.py" run childall FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "child: panel-state failing defers" 1 "" \
+    "lkml-wake-gate: child: defer: gate error: lkml-panel-state.py exited 1" "boom"
+GATE="$work/stub-exit1/lkml-wake-gate.py" run silent
+expect "main: panel-state failing still errors" 2 "" "lkml-wake-gate: error: lkml-panel-state.py exited 1"
+GATE="$work/stub-notjson/lkml-wake-gate.py" run childall FS_HOOK_AGENT=core FS_HOOK_MESSAGE=m004
+expect "child: panel-state printing non-JSON defers" 1 "" "child: defer: gate error: " "unparsable"
+for v in FS_HOOK_AGENT FS_HOOK_MESSAGE FS_HOOK_STATUS_FILE; do
+    UNSET="$v" run childall FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+    expect "child: $v unset defers" 1 "" "child: defer: gate error: $v"
+done
+UNSET=""
+run childall FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m999
+expect "child: a trigger not in the export defers" 1 "" "child: defer: gate error: " "m999"
+run childall FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004 "FS_HOOK_EXPORT_FILE=$work/no-such.json"
+expect "an unreadable export cannot be judged a child, and errors" 2 "" "lkml-wake-gate: error: "
+check "child: no gate error reads capacity" "" "$(promql)"
+
+printf '\n== child: a malformed X-Lkml-Parent-Thread is still a child ==\n'
+gen childbad <<'PY'
+r = sub_root()
+r["headers"] = [h for h in r["headers"] if h[0] != "X-Lkml-Parent-Thread"] \
+    + [["X-Lkml-Parent-Thread", "not a thread id"]]
+write(D, export([r, sub_seat(2, "@core", "Changes-requested"),
+                 sub_seat(3, "@tests", "Reviewed-by: T"), sub_seat(4, "@docs", "NAK")]),
+      status())
+PY
+prom '{"waiting": "0", "preempt": "0"}'
+run childbad FS_HOOK_AGENT=core FS_HOOK_MESSAGE=m004
+expect "malformed child: idle, a reviewer seat wakes" 0 "b"
+check "malformed child: the capacity read ran" 2 "$(promql | wc -l)"
+prom '{"waiting": "3", "preempt": "0"}'
+run childbad FS_HOOK_AGENT=core FS_HOOK_MESSAGE=m004
+expect "malformed child: busy, a reviewer seat defers" 1 "b" "capacity: defer: 3 requests waiting"
+run childbad FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "malformed child: busy, the secretary defers" 1 "o" "capacity: defer: "
+
+printf '\n== capacity: child seats wake only when the model server has room ==\n'
+# childall's secretary wakes by rule o; a reviewer seat there by rule b.
+prom '{"waiting": "0", "preempt": "0"}'
+run childall FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "capacity: idle, the secretary wakes" 0 "o"
+check "capacity: the PromQL received, selector and window included" \
+    '/api/v1/query sum(vllm:num_requests_waiting{instance=~"gpu-a:.*"})
+/api/v1/query sum(increase(vllm:num_preemptions_total{instance=~"gpu-a:.*"}[5m]))' \
+    "$(promql)"
+prom '{"waiting": "2", "preempt": "1"}'
+run childall FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004 \
+    LKML_CAPACITY_MAX_WAITING=2 LKML_CAPACITY_MAX_PREEMPTIONS=1 \
+    LKML_CAPACITY_WINDOW=90s LKML_CAPACITY_SELECTOR=
+expect "capacity: at both thresholds, the secretary wakes" 0 "o"
+check "capacity: no selector, window as set" \
+    '/api/v1/query sum(vllm:num_requests_waiting)
+/api/v1/query sum(increase(vllm:num_preemptions_total[90s]))' "$(promql)"
+prom '{"waiting": "0", "preempt": "0"}'
+run childall FS_HOOK_AGENT=core FS_HOOK_MESSAGE=m004
+expect "capacity: idle, a reviewer seat wakes" 0 "b"
+
+prom '{"waiting": "3", "preempt": "0"}'
+run childall FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "capacity: requests waiting defer the secretary" 1 "o" \
+    "capacity: defer: 3 requests waiting (max 0)"
+check "capacity: a waiting defer skips the preemption query" 1 "$(promql | wc -l)"
+run childall FS_HOOK_AGENT=core FS_HOOK_MESSAGE=m004
+expect "capacity: requests waiting defer a reviewer seat" 1 "b" \
+    "capacity: defer: 3 requests waiting (max 0)"
+prom '{"waiting": "3", "preempt": "0"}'
+run childall FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004 LKML_CAPACITY_MAX_WAITING=2
+expect "capacity: over a raised waiting threshold defers" 1 "o" \
+    "3 requests waiting (max 2)"
+prom '{"waiting": "0", "preempt": "1.5"}'
+run childall FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "capacity: preemptions defer" 1 "o" "capacity: defer: 1.5 preemptions in 5m (max 0)"
+prom '{"waiting": "0", "preempt": "2"}'
+run childall FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004 LKML_CAPACITY_MAX_PREEMPTIONS=1
+expect "capacity: over a raised preemption threshold defers" 1 "o" "(max 1)"
+
+printf '\n== capacity: every failure to read defers ==\n'
+cap_fail() { # cap_fail <label> <reason substring> [VAR=value ...]
+    local label="$1" want="$2"; shift 2
+    run childall FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004 "$@"
+    expect "capacity: $label defers" 1 "o" "capacity: defer: " "$want"
+}
+prom '{"waiting": "0", "preempt": "0"}'
+cap_fail "unset URL" "LKML_CAPACITY_PROMETHEUS is unset" LKML_CAPACITY_PROMETHEUS=
+check "capacity: unset URL, no request" "" "$(promql)"
+cap_fail "a non-http URL" "not an http(s) URL" LKML_CAPACITY_PROMETHEUS=file:///etc/hosts
+cap_fail "an unparsable URL" "is not a URL" "LKML_CAPACITY_PROMETHEUS=http://[::1"
+dead_port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+cap_fail "connection refused" "prometheus unreachable: " \
+    "LKML_CAPACITY_PROMETHEUS=http://127.0.0.1:$dead_port"
+for f in '500|prometheus HTTP 500' 'error|prometheus HTTP 400' \
+         "error200|prometheus status 'error'" 'nonjson|non-JSON' \
+         'empty|no series for sum(vllm:num_requests_waiting' \
+         'nonnum:abc|non-numeric value' 'nonnum:NaN|non-finite value' \
+         'nonnum:+Inf|non-finite value'; do
+    mode="${f%%|*}"; want="${f#*|}"
+    prom "{\"waiting\": \"0\", \"preempt\": \"0\", \"fail\": \"$mode\", \"on\": \"waiting\"}"
+    cap_fail "the waiting query answering $mode" "$want"
+done
+prom '{"waiting": "0", "preempt": "0", "fail": "empty", "on": "preempt"}'
+cap_fail "an empty preemption vector" "no series for sum(increase(vllm:num_preemptions_total"
+prom '{"waiting": "0", "preempt": "0", "fail": "hang", "on": "waiting"}'
+t0=$SECONDS
+cap_fail "a hung waiting query" "prometheus timed out after 4.0 s"
+check "capacity: a hung query is cut off within the gate's budget" yes \
+    "$( (( SECONDS - t0 <= 7 )) && echo yes || echo "no, $(( SECONDS - t0 )) s")"
+prom '{"waiting": "0", "preempt": "0", "fail": "hang", "on": "preempt"}'
+t0=$SECONDS
+cap_fail "a hung preemption query" "prometheus timed out after"
+check "capacity: a hung second query is cut off within the gate's budget" yes \
+    "$( (( SECONDS - t0 <= 11 )) && echo yes || echo "no, $(( SECONDS - t0 )) s")"
+prom '{"waiting": "0", "preempt": "0"}'
+cap_fail "a non-integer waiting threshold" "LKML_CAPACITY_MAX_WAITING '1.5' is not" \
+    LKML_CAPACITY_MAX_WAITING=1.5
+cap_fail "a negative preemption threshold" "LKML_CAPACITY_MAX_PREEMPTIONS '-1' is not" \
+    LKML_CAPACITY_MAX_PREEMPTIONS=-1
+cap_fail "a selector without braces" "LKML_CAPACITY_SELECTOR 'instance=\"x\"' is not" \
+    'LKML_CAPACITY_SELECTOR=instance="x"'
+cap_fail "a malformed window" "LKML_CAPACITY_WINDOW '5 minutes' is not" \
+    "LKML_CAPACITY_WINDOW=5 minutes"
+check "capacity: malformed configuration, no request" "" "$(promql)"
+
+printf '\n== capacity: no proxy ==\n'
+prom '{"waiting": "0", "preempt": "0"}'
+run childall FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004 \
+    "http_proxy=http://127.0.0.1:$dead_port" "HTTP_PROXY=http://127.0.0.1:$dead_port"
+expect "capacity: a refusing http_proxy is not used" 0 "o"
+check "capacity: the read reached the server past http_proxy" 2 "$(promql | wc -l)"
+
+printf '\n== capacity: settings from lkml-capacity.env ==\n'
+# The file is read from $FORK_SANDBOX_HOOKS_DIR, else beside the gate;
+# the run above defaults the former to a directory holding none.
+hooks="$work/hooks"; mkdir -p -- "$hooks"
+cap_file() { printf '%s\n' "$@" > "$hooks/lkml-capacity.env"; chmod 0755 "$hooks/lkml-capacity.env"; }
+cap_run() { # cap_run [VAR=value ...]: childall's secretary, settings unset in env
+    local d="$work/case-childall" v
+    local -a args=(FS_HOOK_EVENT=wake-when FS_HOOK_THREAD=t-example
+                   FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+                   "FS_HOOK_EXPORT_FILE=$d/export.json" "FS_HOOK_STATUS_FILE=$d/status.json"
+                   "FORK_SANDBOX_HOOKS_DIR=$hooks")
+    for v in "$@"; do args+=("$v"); done
+    ERR="$(env -i PATH="$PATH" "${args[@]}" "${CAP_GATE:-$GATE}" 2>&1 >/dev/null)"; RC=$?
+}
+prom '{"waiting": "2", "preempt": "0"}'
+cap_file "LKML_CAPACITY_PROMETHEUS=$prom_url" 'LKML_CAPACITY_SELECTOR={job="f"}' \
+         LKML_CAPACITY_MAX_WAITING=2 LKML_CAPACITY_WINDOW=7m
+cap_run
+expect "file: settings from the file alone wake the secretary" 0 "o"
+check "file: the PromQL built from the file's settings" \
+    '/api/v1/query sum(vllm:num_requests_waiting{job="f"})
+/api/v1/query sum(increase(vllm:num_preemptions_total{job="f"}[7m]))' "$(promql)"
+cap_run LKML_CAPACITY_MAX_WAITING=1
+expect "file: the environment overrides a file value" 1 "o" "2 requests waiting (max 1)"
+cap_run LKML_CAPACITY_PROMETHEUS=
+expect "file: a variable set empty in the environment still wins" 1 "o" \
+    "LKML_CAPACITY_PROMETHEUS is unset"
+rm -f -- "$hooks/lkml-capacity.env"
+prom '{"waiting": "0", "preempt": "0"}'
+cap_run
+expect "file: missing, and nothing in the environment, defers a child" 1 "o" \
+    "LKML_CAPACITY_PROMETHEUS is unset, in the environment and in $hooks/lkml-capacity.env"
+check "file: missing, no request" "" "$(promql)"
+prom '{"waiting": "1", "preempt": "0"}'
+cap_file '' '  # LKML_CAPACITY_MAX_WAITING=9' "LKML_CAPACITY_PROMETHEUS = '$prom_url' " \
+         'LKML_CAPACITY_SELECTOR="{job="q"}"' 'lkml_capacity_max_waiting=9' \
+         'MAX_WAITING=9' 'LKML_CAPACITY_MAX_WAITING'
+cap_run
+expect "file: a comment, a stray key and a line without '=' set nothing" 1 "o" \
+    "1 requests waiting (max 0)"
+check "file: quotes stripped from a value" \
+    '/api/v1/query sum(vllm:num_requests_waiting{job="q"})' "$(promql)"
+cap_file "LKML_CAPACITY_PROMETHEUS=$prom_url" "LKML_CAPACITY_WINDOW=\$(touch $work/marker)" \
+         "LKML_CAPACITY_X=\$(touch $work/marker)" "touch $work/marker"
+cap_run
+expect "file: a command substitution is a literal value" 1 "o" \
+    "LKML_CAPACITY_WINDOW '\$(touch $work/marker)' is not a PromQL duration"
+check "file: never executed" no "$([[ -e "$work/marker" ]] && echo yes || echo no)"
+# Beside the gate, when FORK_SANDBOX_HOOKS_DIR is empty: through a
+# symlink, the file sits beside the script it resolves to.
+beside="$work/beside"; mkdir -p -- "$beside" "$work/linkdir"
+cp -- "$gate_src" "$beside/lkml-wake-gate.py"
+cp -- "$(dirname -- "$gate_src")/lkml-panel-state.py" "$beside/"
+ln -sf -- "$beside/lkml-wake-gate.py" "$work/linkdir/lkml-wake-gate.py"
+ln -sf -- "$beside/lkml-panel-state.py" "$work/linkdir/lkml-panel-state.py"
+printf '%s\n' "LKML_CAPACITY_PROMETHEUS=$prom_url" > "$beside/lkml-capacity.env"
+prom '{"waiting": "0", "preempt": "0"}'
+CAP_GATE="$work/linkdir/lkml-wake-gate.py" cap_run FORK_SANDBOX_HOOKS_DIR=
+expect "file: beside the gate, symlink followed, with no hooks dir" 0 "o"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

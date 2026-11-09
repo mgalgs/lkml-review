@@ -58,6 +58,15 @@ either way, but 2 makes the broken gate VISIBLE as wake-gate-error: a
 silent wake would hide it behind normal behaviour, which is the false
 green this tooling exists to avoid.
 
+On a child thread a wake must not bypass the capacity check, so there
+each of those failures exits 1 instead, a defer, with the one line
+reading "lkml-wake-gate: child: defer: gate error: <reason>". Whether
+the thread is a child is read from the export's root message directly,
+before panel-state runs and whatever it answers: a root carrying
+X-Lkml-Parent-Thread with any value, malformed included, is a child. An
+export whose root cannot be read leaves that unknown, and the gate
+exits 2 as on a main thread.
+
 The seat states come from the SIBLING lkml-panel-state.py, run as a
 subprocess (argv list, no shell, 20 s timeout). It is the single
 authority on what a seat's verdict is; nothing of its logic is copied
@@ -76,13 +85,19 @@ A sub-panel (docs/cluster-panel.md, "Sub-panel") touches the gate twice.
 On a main thread, its digest is relayed To: the author carrying
 X-Lkml-Sub-Panel; rule p wakes the author on it however the panel stands,
 since after convergence nothing else would. On the child thread itself
-(panel-state's parent_thread is set) there is no author: rule a does not
+(the root carries X-Lkml-Parent-Thread) there is no author: rule a does not
 apply, and the secretary is woken once every seat has ANSWERED, whatever
 the verdicts, since nothing there waits for a block to settle. Back on the
 main thread, a digest the author has not answered (relayed, or attached
 to the root as sub-panel-digest.md) holds the secretary by rule q, so a
 settled panel wakes the author by rule f rather than closing round it:
 the author must take or decline the digest before the panel converges.
+A wake on a child thread, any seat's, by any rule, also waits for room
+on the model server (docs/cluster-panel.md, "Sub-panel capacity").
+Its LKML_CAPACITY_* settings come from the environment or from the file
+lkml-capacity.env in $FORK_SANDBOX_HOOKS_DIR (else beside this script,
+symlinks followed), the environment winning. The file's KEY=value lines
+are parsed, never sourced.
 
 Rules, in order; the first match decides, and every path prints exactly
 one "lkml-wake-gate: ..." line on stderr naming the decision and rule:
@@ -174,9 +189,16 @@ Python 3 stdlib only.
 """
 
 import json
+import math
 import os
+import re
 import subprocess
 import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 SCHEMA = "lkml-panel-state/1"
 TIMEOUT = 20
@@ -187,6 +209,15 @@ OBJECTING = frozenset(("blocking", "question"))
 SETTLED = frozenset(("positive", "overruled"))
 OPERATOR = "@operator"
 DIGEST_ATTACHMENT = "sub-panel-digest.md"
+# The capacity read on a child thread: each query gets HTTP_TIMEOUT
+# seconds, both together CAPACITY_BUDGET, inside the postmaster's 30 s
+# after panel-state's 20 s.
+HTTP_TIMEOUT = 4
+CAPACITY_BUDGET = 8
+MAX_BODY = 1 << 20
+CAPACITY_FILE = "lkml-capacity.env"
+CAPACITY_PREFIX = "LKML_CAPACITY_"
+DURATION_RE = re.compile(r"(?:[0-9]+(?:ms|s|m|h|d|w|y))+")
 
 
 class Done(Exception):
@@ -222,6 +253,22 @@ def panel_state(export_file, status_file):
     if not isinstance(state, dict) or state.get("schema") != SCHEMA:
         raise fail("lkml-panel-state.py schema is not %s" % SCHEMA)
     return state
+
+
+def is_child(export_file):
+    """Whether the export's root (its lowest seq) carries the sub-panel
+    header, with any value. Tolerant: an export that cannot be read is
+    no child here, and its failure is reported where it is read."""
+    try:
+        with open(export_file or "") as f:
+            messages = json.load(f)["messages"]
+        roots = [m for m in messages if isinstance(m, dict)
+                 and isinstance(m.get("seq"), int)
+                 and not isinstance(m.get("seq"), bool)]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return bool(roots) and has_header(min(roots, key=lambda m: m["seq"]),
+                                      "X-Lkml-Parent-Thread")
 
 
 def read_messages(export_file):
@@ -358,14 +405,14 @@ def gating_seats(state):
             if isinstance(s, dict) and s.get("advisory") is not True]
 
 
-def secretary_skip(state, status, secretary, digest, woken_on=None):
+def secretary_skip(state, status, secretary, digest, child, woken_on=None):
     """Rules k-n: (rule, why) when the secretary is not woken on a
     reviewer's trigger, or None when the panel is ready to close.
-    digest is open_digest()'s answer; woken_on is passed by rule i; see
-    secretary_run."""
+    digest is open_digest()'s answer; child is is_child()'s; woken_on is
+    passed by rule i; see secretary_run."""
     target = state.get("target")
     seats = gating_seats(state)
-    done = ANSWERED if state.get("parent_thread") else SETTLED
+    done = ANSWERED if child else SETTLED
     if not target or not target.get("sha"):
         return "k", "the thread has no review target"
     open_ = sorted((s for s in seats if s.get("state") not in done),
@@ -377,7 +424,7 @@ def secretary_skip(state, status, secretary, digest, woken_on=None):
     push = state.get("push")
     if push is not None and not push.get("answered"):
         return "l", "the push %s is unanswered" % push.get("message_id")
-    if digest and not state.get("parent_thread"):
+    if digest and not child:
         return "q", "the sub-panel digest %s is unanswered" % digest
     live = secretary_run(status, secretary, woken_on)
     if live:
@@ -398,6 +445,18 @@ def addressed(msg, who):
 
 
 def decide(env):
+    child = is_child(env.get("FS_HOOK_EXPORT_FILE"))
+    try:
+        decide_thread(env, child)
+    except Done as d:
+        # The postmaster wakes a seat whose gate fails, and a child's seat
+        # must not wake past the capacity check: defer instead.
+        if d.code == 2 and child:
+            raise Done(1, "child: defer: gate " + d.text)
+        raise
+
+
+def decide_thread(env, child):
     for key in REQUIRED:
         if not env.get(key):
             raise fail("%s is missing or empty" % key)
@@ -408,13 +467,25 @@ def decide(env):
     state = panel_state(env["FS_HOOK_EXPORT_FILE"], env["FS_HOOK_STATUS_FILE"])
     messages = read_messages(env["FS_HOOK_EXPORT_FILE"])
     trigger = find_trigger(messages, env["FS_HOOK_MESSAGE"])
+    try:
+        judge(env, state, messages, trigger, agent, child)
+    except Done as d:
+        # A child's seats run on the self-hosted model: a wake there waits
+        # for room on it. A defer, skip or error stands without a read.
+        if d.code == 0 and child:
+            busy = capacity_busy(env)
+            if busy:
+                raise Done(1, "capacity: defer: %s; held: %s" % (busy, d.text))
+        raise
 
+
+def judge(env, state, messages, trigger, agent, child):
     roster = state.get("roster") or {}
     author = roster.get("author")
     secretary = roster.get("secretary")
     # A root naming no Author, Panel or Secretary is not a PR panel (a
     # series review, a To: @secretary request): rule b wakes, not an error.
-    if (author is None and not state.get("parent_thread")
+    if (author is None and not child
             and (secretary is not None or roster.get("panel"))):
         raise Done(2, "error: the roster names no author (rule a)")
     if agent not in (author, secretary):
@@ -424,7 +495,7 @@ def decide(env):
     panel = state.get("panel") or roster.get("panel") or []
     digest = open_digest(messages, author, secretary, panel)
     if agent == secretary:
-        decide_secretary(env, state, trigger, author, secretary, digest)
+        decide_secretary(env, state, trigger, author, secretary, digest, child)
     if has_header(trigger, "X-Upstream-Head"):
         raise Done(0, "wake: %s is the human author's push (rule c)"
                    % env["FS_HOOK_MESSAGE"])
@@ -444,7 +515,7 @@ def decide(env):
                 and all(s.get("state") in SETTLED for s in seats)
                 and addressed(trigger, secretary)
                 and secretary_skip(state, read_status(env["FS_HOOK_STATUS_FILE"]),
-                                   secretary, digest,
+                                   secretary, digest, child,
                                    env["FS_HOOK_MESSAGE"]) is None):
             raise Done(3, "skip %s: every seat is settled and %s reaches "
                           "%s, which is woken on it (rule i)"
@@ -466,13 +537,164 @@ def decide(env):
     raise Done(1, "defer %s: waiting on %s (rule h)" % (agent, names))
 
 
-def decide_secretary(env, state, trigger, author, secretary, digest):
+class CapacityError(Exception):
+    pass
+
+
+def capacity_settings(env):
+    """-> (the LKML_CAPACITY_* settings, the file read for them). The file
+    is $FORK_SANDBOX_HOOKS_DIR/lkml-capacity.env, else lkml-capacity.env
+    beside this script (symlinks followed). Its KEY=value lines are
+    parsed, never sourced: blank lines, '#' comments, lines without '='
+    and keys outside LKML_CAPACITY_ are ignored, and one pair of matching
+    quotes round a value is stripped. A variable set in the environment
+    wins over the file. A missing or unreadable file sets nothing."""
+    hooks = env.get("FORK_SANDBOX_HOOKS_DIR") or ""
+    path = os.path.join(
+        hooks or os.path.dirname(os.path.realpath(__file__)), CAPACITY_FILE)
+    settings = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except (OSError, ValueError):
+        lines = []
+    for line in lines:
+        if line.lstrip().startswith("#") or "=" not in line:
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
+        if not key.startswith(CAPACITY_PREFIX):
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        settings[key] = value
+    settings.update((k, v) for k, v in env.items()
+                    if k.startswith(CAPACITY_PREFIX))
+    return settings, path
+
+
+def capacity_config(env):
+    """-> (base url, selector, max waiting, max preemptions, window),
+    from the LKML_CAPACITY_* settings; CapacityError when unusable."""
+    settings, path = capacity_settings(env)
+    url = (settings.get("LKML_CAPACITY_PROMETHEUS") or "").strip()
+    if not url:
+        raise CapacityError("LKML_CAPACITY_PROMETHEUS is unset, in the "
+                            "environment and in %s" % path)
+    try:
+        scheme = urllib.parse.urlsplit(url).scheme
+    except ValueError as e:
+        raise CapacityError("LKML_CAPACITY_PROMETHEUS %r is not a URL: %s"
+                            % (url, e))
+    if scheme not in ("http", "https"):
+        raise CapacityError("LKML_CAPACITY_PROMETHEUS %r is not an http(s) "
+                            "URL" % url)
+    sel = (settings.get("LKML_CAPACITY_SELECTOR") or "").strip()
+    if sel and not (sel.startswith("{") and sel.endswith("}")):
+        raise CapacityError("LKML_CAPACITY_SELECTOR %r is not a {...} label "
+                            "matcher" % sel)
+    limits = []
+    for key in ("LKML_CAPACITY_MAX_WAITING", "LKML_CAPACITY_MAX_PREEMPTIONS"):
+        raw = (settings.get(key) or "0").strip()
+        if not re.fullmatch(r"[0-9]+", raw):
+            raise CapacityError("%s %r is not a non-negative integer"
+                                % (key, raw))
+        limits.append(int(raw))
+    window = (settings.get("LKML_CAPACITY_WINDOW") or "5m").strip()
+    if not DURATION_RE.fullmatch(window):
+        raise CapacityError("LKML_CAPACITY_WINDOW %r is not a PromQL "
+                            "duration" % window)
+    return url.rstrip("/"), sel, limits[0], limits[1], window
+
+
+def http_get(url, timeout):
+    """The body at url, or CapacityError. The request runs on a daemon
+    thread so a server that answers byte by byte cannot hold the gate
+    past timeout: the socket timeout bounds only each read. The opener
+    ignores *_proxy in the environment: the server is reached directly."""
+    box = {}
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def fetch():
+        try:
+            with opener.open(url, timeout=timeout) as resp:
+                box["body"] = resp.read(MAX_BODY + 1)
+        except urllib.error.HTTPError as e:
+            box["error"] = "HTTP %d" % e.code
+        except Exception as e:  # noqa: BLE001 -- every failure defers
+            box["error"] = "unreachable: %s" % (getattr(e, "reason", None) or e)
+
+    t = threading.Thread(target=fetch, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        raise CapacityError("prometheus timed out after %.1f s" % timeout)
+    if "error" in box:
+        raise CapacityError("prometheus " + box["error"])
+    if len(box["body"]) > MAX_BODY:
+        raise CapacityError("prometheus answered more than %d bytes"
+                            % MAX_BODY)
+    return box["body"]
+
+
+def instant_query(base, promql, timeout):
+    """The one finite number an instant query answers, or CapacityError."""
+    body = http_get(base + "/api/v1/query?"
+                    + urllib.parse.urlencode({"query": promql}), timeout)
+    try:
+        doc = json.loads(body)
+    except ValueError:
+        raise CapacityError("prometheus answered non-JSON for %s" % promql)
+    if not isinstance(doc, dict) or doc.get("status") != "success":
+        err = doc.get("error") if isinstance(doc, dict) else None
+        raise CapacityError("prometheus status %r for %s%s" % (
+            doc.get("status") if isinstance(doc, dict) else None, promql,
+            ": %s" % err if err else ""))
+    data = doc.get("data")
+    result = data.get("result") if isinstance(data, dict) else None
+    if not isinstance(result, list) or not result:
+        raise CapacityError("no series for %s" % promql)
+    if len(result) != 1 or not isinstance(result[0], dict):
+        raise CapacityError("%d series for %s, want 1" % (len(result), promql))
+    value = result[0].get("value")
+    try:
+        number = float(value[1])
+    except (TypeError, ValueError, IndexError, KeyError):
+        raise CapacityError("non-numeric value %r for %s" % (value, promql))
+    if not math.isfinite(number):
+        raise CapacityError("non-finite value %r for %s" % (value[1], promql))
+    return number
+
+
+def capacity_busy(env):
+    """Why the model server has no room for a child seat, or None when it
+    has. Every failure to tell is a reason: the postmaster wakes a seat
+    whose gate errors, so the capacity read must fail closed itself."""
+    try:
+        base, sel, max_waiting, max_preempt, window = capacity_config(env)
+        deadline = time.monotonic() + CAPACITY_BUDGET
+        waiting = instant_query(
+            base, "sum(vllm:num_requests_waiting%s)" % sel,
+            min(HTTP_TIMEOUT, deadline - time.monotonic()))
+        if waiting > max_waiting:
+            return "%g requests waiting (max %d)" % (waiting, max_waiting)
+        preempted = instant_query(
+            base, "sum(increase(vllm:num_preemptions_total%s[%s]))"
+            % (sel, window), min(HTTP_TIMEOUT, deadline - time.monotonic()))
+        if preempted > max_preempt:
+            return "%g preemptions in %s (max %d)" % (preempted, window,
+                                                     max_preempt)
+    except CapacityError as e:
+        return str(e)
+    return None
+
+
+def decide_secretary(env, state, trigger, author, secretary, digest, child):
     sender = sender_of(trigger)
     if sender in (author, OPERATOR):
         raise Done(0, "wake: %s is a request from %s (rule j)"
                    % (env["FS_HOOK_MESSAGE"], sender))
     skip = secretary_skip(state, read_status(env["FS_HOOK_STATUS_FILE"]),
-                          secretary, digest)
+                          secretary, digest, child)
     if skip:
         raise Done(3, "skip %s: %s (rule %s)" % (secretary, skip[1], skip[0]))
     raise Done(0, "wake %s: every seat is settled on the target; "
