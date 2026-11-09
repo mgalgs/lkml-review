@@ -645,6 +645,68 @@ or `To:` the digest's sender. On a child, which has no author, the
 secretary wakes once every seat has answered, whatever the verdicts, and
 not before.
 
+### Sub-panel capacity
+
+A child's seats run on a self-hosted model, so they should run only when
+its server has room, and should yield to interactive load. Every seat on a
+child, reviewers and secretary alike, carries the same `wake-when:
+lkml-panel` gate as the main thread's author and secretary. On a child, a wake that the
+gate's rules decide is held until the model server has capacity. A defer
+or skip stands without that check, and a main thread never makes it.
+
+The server is busy while
+`sum(vllm:num_requests_waiting<SEL>)` is over its threshold, or
+`sum(increase(vllm:num_preemptions_total<SEL>[<WINDOW>]))` is over its
+own. KV-cache use is not counted: under prefix caching it reads high
+without the server being saturated. These settings configure the check:
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `LKML_CAPACITY_PROMETHEUS` | Prometheus base URL | none: required |
+| `LKML_CAPACITY_SELECTOR` | label matcher with braces, e.g. `{instance=~"gpu-a:.*"}` | empty |
+| `LKML_CAPACITY_MAX_WAITING` | requests waiting allowed | `0` |
+| `LKML_CAPACITY_MAX_PREEMPTIONS` | preemptions in the window allowed | `0` |
+| `LKML_CAPACITY_WINDOW` | PromQL duration of the preemption window | `5m` |
+
+The gate reads each setting from its environment, or from
+`lkml-capacity.env` in `$FORK_SANDBOX_HOOKS_DIR` (else beside the gate
+script), the environment winning. The file holds `KEY=value` lines and
+is parsed, never sourced. A missing file sets nothing, so on a child the
+unset URL defers every wake.
+
+The check **fails closed**. The postmaster wakes a seat whose gate errors,
+so every failure to read capacity defers the wake instead: an unset URL, a
+malformed variable, an unreachable server, an HTTP error, a timeout (4 s
+per query), a malformed answer, an empty result (a server with no series is
+misconfigured, not idle), or a non-numeric value. The gate's stderr line
+says why, for example `capacity: defer: 3 requests waiting (max 0)`, so
+the postmaster log shows why a child stalls. The reads go to the server
+directly, ignoring any `http_proxy` in the environment.
+
+On a child, an error of the gate itself defers too, where a main thread
+would exit 2 and be woken: panel-state failing, a missing input, a root
+rule a refuses. The line then reads `child: defer: gate error: <reason>`.
+A thread is a child when the export's root carries
+`X-Lkml-Parent-Thread` with any value, malformed included, judged before
+panel-state runs; an export whose root cannot be read leaves the gate
+unable to tell, and it errors as on a main thread.
+
+The gate keeps no state and never retries: re-asking a deferred wake is
+the postmaster's job. fork-sandbox's postmaster re-runs a deferred seat's
+gate on a backoff timer, a bounded number of times
+(`FORK_SANDBOX_WAKE_REGATE_BASE`, default 300 s, and
+`FORK_SANDBOX_WAKE_REGATE_ATTEMPTS`, default 4). Once those are spent the
+thread is flagged `wake-deferred`, and `lkml-panel-state.py` reports
+`NEEDS-OPERATOR` until an operator wakes the seat. A deployment whose
+postmaster has no re-gate timer gets that outcome on the first defer that
+nothing else follows.
+
+Two exceptions: the postmaster runs no wake gate for mail from the
+operator, nor for a retry of a failed or silent wake or a held seat's
+release. Operator mail on a child therefore wakes every seat it
+addresses without a capacity check, busy server or not, and a child
+seat whose run dies can respawn once without one.
+
 ## Configuring the fleet
 
 In the cluster, each seat needs keys that only fleet.yaml can carry.
@@ -794,12 +856,17 @@ agents:
     wake-when: lkml-panel
   secretary:
     wake-when: lkml-panel
+  # On a sub-panel, every child seat as well: see "Sub-panel capacity".
 ```
 
-- **`wake-when: lkml-panel`** goes on the `pr-author` and `secretary`
-  agents and no other. The postmaster runs
-  `$FORK_SANDBOX_HOOKS_DIR/wake-when.lkml-panel` before each spawn of those
-  seats; for any other seat the gate wakes it unconditionally. For the
+- **`wake-when: lkml-panel`** goes on the main panel's `pr-author` and
+  `secretary` agents. A deployment that runs a sub-panel puts it on every
+  child seat as well, reviewers included, so their wakes wait for room on
+  the model server (see "Sub-panel capacity"); left off a child reviewer,
+  that seat spawns with no capacity check. The postmaster runs
+  `$FORK_SANDBOX_HOOKS_DIR/wake-when.lkml-panel` before each spawn of a
+  gated seat; on a main thread, the gate wakes any seat but the author and
+  the secretary unconditionally. For the
   author, the gate asks `lkml-panel-state.py` whether every panel seat
   holds a verdict on the current version, and defers the wake until they
   do. A carried verdict counts as answered, so a `recheck`
@@ -839,8 +906,8 @@ agents:
   --check`, before `install --postmaster`. The gate runs a staged copy of
   `lkml-panel-state.py`, and `--check` fails when that copy has drifted from
   the repo's.
-- **Exit codes.** 0 wakes the seat. 1 defers the author: nothing spawns and
-  no budget is spent, and the author's next wake sees the whole thread. 3
+- **Exit codes.** 0 wakes the seat. 1 defers the seat: nothing spawns and
+  no budget is spent, and the seat's next wake sees the whole thread. 3
   skips the seat by design: nothing spawns, no budget is spent, no
   `wake-deferred` record is kept, and any standing defer for that seat on
   that thread is cleared. 2 means the gate itself failed (a missing input,

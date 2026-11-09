@@ -1218,6 +1218,50 @@ for needle in 'X-Lkml-Parent-Thread: <parent thread' '`X-Lkml-Sub-Panel`' '`X-Lk
     else no "docs: the Sub-panel section names $needle" "not found"; fi
 done
 
+# The gate never retries; the postmaster's bounded re-gate timer re-asks
+# a capacity defer, and once it is spent the child strands as
+# NEEDS-OPERATOR: the docs must say both, and nowhere that nothing re-asks.
+# Child reviewers carry the gate too, so the fleet section must not
+# confine it to the author and the secretary.
+cap_doc="$(sed -n '/^### Sub-panel capacity$/,/^## Configuring the fleet$/p' "$cluster_doc" | tr '\n' ' ' | sed 's/  */ /g')"
+# shellcheck disable=SC2016  # literal backticks in the needles
+if grep -qF 'The gate keeps no state and never retries' <<<"$cap_doc" \
+   && grep -qF '`FORK_SANDBOX_WAKE_REGATE_BASE`, default 300 s' <<<"$cap_doc" \
+   && grep -qF '`FORK_SANDBOX_WAKE_REGATE_ATTEMPTS`, default 4' <<<"$cap_doc" \
+   && grep -qF 'reports `NEEDS-OPERATOR` until an operator wakes the seat' <<<"$cap_doc"; then
+    ok "docs: the postmaster re-gates a capacity defer, bounded, then NEEDS-OPERATOR"
+else
+    no "docs: the postmaster re-gates a capacity defer, bounded, then NEEDS-OPERATOR" "not found"
+fi
+# The postmaster runs no gate for operator mail: the docs must list that
+# bypass beside the retry and the held seat's release.
+if grep -qF 'runs no wake gate for mail from the operator' <<<"$cap_doc" \
+   && grep -qF 'Operator mail on a child therefore wakes every seat it addresses without a capacity check' <<<"$cap_doc"; then
+    ok "docs: operator mail bypasses the capacity check"
+else
+    no "docs: operator mail bypasses the capacity check" "not found"
+fi
+if tr '\n' ' ' < "$cluster_doc" | sed 's/  */ /g' | grep -qiE 'nothing re-asks|not re-asked|promise no timer'; then
+    no "docs: no claim that nothing re-asks a capacity defer" "found"
+else
+    ok "docs: no claim that nothing re-asks a capacity defer"
+fi
+# shellcheck disable=SC2016  # literal backticks in the needles
+if grep -qF '`lkml-capacity.env` in `$FORK_SANDBOX_HOOKS_DIR`' <<<"$cap_doc" \
+   && grep -qF 'the environment winning' <<<"$cap_doc" \
+   && grep -qF 'parsed, never sourced' <<<"$cap_doc" \
+   && grep -qF 'child: defer: gate error:' <<<"$cap_doc"; then
+    ok "docs: capacity settings file, and a child's gate error defers"
+else
+    no "docs: capacity settings file, and a child's gate error defers" "not found"
+fi
+gate_doc="$(sed -n '/^### Gating the author/,/^## Known limits$/p' "$cluster_doc" | tr '\n' ' ' | sed 's/  */ /g')"
+if grep -qF 'agents and no other' <<<"$gate_doc" || ! grep -qF 'on every child seat as well, reviewers included' <<<"$gate_doc"; then
+    no "docs: the fleet gating section puts the gate on child reviewers too" "stale or missing"
+else
+    ok "docs: the fleet gating section puts the gate on child reviewers too"
+fi
+
 # fork-sandbox skips a malformed reply and flags the thread; it does not
 # respawn the seat. A persona that promises a retry tells the seat its
 # broken stanza is recoverable when it is not.
