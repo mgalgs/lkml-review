@@ -455,6 +455,11 @@
 #              `list` exiting nonzero, refuse the same way. There is a
 #              known race this flag does not close: two callers checking
 #              at the same moment can both see no match and both send.
+#              Without --parent-thread, a thread whose root carries
+#              X-Lkml-Parent-Thread is never a match: a sub-panel opened
+#              on the same target carries every filter a main panel
+#              does, and printing its id as "the panel's thread" would
+#              hand the relay a child to post into.
 #
 # This script is LOCAL ONLY: it formats patches and fills a template. It
 # never talks to GitHub itself, and without --remote it never touches the
@@ -1751,6 +1756,8 @@ if (( send )); then
     # refused for its own reason rather than skipped by this check.
     if (( unless_exists )); then
         exists_filters=("${headers[@]}" "X-Review-Target-Set: $review_target_branch $review_target_sha")
+        exists_mode=main
+        (( parent_thread_given )) && exists_mode=child
         exists_list_cmd=(fork-sandbox mail "${remote_args[@]}" list --json)
         for exists_filter in "${exists_filters[@]}"; do
             exists_list_cmd+=(--header "$exists_filter")
@@ -1773,8 +1780,12 @@ import json, sys
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 
+# A main kickoff (no --parent-thread) never matches a sub-panel root:
+# a child opened on the same target carries every filter a main panel
+# does, and its id must never be mistaken for the main panel'"'"'s thread.
+main_only = sys.argv[1] == "main"
 filters = []
-for raw in sys.argv[1:]:
+for raw in sys.argv[2:]:
     name, _, value = raw.partition(": ")
     filters.append((name.strip().lower(), value.strip()))
 
@@ -1806,6 +1817,8 @@ for elem in data:
     if not ok:
         bad = True
         continue
+    if main_only and "x-lkml-parent-thread" in hdr_map:
+        continue
     if not str(elem.get("thread") or "").strip():
         print("NOTHREAD")
         sys.exit(0)
@@ -1833,7 +1846,7 @@ matches.sort(key=sort_key, reverse=True)
 print("MATCH")
 for m in matches:
     print(m.get("thread", ""))
-' "${exists_filters[@]}" <<<"$exists_json")"
+' "$exists_mode" "${exists_filters[@]}" <<<"$exists_json")"
         exists_status="$(head -n1 <<<"$exists_result")"
         case "$exists_status" in
             BADJSON)

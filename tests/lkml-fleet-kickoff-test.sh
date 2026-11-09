@@ -2088,6 +2088,25 @@ contains "--secretary overrides the sub-panel's secretary" "$sp_body" "Secretary
 STUB_LIST_JSON='[]' kick "${rkick[@]}" "${sp_flags[@]}" --parent-thread "$sp_id" --send --unless-exists
 contains "--unless-exists filters on the parent header" "$(grep -m1 -- '^mail list' <<<"$k_argv")" \
     "--header X-Lkml-Parent-Thread: $sp_id"
+# A main panel's re-run must never take a sub-panel on the same target
+# for its own thread: the child carries every filter the main one does.
+sp_list_both="$(cat <<JSON
+[{"thread":"T-MAIN","messages":1,"subject":"s","from":"@ci-example","date":"Mon, 01 Sep 2025 09:00:00 +0000","last_date":"Mon, 01 Sep 2025 09:00:00 +0000","root_headers":[["X-Review-Target-Set","topic $rt_tip"]],"review_target":null},{"thread":"T-CHILD","messages":1,"subject":"s","from":"@ci-example","date":"Mon, 01 Sep 2025 12:00:00 +0000","last_date":"Mon, 01 Sep 2025 12:00:00 +0000","root_headers":[["X-Review-Target-Set","topic $rt_tip"],["X-Lkml-Parent-Thread","$sp_id"]],"review_target":null}]
+JSON
+)"
+STUB_LIST_JSON="$sp_list_both" kick "${rkick[@]}" "${pr_flags[@]}" --send --unless-exists
+check "a main re-run with a newer sub-panel on the target exits 0" "0" "$k_rc"
+check "a main re-run prints the main thread, not the newer sub-panel" "T-MAIN" "$(head -n1 <<<"$k_out")"
+case "$k_out" in
+    *Warning:*) no "a sub-panel match is dropped, not warned about as a second match" "$k_out" ;;
+    *) ok "a sub-panel match is dropped, not warned about as a second match" ;;
+esac
+STUB_LIST_JSON="$(cat <<JSON
+[{"thread":"T-CHILD","messages":1,"subject":"s","from":"@ci-example","date":"Mon, 01 Sep 2025 12:00:00 +0000","last_date":"Mon, 01 Sep 2025 12:00:00 +0000","root_headers":[["X-Review-Target-Set","topic $rt_tip"],["x-lkml-parent-thread","$sp_id"]],"review_target":null}]
+JSON
+)" kick "${rkick[@]}" "${pr_flags[@]}" --send --unless-exists
+check "a main kickoff whose only match is a sub-panel sends" "0" "$k_rc"
+contains "a main kickoff whose only match is a sub-panel sends its root" "$k_argv" "mail send"
 
 # Refusals.
 kick "${rkick[@]}" "${sp_flags[@]}" --send
