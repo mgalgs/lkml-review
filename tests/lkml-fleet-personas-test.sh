@@ -769,6 +769,19 @@ has "$sec" 'last in the body' \
 pra="$texts_dir/pr-author.md"
 pra_fm="$(awk 'NR == 1 && /^---$/ { f = 1; next } f && /^---$/ { exit } f { print }' "$pra")"
 
+# Sub-panel digests: advice from reviewers off this panel, never a verdict,
+# answered in the next cover's ## Sub-panel section or, after convergence,
+# by one decline To: the relay.
+# shellcheck disable=SC2016  # literal backticks in the needles
+for needle in '## Sub-panel digests' '`X-Lkml-Sub-Panel: <child' '`X-Lkml-Digest-Of: <digest' \
+              'an attachment named `sub-panel-digest.md`' 'never counts toward convergence, and is never waited for' \
+              'never send its sender a rebuttal' 'taken (naming the commit) or declined (a one-line reason)' \
+              'If you agree with any of its findings, post a version instead of asking the Secretary' \
+              'A digest after the panel converged.' '`To:` the digest'"'"'s sender only' \
+              'Change nothing else' '- `## Sub-panel`, when an unanswered sub-panel digest'; do
+    has_flat "$pra" "$needle" "pr-author.md sub-panel digests: $needle"
+done
+
 # The CI suite source (X-Lkml-Suite-Source: ci): the project's suite is CI's
 # to run, so the tests seat and the author stop running it, and the
 # secretary reports CI's result on the frozen head in place of Suite-Run.
@@ -1223,7 +1236,7 @@ fi
 # a typo'd header never ships, and push modes / tier focus live only in
 # the files that own them (fleet/ includes fleet/prompts).
 lkml_headers="$(grep -rhoE 'X-Lkml-[A-Za-z-]+' "$repo_dir/fleet" | sed 's/-$//' | sort -u | tr '\n' ' ')"
-expected_headers='X-Lkml-Add-Seats X-Lkml-CI-From X-Lkml-CI-Head X-Lkml-CI-Status X-Lkml-Parent-Thread X-Lkml-Push-Mode X-Lkml-Question-Timeout X-Lkml-Recheck-Seats X-Lkml-Series X-Lkml-Suite-Source X-Lkml-Tier X-Lkml-Tier-Reason '
+expected_headers='X-Lkml-Add-Seats X-Lkml-CI-From X-Lkml-CI-Head X-Lkml-CI-Status X-Lkml-Digest-Of X-Lkml-Parent-Thread X-Lkml-Push-Mode X-Lkml-Question-Timeout X-Lkml-Recheck-Seats X-Lkml-Series X-Lkml-Sub-Panel X-Lkml-Suite-Source X-Lkml-Tier X-Lkml-Tier-Reason '
 if [[ "$lkml_headers" == "$expected_headers" ]]; then
     ok "fleet/ spells only the contract X-Lkml-* headers"
 else

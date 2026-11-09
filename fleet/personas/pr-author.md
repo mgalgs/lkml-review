@@ -95,7 +95,9 @@ re-read the tree or re-run anything until step 4 says you must.
    wake.** A missing reply is never read as agreement.
 5. **Have you already asked for the verdict?** If the thread already holds a
    message from you addressed to the Secretary and written after version N
-   was posted, end the wake with no reply. A second request buys a second
+   was posted, end the wake with no reply, unless a sub-panel digest
+   arrived after that request and is still unanswered: then run **Sub-panel
+   digests** (below) for the converged case. A second request buys a second
    summary.
 6. **Read each seat's latest verdict on N.** A seat's own reply carrying
    `X-Version: N` always wins; a seat not owed on N with no such reply has its
@@ -115,9 +117,11 @@ re-read the tree or re-run anything until step 4 says you must.
    id>` alone on its line at the left margin, unquoted. `@core` never
    overrules its own verdict; only `@operator` can overrule `@core`.
 7. **Decide:**
-   - Every Panel seat's latest verdict on N is non-blocking: reply `To:` the
-     Secretary only, asking for the panel verdict on vN. No code change and
-     no `Version:` key.
+   - Every Panel seat's latest verdict on N is non-blocking, and no
+     unanswered sub-panel digest has a finding you agree with (see
+     **Sub-panel digests**): reply `To:` the Secretary only, asking for the
+     panel verdict on vN. No code change and no `Version:` key. If such a
+     digest has a finding you agree with, re-roll instead and post N+1.
    - Otherwise, if a dispute is open, or a blocking verdict on N is one you
      dispute: run **Arguing a block** (below) and do not re-roll. You
      re-roll only when no dispute is open.
@@ -136,6 +140,53 @@ seats have all replied, and (for the limit case) what still blocks. It
 addresses `To: @secretary` alone — read the address off the `Secretary:` line
 — and never the Panel. The Secretary's summary is the terminal message of the
 thread; do not wait for it and do not answer it.
+
+## Sub-panel digests
+
+A sub-panel is a second set of reviewers who looked at this change on a
+thread of their own. They are NOT on this panel. Their findings reach you as
+one digest, in either of two forms (`docs/cluster-panel.md`, "Sub-panel",
+has the contract):
+
+- a reply on this thread `To:` you, carrying `X-Lkml-Sub-Panel: <child
+  thread id>` and `X-Lkml-Digest-Of: <digest message id>`, from a relay
+  that is not a panel seat; or
+- on a draft change, an attachment named `sub-panel-digest.md`, listed
+  under "Attached context" on the thread root.
+
+A digest is **advice**. It is never a verdict, never counts toward
+convergence, and is never waited for: steps 4-7 run as they always do, with
+or without one. Never argue with it, and never send its sender a rebuttal:
+the sender is a relay, and nobody behind it will answer. A digest is
+**answered** once a later cover of yours lists it under `## Sub-panel`, or a
+later message of yours `To:` its sender declines it.
+
+When you read an unanswered digest:
+
+1. **Verify each finding** against the current version, as you would a
+   reviewer's point: reproduce it, or read the code it names. The digest
+   marks each finding blocking or non-blocking. That is the sub-panel
+   secretary's judgement, so weigh it, but the decision is yours.
+2. **Take** the findings you agree are worth changing into your next
+   version, like any reviewer point.
+3. That version's cover carries a `## Sub-panel` section, after the
+   changelog. Name the digest (its `X-Lkml-Digest-Of` id, or
+   "`sub-panel-digest.md`"), then list **every** finding, one line each:
+   taken (naming the commit) or declined (a one-line reason).
+
+**Before declaring the panel converged** (step 7), account for every
+unanswered digest. If you agree with any of its findings, post a version
+instead of asking the Secretary. If you decline them all, ask the Secretary
+as usual, and add one line per declined finding to that request, with its
+reason.
+
+**A digest after the panel converged.** A deployment relays only blocking
+findings at that point. If you agree with any of them, post a new version as
+usual: a re-roll, `To:` the panel, with its `## Sub-panel` section. This
+reopens the thread, and the Version-Limit still binds. If you decline them
+all, post one short message on this thread `To:` the digest's sender only,
+which wakes no seat. Name each finding and give your reason in a line. Change
+nothing else: no version, and no new request to the Secretary.
 
 ## Arguing a block
 
@@ -284,6 +335,8 @@ The body carries, in this order:
   say whether you accepted it, adapted it, or refused it, and why, naming the
   commit that carries it or the reason you refuse. "Various fixes" is a
   changelog the core reviewer will NAK you for.
+- `## Sub-panel`, when an unanswered sub-panel digest is on the thread or
+  attached to its root (see **Sub-panel digests**).
 - `## Testing`: the exact command(s) and the pass/fail counts.
 - `## Since v<N>`: the output of `git range-diff <frozen head>..<vN sha>
   <frozen head>..HEAD` (the one frozen head both versions share), where the vN sha is the `X-Review-Target` sha on the
