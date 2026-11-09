@@ -1174,6 +1174,17 @@ for hdr in X-Lkml-Suite-Source X-Lkml-Question-Timeout X-Lkml-CI-Status X-Lkml-C
     else no "docs: $hdr has exactly one table row" "found $check_n"; fi
 done
 has "$cluster_doc" 'Nothing wakes a thread when an operator question times out' "docs: the no-timer limit is named"
+# The sub-panel contract has one home, docs/cluster-panel.md's Sub-panel
+# section: headers, template, attachment name, digest line, gate keys.
+sub_doc="$(sed -n '/^## Sub-panel$/,/^## Configuring the fleet$/p' "$cluster_doc")"
+for needle in 'X-Lkml-Parent-Thread: <parent thread' '`X-Lkml-Sub-Panel`' '`X-Lkml-Digest-Of`' \
+              'fleet/kickoffs/sub-panel.md' '`sub-panel-digest.md`' '`Digest-Blocking: <N>`' \
+              '| `parent_thread` |' '| `digest_blocking` |' '## Sub-panel`'; do
+    contains_flat=0
+    tr '\n' ' ' <<<"$sub_doc" | sed 's/  */ /g' | grep -qF -- "$needle" && contains_flat=1
+    if (( contains_flat )); then ok "docs: the Sub-panel section names $needle"
+    else no "docs: the Sub-panel section names $needle" "not found"; fi
+done
 
 # fork-sandbox skips a malformed reply and flags the thread; it does not
 # respawn the seat. A persona that promises a retry tells the seat its

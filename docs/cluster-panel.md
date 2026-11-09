@@ -529,6 +529,116 @@ a named reason instead. That is the false green this tooling exists to
 catch. **The gate is `lkml-panel-state.py`**, never the secretary's trailer
 alone.
 
+## Sub-panel
+
+A sub-panel is a second review thread, a **child**, that runs beside a main
+panel thread on the same change. It adds reviewers, for example on a cheap
+self-hosted model, without slowing the main panel or letting their findings
+block it. Its seats have no author to argue with. Its secretary writes one
+digest, which a deployment relays into the main thread. There the main
+panel's author verifies each finding and decides what to take. This section
+is the contract; the personas and the template point here.
+
+lkml-review builds the child thread, its rules, the gate's view of it and
+the author's handling of a digest. The relay that carries the digest from
+child to parent, and the deployment's choice of seats, live outside this
+repo.
+
+### The child thread
+
+A child's root carries the header `X-Lkml-Parent-Thread: <parent thread
+id>`, in the mail store's id shape. Its body opens with a roster that has
+**no `Author:` line**, and no `Version-Limit` or `Frozen-Head` either:
+
+    Parent-Thread: <parent thread id>
+    Panel: @devils-advocate, @operability, @second-opinion
+    Secretary: @secretary
+
+```bash
+lkml-fleet-kickoff.sh "$WORKSPACE" "$BASE_SHA..$HEAD_SHA" \
+  --from @ci-example --template sub-panel --parent-thread "$MAIN_THREAD" \
+  --subject "<PR title> (#<n>)" --summary "<one paragraph>" \
+  --review-target "<head branch>:$HEAD_SHA" --remote --send --unless-exists
+```
+
+`fleet/kickoffs/sub-panel.md` is the template and `sub-panel.roster` its
+default roster; `--panel` and `--secretary` override the seats as they do
+for pr-review. The kickoff refuses the template without `--parent-thread`,
+refuses `--parent-thread` on a template without `${PARENT_THREAD}`, and
+refuses an author from any source. The parent header joins the
+`--unless-exists` filter, so a re-run finds this parent's child.
+
+On the child:
+
+1. **Each seat replies once** on the version under review, with its usual
+   verdict trailer, `To:` the root's `From:` (which wakes nobody) and `Cc:`
+   the secretary. There is no next version and nobody argues a block, so
+   each finding must stand on its own: location, concrete failure scenario,
+   and what was run versus only read.
+2. **The secretary wakes once every panel seat has replied** on that
+   version, whatever the verdicts. It writes exactly one message, `To:` the
+   root's `From:`: the digest. The digest lists the findings deduplicated
+   across seats. For each finding it gives the seats that raised it, the
+   location, the failure scenario, and whether it was reproduced or only
+   read. The secretary marks each one **blocking** (a concrete failure if
+   this merges as it stands) or **non-blocking**, on its own judgement and
+   not from a seat's trailer. The body ends with one line
+   `Digest-Blocking: <N>`, the number of findings marked blocking, directly
+   above the usual `Panel-*` trailer (see "Closing"). With every seat in,
+   that trailer is `Panel-Version: 1`, `Panel-Status: CONVERGED`,
+   `Panel-Verdict: SIGNED-OFF`, so the child closes the way any panel does.
+   On a child that trailer means "finished", not "the change is good":
+   `Digest-Blocking` carries the outcome.
+
+### The relayed digest
+
+The relay posts the digest into the **parent** thread as a reply:
+
+| Field | Value |
+|---|---|
+| From | a sender that is neither a panel seat nor `@operator` |
+| To | the author seat only |
+| `X-Lkml-Sub-Panel` | the child thread's id |
+| `X-Lkml-Digest-Of` | the child digest's message id |
+| body | the digest, with the secretary's `Panel-*` trailer removed |
+
+A digest can also reach the author a second way. On a draft change, the
+main panel's root may carry it as an attachment named
+`sub-panel-digest.md`, listed under "Attached context".
+
+Either way the digest is advice from reviewers who are not on the main
+panel. It is never a verdict, never counted toward convergence, and never
+waited for. The author verifies each finding against the current version,
+takes what it agrees with into the next version, and answers every finding
+in that version's changelog under `## Sub-panel`. A digest that arrives
+after the main panel converged (a deployment relays only blocking findings
+then) gets a new version when the author agrees with any finding. If the
+author declines them all, it posts one short message `To:` the digest's
+sender saying which and why. `fleet/personas/pr-author.md` has the rules.
+
+### What the gate reports
+
+`lkml-panel-state.py` reports two keys on every thread. They are null on a
+main thread, and nothing else about a main thread changes:
+
+| Key | Value |
+|---|---|
+| `parent_thread` | the root's `X-Lkml-Parent-Thread`, else null. A malformed value is a reason, and null |
+| `digest_blocking` | on a child, the `N` of the counted secretary message's `Digest-Blocking:` line, else null. A missing, misplaced or malformed line is a reason |
+
+On a child, a seat that blocks or asks has answered: its finding goes into
+the digest and is not a reason. A silent seat still is. The child is
+`CONVERGED`, meaning finished, once every seat has answered and the digest
+is on target, saying `CONVERGED`, with the thread quiet. Its `verdict`
+stays null, because the trailer's `SIGNED-OFF` is not a sign-off of the
+change. A root `Author:` line on a child is a reason.
+
+The wake gate (`lkml-wake-gate.py`, below) handles both sides. On a main
+thread, a message `To:` the author carrying `X-Lkml-Sub-Panel` from a
+non-seat wakes the author whatever the panel's state (rule p), after
+convergence too. On a child, which has no author, the secretary wakes once
+every seat has answered, whatever the verdicts, and not before.
+
 ## Configuring the fleet
 
 In the cluster, each seat needs keys that only fleet.yaml can carry.
@@ -712,6 +822,10 @@ agents:
   it always has; a forgotten `Cc:` costs one wake, and never leaves a
   converged panel with nobody woken. The secretary still verifies the panel
   from the thread, and writes `IN-PROGRESS` if its own reading disagrees.
+- **Sub-panels.** A relayed sub-panel digest (`X-Lkml-Sub-Panel`, `To:` the
+  author, from a non-seat) always wakes the author. On a child thread the
+  secretary wakes once every seat has answered, whatever the verdicts. See
+  "Sub-panel".
 - **`budget-reserve`** names both seats because the author's final post
   comes before the secretary's verdict. A reserve held for the secretary
   alone would refuse that post, and the secretary would never be woken.
