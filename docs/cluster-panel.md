@@ -636,8 +636,14 @@ change. A root `Author:` line on a child is a reason.
 The wake gate (`lkml-wake-gate.py`, below) handles both sides. On a main
 thread, a message `To:` the author carrying `X-Lkml-Sub-Panel` from a
 non-seat wakes the author whatever the panel's state (rule p), after
-convergence too. On a child, which has no author, the secretary wakes once
-every seat has answered, whatever the verdicts, and not before.
+convergence too. While a digest is unanswered on a main thread, relayed or
+attached to the root, the secretary is not woken to close the panel (rule
+q); the reply that settles the panel wakes the author instead, which takes
+or declines the digest before asking for the verdict. A digest is answered
+once a later message from the author is a cover, or is `To:` the secretary
+or `To:` the digest's sender. On a child, which has no author, the
+secretary wakes once every seat has answered, whatever the verdicts, and
+not before.
 
 ## Configuring the fleet
 

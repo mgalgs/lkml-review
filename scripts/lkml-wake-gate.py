@@ -78,7 +78,11 @@ X-Lkml-Sub-Panel; rule p wakes the author on it however the panel stands,
 since after convergence nothing else would. On the child thread itself
 (panel-state's parent_thread is set) there is no author: rule a does not
 apply, and the secretary is woken once every seat has ANSWERED, whatever
-the verdicts, since nothing there waits for a block to settle.
+the verdicts, since nothing there waits for a block to settle. Back on the
+main thread, a digest the author has not answered (relayed, or attached
+to the root as sub-panel-digest.md) holds the secretary by rule q, so a
+settled panel wakes the author by rule f rather than closing round it:
+the author must take or decline the digest before the panel converges.
 
 Rules, in order; the first match decides, and every path prints exactly
 one "lkml-wake-gate: ..." line on stderr naming the decision and rule:
@@ -115,8 +119,9 @@ The author seat, after b:
        (the secretary is being woken on this message to close the panel;
        the author would only ask it to. Checked before f, and only
        where f would wake. A trigger the secretary would skip, because
-       a push is unanswered, a secretary run is live or pending, or it
-       already posted on the target, falls through to f, so skipping
+       a push or a sub-panel digest is unanswered, a secretary run is
+       live or pending, or it already posted on the target, falls
+       through to f, so skipping
        the author never leaves the panel with nobody woken. A live
        secretary run whose trigger is this message is not rule m's live
        run here: it is the secretary already woken on it, should the
@@ -125,7 +130,8 @@ The author seat, after b:
        (every reviewer has answered the current version; a verdict
        panel-state reports as carried forward is a verdict, so a recheck
        version waits only on the seats it listed and a carry version on
-       nobody)
+       nobody; with a sub-panel digest unanswered, this is the wake on
+       which the author takes or declines it)
     g  some seat is blocking or question, and every seat still waiting
        ran on the current target and went silent  -> exit 0
        (the postmaster status's runs[]: the seat's newest harvested run
@@ -148,6 +154,13 @@ The secretary seat, after b:
        settled": a block there is a finding for the digest)
     l  panel-state's push is unanswered           -> exit 3
        (the author owes a version for the human's push first)
+    q  on a main thread, a sub-panel digest is unanswered -> exit 3
+       (a relayed one, rule p's test, or the root's attachment
+       sub-panel-digest.md; answered once a later message from the
+       author is a cover (X-Version), or is To: the secretary or To:
+       the digest's sender. The author owes it an answer before the
+       panel closes; holding the secretary here makes rule i fall
+       through to f, which wakes the author)
     m  a secretary run is live, or a secretary retry is pending
                                                   -> exit 3
        (status runs[]/retries[] read as rule g reads them: a run is
@@ -173,6 +186,7 @@ ANSWERED = frozenset(("positive", "overruled", "blocking", "question"))
 OBJECTING = frozenset(("blocking", "question"))
 SETTLED = frozenset(("positive", "overruled"))
 OPERATOR = "@operator"
+DIGEST_ATTACHMENT = "sub-panel-digest.md"
 
 
 class Done(Exception):
@@ -210,15 +224,20 @@ def panel_state(export_file, status_file):
     return state
 
 
-def find_trigger(export_file, message_id):
+def read_messages(export_file):
     try:
         with open(export_file) as f:
             data = json.load(f)
         messages = data["messages"]
     except (OSError, ValueError, KeyError, TypeError) as e:
         raise fail("cannot read the export %s: %s" % (export_file, e))
-    for m in messages if isinstance(messages, list) else []:
-        if isinstance(m, dict) and m.get("id") == message_id:
+    return [m for m in (messages if isinstance(messages, list) else [])
+            if isinstance(m, dict)]
+
+
+def find_trigger(messages, message_id):
+    for m in messages:
+        if m.get("id") == message_id:
             return m
     raise fail("trigger message %s is not in the export" % message_id)
 
@@ -271,6 +290,51 @@ def has_header(msg, name):
     return False
 
 
+def names_of(msg, key):
+    v = msg.get(key)
+    return ["@" + bare(n) for n in (v if isinstance(v, list) else [])
+            if isinstance(n, str)]
+
+
+def sender_of(msg):
+    sender = msg.get("from")
+    return sender.strip() if isinstance(sender, str) else sender
+
+
+def is_relayed_digest(msg, author, panel):
+    """Rule p's test: a sub-panel digest relayed To: the author by a
+    sender that is not on the panel."""
+    return (has_header(msg, "X-Lkml-Sub-Panel") and sender_of(msg) not in panel
+            and author in names_of(msg, "to"))
+
+
+def open_digest(messages, author, secretary, panel):
+    """The id of a sub-panel digest on a main thread that the author has
+    not yet answered, or None. A digest is a relayed one (rule p's test)
+    or the root's sub-panel-digest.md attachment. It counts as answered
+    once a later message from the author is a cover (X-Version), or is
+    To: the secretary or To: the digest's sender: the persona's three
+    ways of answering one, judged by their envelope, not their prose."""
+    pending = None
+    for i, m in enumerate(messages):
+        if i == 0:
+            # The mail export lists attachments as {"name", "bytes"}.
+            atts = m.get("attachments")
+            if any(isinstance(a, dict) and isinstance(a.get("name"), str)
+                   and os.path.basename(a["name"].strip()) == DIGEST_ATTACHMENT
+                   for a in (atts if isinstance(atts, list) else [])):
+                pending = (m.get("id") or "?", None)
+            continue
+        if pending and sender_of(m) == author:
+            to = names_of(m, "to")
+            if (has_header(m, "X-Version") or secretary in to
+                    or (pending[1] is not None and pending[1] in to)):
+                pending = None
+        if is_relayed_digest(m, author, panel):
+            pending = (m.get("id") or "?", sender_of(m))
+    return pending[0] if pending else None
+
+
 def secretary_run(status, seat, woken_on=None):
     """A description of seat's live run or pending retry, or None. A live
     run whose trigger is woken_on does not count: that run is the seat
@@ -294,10 +358,11 @@ def gating_seats(state):
             if isinstance(s, dict) and s.get("advisory") is not True]
 
 
-def secretary_skip(state, status, secretary, woken_on=None):
+def secretary_skip(state, status, secretary, digest, woken_on=None):
     """Rules k-n: (rule, why) when the secretary is not woken on a
     reviewer's trigger, or None when the panel is ready to close.
-    woken_on is passed by rule i; see secretary_run."""
+    digest is open_digest()'s answer; woken_on is passed by rule i; see
+    secretary_run."""
     target = state.get("target")
     seats = gating_seats(state)
     done = ANSWERED if state.get("parent_thread") else SETTLED
@@ -312,6 +377,8 @@ def secretary_skip(state, status, secretary, woken_on=None):
     push = state.get("push")
     if push is not None and not push.get("answered"):
         return "l", "the push %s is unanswered" % push.get("message_id")
+    if digest and not state.get("parent_thread"):
+        return "q", "the sub-panel digest %s is unanswered" % digest
     live = secretary_run(status, secretary, woken_on)
     if live:
         return "m", "%s %s" % (secretary, live)
@@ -339,7 +406,8 @@ def decide(env):
     agent = "@" + env["FS_HOOK_AGENT"].strip().lstrip("@")
 
     state = panel_state(env["FS_HOOK_EXPORT_FILE"], env["FS_HOOK_STATUS_FILE"])
-    trigger = find_trigger(env["FS_HOOK_EXPORT_FILE"], env["FS_HOOK_MESSAGE"])
+    messages = read_messages(env["FS_HOOK_EXPORT_FILE"])
+    trigger = find_trigger(messages, env["FS_HOOK_MESSAGE"])
 
     roster = state.get("roster") or {}
     author = roster.get("author")
@@ -352,19 +420,16 @@ def decide(env):
     if agent not in (author, secretary):
         raise Done(0, "wake: %s is neither the author seat %s nor the "
                       "secretary seat %s (rule b)" % (agent, author, secretary))
+    # The effective roster: the root's panel plus any escalated-in seat.
+    panel = state.get("panel") or roster.get("panel") or []
+    digest = open_digest(messages, author, secretary, panel)
     if agent == secretary:
-        decide_secretary(env, state, trigger, author, secretary)
+        decide_secretary(env, state, trigger, author, secretary, digest)
     if has_header(trigger, "X-Upstream-Head"):
         raise Done(0, "wake: %s is the human author's push (rule c)"
                    % env["FS_HOOK_MESSAGE"])
-    sender = trigger.get("from")
-    sender = sender.strip() if isinstance(sender, str) else sender
-    # The effective roster: the root's panel plus any escalated-in seat.
-    panel = state.get("panel") or roster.get("panel") or []
-    to = trigger.get("to")
-    if (has_header(trigger, "X-Lkml-Sub-Panel") and sender not in panel
-            and author in ["@" + bare(n) for n in (to if isinstance(to, list) else [])
-                           if isinstance(n, str)]):
+    sender = sender_of(trigger)
+    if is_relayed_digest(trigger, author, panel):
         raise Done(0, "wake: %s is a sub-panel digest from %s (rule p)"
                    % (env["FS_HOOK_MESSAGE"], sender))
     if sender not in panel:
@@ -379,7 +444,8 @@ def decide(env):
                 and all(s.get("state") in SETTLED for s in seats)
                 and addressed(trigger, secretary)
                 and secretary_skip(state, read_status(env["FS_HOOK_STATUS_FILE"]),
-                                   secretary, env["FS_HOOK_MESSAGE"]) is None):
+                                   secretary, digest,
+                                   env["FS_HOOK_MESSAGE"]) is None):
             raise Done(3, "skip %s: every seat is settled and %s reaches "
                           "%s, which is woken on it (rule i)"
                        % (agent, env["FS_HOOK_MESSAGE"], secretary))
@@ -400,14 +466,13 @@ def decide(env):
     raise Done(1, "defer %s: waiting on %s (rule h)" % (agent, names))
 
 
-def decide_secretary(env, state, trigger, author, secretary):
-    sender = trigger.get("from")
-    sender = sender.strip() if isinstance(sender, str) else sender
+def decide_secretary(env, state, trigger, author, secretary, digest):
+    sender = sender_of(trigger)
     if sender in (author, OPERATOR):
         raise Done(0, "wake: %s is a request from %s (rule j)"
                    % (env["FS_HOOK_MESSAGE"], sender))
     skip = secretary_skip(state, read_status(env["FS_HOOK_STATUS_FILE"]),
-                          secretary)
+                          secretary, digest)
     if skip:
         raise Done(3, "skip %s: %s (rule %s)" % (secretary, skip[1], skip[0]))
     raise Done(0, "wake %s: every seat is settled on the target; "

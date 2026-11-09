@@ -810,6 +810,56 @@ PY
 run relayother FS_HOOK_MESSAGE=m003
 expect "a tagged message not To: the author is gated as before" 0 "d"
 
+# A digest relayed mid-review must not be closed round: the panel settles
+# with it unanswered, and the author, not the secretary, is woken.
+gen relayopen <<'PY'
+write(D, export([root(), reviewed(2, "@core"), relayed(3), reviewed(4, "@tests"),
+                 reviewed(5, "@docs", cc=("@secretary",))]), status())
+PY
+run relayopen FS_HOOK_MESSAGE=m005
+expect "an unanswered digest: the settling reply wakes the author, not rule i" 0 "f"
+run relayopen FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m005
+expect "an unanswered digest holds the secretary" 3 "q" "m003"
+for ans in 'msg(6, "@pr-author", "Verdict on v1? Declined: x.py, not a bug.", to=["@secretary"])' \
+           'msg(6, "@pr-author", "Declined: x.py, not a bug.", to=["@relay"])' \
+           'cover(6, B, 2, "v2.\n\n## Sub-panel\n- x.py: taken")'; do
+    gen relayans <<PY
+write(D, export([root(), reviewed(2, "@core"), relayed(3), reviewed(4, "@tests"),
+                 reviewed(5, "@docs", cc=("@secretary",)), $ans]), status())
+PY
+    run relayans FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m005
+    case "$ERR" in
+        *"(rule q)"*) no "an answered digest does not hold the secretary: ${ans%%,*}" "$ERR" ;;
+        *) ok "an answered digest does not hold the secretary: ${ans%%,*}" ;;
+    esac
+done
+gen relayans <<'PY'
+write(D, export([root(), reviewed(2, "@core"), relayed(3), reviewed(4, "@tests"),
+                 reviewed(5, "@docs", cc=("@secretary",)),
+                 msg(6, "@pr-author", "Verdict on v1?", to=["@secretary"])]), status())
+PY
+run relayans FS_HOOK_MESSAGE=m005
+expect "an answered digest: rule i skips the author as before" 3 "i"
+gen relaynotans <<'PY'
+write(D, export([root(), reviewed(2, "@core"),
+                 msg(3, "@pr-author", "A reply to a reviewer.", to=["@core"]),
+                 relayed(4), reviewed(5, "@tests"), reviewed(6, "@docs", cc=("@secretary",))]),
+      status())
+PY
+run relaynotans FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m006
+expect "an author message from before the digest does not answer it" 3 "q" "m004"
+gen attached <<'PY'
+r = root()
+r["attachments"] = [{"name": "pr.md", "bytes": 9458},
+                    {"name": "sub-panel-digest.md", "bytes": 2048}]
+write(D, export([r, reviewed(2, "@core"), reviewed(3, "@tests"),
+                 reviewed(4, "@docs", cc=("@secretary",))]), status())
+PY
+run attached FS_HOOK_MESSAGE=m004
+expect "an attached digest: the settling reply wakes the author" 0 "f"
+run attached FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "an attached digest holds the secretary" 3 "q" "m001"
+
 gen childpart <<'PY'
 write(D, export([sub_root(), sub_seat(2, "@core", "Changes-requested"),
                  sub_seat(3, "@tests", "Reviewed-by: T")]), status())
