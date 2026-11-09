@@ -3532,8 +3532,147 @@ for sub in -none "" -all; do
     esac
 done
 
+printf '\n== Sub-panel: a child thread (X-Lkml-Parent-Thread) ==\n'
+# A child root names no Author; its seats reply once on v1 and the
+# secretary's digest, ending in Digest-Blocking: N above the usual
+# trailer, finishes it whatever the seats' verdicts were.
+cat >> "$work/fx.py" <<'FX'
+
+PARENT = "0123abcd-4567-89ef-0123-456789abcdef"
+SUB_BODY = "\n".join([
+    "Sub-panel review of the example change.",
+    "",
+    "Parent-Thread: " + PARENT,
+    "Panel: @devils-advocate, @operability, @second-opinion",
+    "Secretary: @secretary",
+])
+
+def sub_root(body=SUB_BODY, parent=PARENT, extra=()):
+    hdrs = [["X-Lkml-Parent-Thread", parent]] if parent is not None else []
+    return msg(1, "@deploy-bot", body, sha=A, ver=1, set_target=A,
+               subject="[PATCH v1] Fix the thing", extra=hdrs + list(extra))
+
+def sub_seats(start=2, tags=("Changes-requested", "Reviewed-by: O", "NAK"),
+              who=("@devils-advocate", "@operability", "@second-opinion")):
+    return [msg(start + i, w, "Finding text.\n\n" + t, sha=A, ver=1,
+                to=["@deploy-bot"])
+            for i, (w, t) in enumerate(zip(who, tags))]
+
+def digest(seq=20, n="2", status="CONVERGED", verdict="SIGNED-OFF",
+           line=None, sha=A):
+    lines = ["Findings:", "- blocking | @devils-advocate | x.py | fix it", ""]
+    if line is None:
+        line = "Digest-Blocking: %s" % n
+    if line:
+        lines.append(line)
+    lines += ["Panel-Version: 1", "Panel-Status: %s" % status]
+    if verdict:
+        lines.append("Panel-Verdict: %s" % verdict)
+    return msg(seq, "@secretary", "\n".join(lines), sha=sha, ver=1,
+               to=["@deploy-bot"])
+FX
+
+gen sub1 <<'PY'
+write(D, export([sub_root()] + sub_seats() + [digest()]), status())
+PY
+run_case sub1
+check "(sub1) parent_thread is the root's header" "0123abcd-4567-89ef-0123-456789abcdef" "$(jr .parent_thread)"
+check "(sub1) digest_blocking is the secretary's count" "2" "$(j .digest_blocking)"
+check "(sub1) a child with its digest posted is finished" "CONVERGED" "$(jr .status)"
+check "(sub1) no reasons" "[]" "$(j .reasons)"
+check "(sub1) no author on the roster" "null" "$(jr .roster.author)"
+check "(sub1) a child reports no verdict: its outcome is digest_blocking" "null" "$(jr .verdict)"
+check "(sub1) seats keep their own states" "blocking positive blocking" \
+    "$(seat @devils-advocate state) $(seat @operability state) $(seat @second-opinion state)"
+
+gen sub2 <<'PY'
+write(D, export([sub_root()] + sub_seats()), status())
+PY
+run_case sub2
+check "(sub2) seats in, no digest yet: not finished" "STALLED" "$(jr .status)"
+reason_has "(sub2) the missing digest is the reason" "secretary @secretary has not reported a Panel-Status"
+reason_lacks "(sub2) a seat's block is not a reason on a child" "Changes-requested on v1"
+check "(sub2) digest_blocking is null before the digest" "null" "$(j .digest_blocking)"
+
+gen sub3 <<'PY'
+write(D, export([sub_root()] + sub_seats()[:2] + [digest()]), status())
+PY
+run_case sub3
+check "(sub3) a silent seat keeps a child unfinished" "STALLED" "$(jr .status)"
+reason_has "(sub3) the silent seat is named" "@second-opinion: no verdict on v1"
+reason_has "(sub3) and the secretary is contradicted" "secretary says CONVERGED but @second-opinion is silent"
+
+gen sub4 <<'PY'
+write(D, export([sub_root()] + sub_seats() + [digest(line="")]), status())
+PY
+run_case sub4
+check "(sub4) a digest with no Digest-Blocking line does not finish a child" "STALLED" "$(jr .status)"
+reason_has "(sub4) named" "no Digest-Blocking line directly above"
+check "(sub4) digest_blocking null" "null" "$(j .digest_blocking)"
+
+gen sub5 <<'PY'
+d = digest()
+d["body"] = d["body"].replace("Digest-Blocking: 2\n", "") .replace("Findings:", "Digest-Blocking: 2\n\nFindings:")
+write(D, export([sub_root()] + sub_seats() + [d]), status())
+PY
+run_case sub5
+reason_has "(sub5) a Digest-Blocking line away from the trailer is not read" "no Digest-Blocking line directly above"
+check "(sub5) not finished" "STALLED" "$(jr .status)"
+
+gen sub6 <<'PY'
+write(D, export([sub_root()] + sub_seats() + [digest(line="Digest-Blocking: two")]), status())
+PY
+run_case sub6
+reason_has "(sub6) a malformed count is named" "Digest-Blocking"
+check "(sub6) digest_blocking null" "null" "$(j .digest_blocking)"
+
+gen sub7 <<'PY'
+write(D, export([sub_root()] + sub_seats(tags=("Reviewed-by: D", "Acked-by: O", "Tested-by: S")) + [digest(n="0")]), status())
+PY
+run_case sub7
+check "(sub7) zero blocking findings is a count, not null" "0" "$(j .digest_blocking)"
+check "(sub7) finished" "CONVERGED" "$(jr .status)"
+
+gen sub8 <<'PY'
+write(D, export([sub_root()] + sub_seats() + [digest(status="IN-PROGRESS", verdict=None)]), status())
+PY
+run_case sub8
+check "(sub8) a digest saying IN-PROGRESS does not finish a child" "STALLED" "$(jr .status)"
+check "(sub8) its count is still reported" "2" "$(j .digest_blocking)"
+
+gen sub9 <<'PY'
+body = SUB_BODY.replace("Parent-Thread:", "Author: @pr-author\nParent-Thread:")
+write(D, export([sub_root(body=body)] + sub_seats() + [digest()]), status())
+PY
+run_case sub9
+reason_has "(sub9) an Author on a child root is a reason" "names an Author"
+check "(sub9) not finished" "STALLED" "$(jr .status)"
+
+gen sub10 <<'PY'
+write(D, export([sub_root(parent="Not/A-Thread")] + sub_seats() + [digest()]), status())
+PY
+run_case sub10
+check "(sub10) a malformed parent header: parent_thread null" "null" "$(jr .parent_thread)"
+reason_has "(sub10) and a reason" "X-Lkml-Parent-Thread"
+check "(sub10) not finished" "STALLED" "$(jr .status)"
+
+gen sub11 <<'PY'
+write(D, export([sub_root()] + sub_seats() + [digest()]), status(runs=[run("r-1", "live", "@secretary")]))
+PY
+run_case sub11
+check "(sub11) a live run keeps a child in progress" "IN-PROGRESS" "$(jr .status)"
+
+gen sub12 <<'PY'
+e = green()
+e[-1]["body"] = e[-1]["body"].replace("Panel-Version", "Digest-Blocking: 3\nPanel-Version")
+write(D, export(e), status())
+PY
+run_case sub12
+check "(sub12) a main thread never reports digest_blocking" "null" "$(j .digest_blocking)"
+check "(sub12) and converges as before" "CONVERGED SIGNED-OFF" "$(jr '.status + " " + .verdict')"
+
 printf '\n== invariants over every case above ==\n'
-inv_bad=""; inv_n=0; adv_bad=""; adv_n=0; inv_conv=0; diff_bad=""; diff_n=0
+inv_bad=""; inv_n=0; sub_bad=""; sub_n=0; adv_bad=""; adv_n=0; inv_conv=0; diff_bad=""; diff_n=0
 # Opt-in differential check: LKML_PANEL_STATE_BASELINE names the script as
 # it was before advisory seats (e.g. `git show <base>:scripts/...`). For
 # every case whose export carries no Advisory: line the new output, minus
@@ -3542,18 +3681,19 @@ inv_bad=""; inv_n=0; adv_bad=""; adv_n=0; inv_conv=0; diff_bad=""; diff_n=0
 # nothing.
 baseline="${LKML_PANEL_STATE_BASELINE:-}"
 diff_now=2026-03-02T12:02:00Z
-strip_new='del(.advisory_notes) | .roster |= del(.advisory) | .seats |= map(del(.advisory))'
+strip_new='del(.advisory_notes, .parent_thread, .digest_blocking) | .roster |= del(.advisory) | .seats |= map(del(.advisory))'
 for c in "${cases_run[@]}"; do
     d="$work/case-$c"
     o="$("$ps" --export-file "$d/export.json" --status-file "$d/status.json" 2>/dev/null)" || { inv_bad+=" $c(exit)"; continue; }
     inv_n=$(( inv_n + 1 ))
-    if [[ -n "$baseline" ]] && ! grep -q 'Advisory:' "$d/export.json"; then
+    if [[ -n "$baseline" ]] && ! grep -q 'Advisory:\|X-Lkml-Parent-Thread' "$d/export.json"; then
         on="$("$ps" --export-file "$d/export.json" --status-file "$d/status.json" --now "$diff_now" 2>/dev/null)"
         ob="$(python3 "$baseline" --export-file "$d/export.json" --status-file "$d/status.json" --now "$diff_now" 2>/dev/null)"
         diff_n=$(( diff_n + 1 ))
         [[ "$(jq -c "$strip_new" <<<"$on")" == "$(jq -c . <<<"$ob")" ]] || diff_bad+=" $c"
     fi
-    if ! jq -e '
+    sub=false; grep -q 'X-Lkml-Parent-Thread' "$d/export.json" && sub=true
+    if ! jq -e --argjson sub "$sub" '
         (["schema","thread","subject","status","verdict","target","roster","tier","panel","push","frozen_head","ci","question_timeout_hours","questions","now","seats","secretary","postmaster","bundle","upstream_state","reasons","advisory_notes"]
          - keys | length) == 0
         and (.status | IN("CONVERGED","IN-PROGRESS","STALLED","NEEDS-OPERATOR","AWAITING-OPERATOR","CLOSED"))
@@ -3586,10 +3726,18 @@ for c in "${cases_run[@]}"; do
         and (.advisory_notes | type == "array")
         and ([.seats[] | select(.advisory) | .seat] == .roster.advisory)
         and (.roster.advisory - .roster.suite_seats == .roster.advisory)
-        and (.status != "CONVERGED" or (.seats | map(select(.advisory | not)) | length > 0 and all(.[]; .state == "positive" or .state == "overruled")))
+        and (.status != "CONVERGED" or (.seats | map(select(.advisory | not)) | length > 0 and all(.[]; .state == "positive" or .state == "overruled"
+             or (.state == "blocking" or .state == "question") and $sub)))
+        and (has("parent_thread") and has("digest_blocking"))
+        and (.digest_blocking == null or $sub)
+        and (.verdict == null or ($sub | not))
         and (.status != "CONVERGED" or (.secretary.on_target == true and .secretary.status == "CONVERGED"))
         and (.status != "CONVERGED" or .postmaster.quiescent == true)
     ' <<<"$o" >/dev/null; then inv_bad+=" $c"; fi
+    if [[ "$sub" == false ]]; then
+        sub_n=$(( sub_n + 1 ))
+        jq -e '.parent_thread == null and .digest_blocking == null' <<<"$o" >/dev/null || sub_bad+=" $c"
+    fi
     if ! grep -q 'Advisory:' "$d/export.json"; then
         adv_n=$(( adv_n + 1 ))
         jq -e '.advisory_notes == [] and .roster.advisory == [] and all(.seats[]; .advisory == false)' \
@@ -3598,6 +3746,7 @@ for c in "${cases_run[@]}"; do
     [[ "$(jq -r .status <<<"$o")" == CONVERGED ]] && inv_conv=$(( inv_conv + 1 ))
 done
 check "every case obeys the output invariants (keys present; reasons empty iff CONVERGED; CONVERGED implies every gating seat positive or overruled, secretary on target, quiescent)" "" "$inv_bad"
+check "no parent header: parent_thread and digest_blocking null in all $sub_n such cases" "" "$sub_bad"
 check "no Advisory line: no advisory seat and no advisory note in any of $adv_n cases" "" "$adv_bad"
 if [[ "$inv_n" -ge 60 ]]; then ok "the invariants ran over $inv_n cases"; else no "the invariants ran over too few cases" "$inv_n"; fi
 if [[ "$inv_conv" -ge 5 ]]; then ok "and $inv_conv of them were CONVERGED (the check is not vacuous)"

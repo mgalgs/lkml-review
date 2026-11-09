@@ -419,6 +419,31 @@ IN-PROGRESS, without one under CONVERGED, or with a Panel-* line outside
 the trailing block, is recorded as malformed with a reason and never
 counts as CONVERGED.
 
+Sub-panel -- a root carrying `X-Lkml-Parent-Thread: <thread id>` is a
+child thread: a sub-panel reviewing the same change beside a main panel,
+whose findings reach that panel's author only as its secretary's digest
+(docs/cluster-panel.md, "Sub-panel", has the whole contract). The header
+must be one thread id in the mail store's shape; anything else is a reason
+and "parent_thread" is null. On a child thread, and only there:
+
+  * a root `Author:` line is a reason: a sub-panel has no author;
+  * a seat that is blocking or asking has ANSWERED: its finding is for the
+    digest, nothing waits on it, so it is not a reason and it counts
+    toward the finish as a positive verdict does. A silent or stale seat
+    is still a reason;
+  * the counted secretary message (as under "Secretary") must carry
+    `Digest-Blocking: <N>` alone on the line directly above its Panel-*
+    trailer, and nowhere else outside quoted text; "digest_blocking" is
+    that N, and a missing, misplaced or malformed line is a reason;
+  * CONVERGED means the sub-panel is finished: every gating seat
+    answered, the digest is on target saying CONVERGED, quiescent, no
+    reason. "verdict" stays null: the trailer's SIGNED-OFF closes the
+    thread and is not a sign-off of the change; its outcome is
+    "digest_blocking".
+
+On every other thread "parent_thread" and "digest_blocking" are null and
+nothing above changes.
+
 Postmaster facts -- from `postmaster status`. quiescent means unrouted
 == 0, no live run, no pending retry and no held seat. A run is live
 unless its state is "harvested" (the postmaster writes only "live" and
@@ -473,7 +498,10 @@ green this script exists to catch.
 
 Output (null, never an omitted key, for what is unknown):
 
-    {"schema": "lkml-panel-state/1", "thread", "subject",
+    {"schema": "lkml-panel-state/1", "thread",
+     "parent_thread",                   # a sub-panel's parent thread id,
+                                        # else null; see "Sub-panel"
+     "subject",
      "status", "verdict",          # verdict only when CONVERGED
      "target": {"branch","sha","version","set_by","set_at","source"},
                                         # source: postmaster, mail or carry
@@ -513,6 +541,8 @@ Output (null, never an omitted key, for what is unknown):
                                  # "Overrule"
      "secretary": {"message_id","version","status","verdict",
                    "on_target","malformed","carried"},
+     "digest_blocking": N|null,         # a sub-panel digest's count of
+                                        # blocking findings; see "Sub-panel"
      "postmaster": {"quiescent","flagged","flag_reason","live_runs",
                     "pending_retries","held","unrouted","budget",
                     "budget_source","spawns_total","grant_mode"},
@@ -588,6 +618,14 @@ CI_STATUSES = ("success", "failure", "pending")
 QUESTION_TIMEOUT_HEADER = "X-Lkml-Question-Timeout"
 QUESTION_TIMEOUT_RE = re.compile(r"([0-9]{1,18})h")
 QUESTION_SUBJECT_MAX = 200
+PARENT_THREAD_HEADER = "X-Lkml-Parent-Thread"
+# fork-sandbox's mail store id shape (MAIL_ID_RE in fork-sandbox-mail.sh).
+THREAD_ID_RE = re.compile(r"[0-9a-f][0-9a-f-]{7,63}")
+DIGEST_BLOCKING_PREFIX = "Digest-Blocking:"
+DIGEST_BLOCKING_RE = re.compile(r"Digest-Blocking:[ \t]*([0-9]{1,18})")
+# On a sub-panel a seat that blocks or asks has answered: its finding is
+# for the digest, and nothing on the child thread waits for it to settle.
+ANSWERED_STATES = SETTLED_STATES | frozenset(("blocking", "question"))
 
 USAGE = """\
 Usage: lkml-panel-state.py <thread-id> [--remote] [--now <ISO-8601>]
@@ -882,6 +920,43 @@ def parse_question_timeout(root):
     shown = " / ".join(repr(clip(v)) for v in sorted(vals))
     return None, [f"root {QUESTION_TIMEOUT_HEADER} {shown} is not <N>h with "
                   f"N >= 1; no timeout applied"]
+
+
+def parse_parent_thread(root):
+    """-> (is_child, parent thread id|None, reasons). A root carrying the
+    header at all is a child thread; its value must be one well-formed
+    thread id, or it is a reason and the parent is unknown."""
+    if root is None or not root["ok"]:
+        return False, None, []
+    vals = set(header_values(root, PARENT_THREAD_HEADER))
+    if not vals:
+        return False, None, []
+    if len(vals) == 1:
+        v = next(iter(vals))
+        if THREAD_ID_RE.fullmatch(v):
+            return True, v, []
+    shown = ", ".join(repr(clip(v)) for v in sorted(vals))
+    return True, None, [f"root {PARENT_THREAD_HEADER} is not one thread id "
+                        f"({shown}); the parent thread is unknown"]
+
+
+def parse_digest_blocking(body):
+    """A sub-panel digest's count -> (N|None, malformed-reason|None). The
+    line must sit alone directly above the Panel-* trailer block, and be
+    the only Digest-Blocking line in the body outside quoted text."""
+    lines = [ln.strip(SPACE) for ln in body.split("\n")
+             if ln.strip(SPACE) != "" and not QUOTED_RE.match(ln)]
+    k = len(lines)
+    while k > 0 and PANEL_LINE_RE.match(lines[k - 1]):
+        k -= 1
+    where = [i for i, ln in enumerate(lines) if ln.startswith(DIGEST_BLOCKING_PREFIX)]
+    if where != [k - 1] or k == len(lines):
+        return None, ("no Digest-Blocking line directly above the Panel-* "
+                      "trailer" + (", or more than one" if len(where) > 1 else ""))
+    mt = DIGEST_BLOCKING_RE.fullmatch(lines[k - 1])
+    if not mt:
+        return None, f"malformed {clip(lines[k - 1])!r}"
+    return int(mt.group(1)), None
 
 
 def parse_when(text):
@@ -1918,6 +1993,14 @@ def build_state(export, status, now):
         reasons.append("the thread has no messages")
     roster, roster_reasons = parse_roster(root)
     reasons += roster_reasons
+    child, parent_thread, parent_reasons = parse_parent_thread(root)
+    reasons += parent_reasons
+    if child and roster["author"] is not None:
+        reasons.append(f"a sub-panel root names an Author ({roster['author']}); "
+                       f"a sub-panel has no author")
+    # What a gating seat must hold for the panel to be done: on a main
+    # thread a settled verdict, on a sub-panel any verdict at all.
+    done_states = ANSWERED_STATES if child else SETTLED_STATES
     tier, tier_reasons = parse_tier(root)
     reasons += tier_reasons
     pushes, panel, tier, push_reasons = parse_pushes(msgs, roster["panel"], tier)
@@ -1994,6 +2077,8 @@ def build_state(export, status, now):
         entry, why = apply_overrule(entry, why, rulings, suite_seats)
         entry["advisory"] = seat in advisory
         seats.append(entry)
+        if child and entry["state"] in ANSWERED_STATES:
+            why = None
         if why:
             note_or_reason(seat, why)
     gating = [s for s in seats if not s["advisory"]]
@@ -2008,6 +2093,13 @@ def build_state(export, status, now):
 
     secretary, sec_reasons = judge_secretary(msgs, roster, target, carry_from)
     reasons += sec_reasons
+    digest_blocking = None
+    if child and secretary is not None and not secretary["malformed"]:
+        dm = next(m for m in msgs if m["ok"] and m["id"] == secretary["message_id"])
+        digest_blocking, bad = parse_digest_blocking(dm["body"])
+        if bad:
+            reasons.append(f"secretary {roster['secretary']} digest "
+                           f"{secretary['message_id']}: {bad}")
 
     pm, pm_reasons = postmaster_facts(status)
     reasons += pm_reasons
@@ -2021,12 +2113,12 @@ def build_state(export, status, now):
                                            versions[cur]["seq"]):
             note_or_reason(seat, why)
 
-    seats_ok = bool(gating) and all(s["state"] in SETTLED_STATES for s in gating)
+    seats_ok = bool(gating) and all(s["state"] in done_states for s in gating)
     sec_says_converged = (secretary is not None and secretary["on_target"]
                           and secretary["status"] == "CONVERGED")
     if sec_says_converged:
         for s in gating:
-            if s["state"] not in SETTLED_STATES:
+            if s["state"] not in done_states:
                 reasons.append(
                     f"secretary says CONVERGED but {s['seat']} {SEAT_PHRASE[s['state']]}")
         if not pm["quiescent"]:
@@ -2066,7 +2158,9 @@ def build_state(export, status, now):
                           if upstream["message_id"] else "")
                        + ": no seat will wake")
 
-    verdict = secretary["verdict"] if status_word == "CONVERGED" else None
+    # A sub-panel's outcome is digest_blocking: its trailer's SIGNED-OFF
+    # closes the thread and must never read as a sign-off of the change.
+    verdict = secretary["verdict"] if status_word == "CONVERGED" and not child else None
     bundle = None
     if verdict == "RESPIN" and frozen_head:
         bundle = {"base": frozen_head["sha"], "tip": target["sha"],
@@ -2075,6 +2169,7 @@ def build_state(export, status, now):
     return {
         "schema": SCHEMA,
         "thread": export["thread"],
+        "parent_thread": parent_thread,
         "subject": opt_str(root["subject"]) if root and root["ok"] else None,
         "status": status_word,
         "verdict": verdict,
@@ -2090,6 +2185,7 @@ def build_state(export, status, now):
         "now": stamp(now),
         "seats": seats,
         "secretary": secretary,
+        "digest_blocking": digest_blocking,
         "postmaster": pm,
         "bundle": bundle,
         "upstream_state": upstream,
