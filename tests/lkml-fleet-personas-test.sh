@@ -1191,15 +1191,15 @@ else
     no "every persona with the stanza warning says nothing retries" "$stanza_count of $check_count"
 fi
 
-# Contract header names: exactly eleven X-Lkml-* names appear in fleet/, so
+# Contract header names: exactly these X-Lkml-* names appear in fleet/, so
 # a typo'd header never ships, and push modes / tier focus live only in
 # the files that own them (fleet/ includes fleet/prompts).
 lkml_headers="$(grep -rhoE 'X-Lkml-[A-Za-z-]+' "$repo_dir/fleet" | sed 's/-$//' | sort -u | tr '\n' ' ')"
-expected_headers='X-Lkml-Add-Seats X-Lkml-CI-From X-Lkml-CI-Head X-Lkml-CI-Status X-Lkml-Push-Mode X-Lkml-Question-Timeout X-Lkml-Recheck-Seats X-Lkml-Series X-Lkml-Suite-Source X-Lkml-Tier X-Lkml-Tier-Reason '
+expected_headers='X-Lkml-Add-Seats X-Lkml-CI-From X-Lkml-CI-Head X-Lkml-CI-Status X-Lkml-Parent-Thread X-Lkml-Push-Mode X-Lkml-Question-Timeout X-Lkml-Recheck-Seats X-Lkml-Series X-Lkml-Suite-Source X-Lkml-Tier X-Lkml-Tier-Reason '
 if [[ "$lkml_headers" == "$expected_headers" ]]; then
-    ok "fleet/ spells only the eleven contract X-Lkml-* headers"
+    ok "fleet/ spells only the contract X-Lkml-* headers"
 else
-    no "fleet/ spells only the eleven contract X-Lkml-* headers" "got: $lkml_headers"
+    no "fleet/ spells only the contract X-Lkml-* headers" "got: $lkml_headers"
 fi
 push_files="$(grep -rlF 'X-Lkml-Push-Mode' "$repo_dir/fleet" | xargs -n1 basename | sort | tr '\n' ' ')"
 if [[ "$push_files" == 'pr-author.md secretary.md ' ]]; then

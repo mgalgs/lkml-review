@@ -2060,6 +2060,62 @@ printf 'x\n${ADVISORY}\n' > "$rdir/adv-nopanel.md"
 kick "${rkick[@]}" --template "$rdir/adv-nopanel.md" --to '@x' --send
 refused "\${ADVISORY} in a template with no \${PANEL}" "uses \${ADVISORY} but no \${PANEL}"
 
+printf '\n== sub-panel: --parent-thread and the sub-panel template ==\n'
+sp_id="0123abcd-4567-89ef-0123-456789abcdef"
+sp_flags=(--template sub-panel --review-target "$rt_arg" --summary 'Sum text.')
+kick "${rkick[@]}" "${sp_flags[@]}" --parent-thread "$sp_id"
+check "the sub-panel kickoff composes" "0" "$k_rc"
+sp_body="$(body_of "$k_out")"
+contains "the root is stamped X-Lkml-Parent-Thread" "$k_out" "X-Lkml-Parent-Thread:\\ $sp_id"
+contains "\${PARENT_THREAD} fills the body's roster line" "$sp_body" "Parent-Thread: $sp_id"
+contains "the default roster's panel" "$sp_body" "Panel: @devils-advocate, @operability, @second-opinion"
+contains "the default roster's secretary" "$sp_body" "Secretary: @secretary"
+contains "the panel is the To:" "$k_out" '--to @devils-advocate\,@operability\,@second-opinion'
+check "the root has no Author line" "0" "$(grep -c '^Author:' <<<"$sp_body" || true)"
+contains "seats reply To: the root's sender" "$sp_body" 'To: @ci-example'
+case "$sp_body" in
+    *'${'*) no "a sub-panel body has no leftover placeholders" "$sp_body" ;;
+    *) ok "a sub-panel body has no leftover placeholders" ;;
+esac
+kick "${rkick[@]}" "${sp_flags[@]}" --parent-thread "$sp_id" --send
+check "--send with the sub-panel template exits 0" "0" "$k_rc"
+contains "the sent cover carries the parent header after X-Seats" "$k_argv" \
+    "--header X-Seats: @devils-advocate, @operability, @second-opinion --header X-Lkml-Parent-Thread: $sp_id"
+kick "${rkick[@]}" "${sp_flags[@]}" --parent-thread "$sp_id" --panel '@p1,@p2' --secretary '@sec2'
+sp_body="$(body_of "$k_out")"
+contains "--panel overrides the sub-panel's seats" "$sp_body" "Panel: @p1, @p2"
+contains "--secretary overrides the sub-panel's secretary" "$sp_body" "Secretary: @sec2"
+STUB_LIST_JSON='[]' kick "${rkick[@]}" "${sp_flags[@]}" --parent-thread "$sp_id" --send --unless-exists
+contains "--unless-exists filters on the parent header" "$(grep -m1 -- '^mail list' <<<"$k_argv")" \
+    "--header X-Lkml-Parent-Thread: $sp_id"
+
+# Refusals.
+kick "${rkick[@]}" "${sp_flags[@]}" --send
+refused "the sub-panel template without --parent-thread" "contains \${PARENT_THREAD} but --parent-thread was not given"
+kick "${rkick[@]}" "${sp_flags[@]}" --parent-thread "$sp_id" --author '@pr-author' --send
+refused "--parent-thread with --author" "--parent-thread cannot be combined with an author"
+printf 'Parent: ${PARENT_THREAD}\nPanel: ${PANEL}\n' > "$rdir/sub-roster-author.md"
+printf 'PANEL=@rev-a\nAUTHOR=@ex-author\n' > "$rdir/sub-roster-author.roster"
+kick "${rkick[@]}" --template "$rdir/sub-roster-author.md" --parent-thread "$sp_id" --send
+refused "--parent-thread with an AUTHOR in the roster file" "--parent-thread cannot be combined with an author"
+printf 'Parent: ${PARENT_THREAD}\nAuthor: ${AUTHOR}\nPanel: ${PANEL}\n' > "$rdir/sub-tpl-author.md"
+kick "${rkick[@]}" --template "$rdir/sub-tpl-author.md" --parent-thread "$sp_id" --author '@a' --send
+refused "--parent-thread with a template that uses \${AUTHOR}" "--parent-thread cannot be combined with an author"
+kick "${rkick[@]}" "${pr_flags[@]}" --parent-thread "$sp_id" --send
+refused "--parent-thread with a template that has no \${PARENT_THREAD}" "has no \${PARENT_THREAD}"
+kick "${kick_base[@]}" --parent-thread "$sp_id" --send
+refused "--parent-thread with the default series template" "has no \${PARENT_THREAD}"
+for bad_id in 'ABCDEF01' 'abc' '../etc/passwd' '-0123abcd' 'g123abcd'; do
+    kick "${rkick[@]}" "${sp_flags[@]}" --parent-thread "$bad_id" --send
+    refused "--parent-thread '$bad_id' is not a thread id" "is not a thread id"
+done
+kick "${rkick[@]}" "${sp_flags[@]}" --parent-thread "$sp_id" --parent-thread "$sp_id" --send
+refused "a second --parent-thread" "--parent-thread may only be given once"
+kick "${rkick[@]}" "${sp_flags[@]}" --parent-thread "$sp_id" --header "X-Lkml-Parent-Thread: $sp_id" --send
+refused "--header X-Lkml-Parent-Thread" "is owned by this script; use --parent-thread"
+kick "${rkick[@]}" "${pr_flags[@]}" --header "x-lkml-parent-thread: $sp_id" --send
+refused "--header x-lkml-parent-thread (any case) on a main panel" "is owned by this script; use --parent-thread"
+
 printf '\n== a roster template sizes --hops from its VERSION_LIMIT ==\n'
 # The transport's default of 8 hops ran out at v4 on a real five-version
 # PR (each round spends two hops), so a roster kickoff with no --hops

@@ -1,0 +1,4 @@
+# Default roster for fleet/kickoffs/sub-panel.md. No AUTHOR: a sub-panel
+# has none, and the kickoff refuses one.
+PANEL=@devils-advocate,@operability,@second-opinion
+SECRETARY=@secretary

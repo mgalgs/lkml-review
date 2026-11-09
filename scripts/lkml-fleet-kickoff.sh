@@ -17,7 +17,7 @@
 #            [--review-target <branch>:<sha>] [--header "Name: value"]...
 #            [--author <addr>] [--panel <addr-list>] [--secretary <addr>]
 #            [--version-limit <n>] [--suite <command>] [--suite-seats <addr-list>]
-#            [--advisory <addr-list>]
+#            [--advisory <addr-list>] [--parent-thread <thread-id>]
 #            [--remote] [--send] [--unless-exists]
 #
 # <repo>       path to a local git repository.
@@ -122,6 +122,28 @@
 #              byte-for-byte what it was before this flag existed. The
 #              flag (or the roster key) is refused with a template that
 #              has no ${ADVISORY}, and may be given once.
+# --parent-thread <thread-id>
+#              make the new thread a sub-panel of an existing one: the
+#              root is stamped `X-Lkml-Parent-Thread: <thread-id>`, which
+#              lkml-panel-state.py and lkml-wake-gate.py read to treat it
+#              as a child thread (no author; the secretary writes one
+#              digest). <thread-id> has the mail store's id shape
+#              (^[0-9a-f][0-9a-f-]{7,63}$). Keyed on the template's
+#              ${PARENT_THREAD} placeholder, as ${FOCUS} keys --focus: a
+#              template that contains it is refused without this flag,
+#              since a sub-panel whose digest has no parent to reach is
+#              reviewed for nobody, and this flag is refused with a
+#              template that lacks it, whose seats would review as a
+#              main panel under a sub-panel header. Refused, too, when
+#              the roster has an author (from --author, an AUTHOR key in
+#              the roster file, or a template that uses ${AUTHOR}): a
+#              sub-panel has no author to argue with, and an Author:
+#              line would make it read as a main panel. The header is
+#              this script's own, so --header refuses it, and it joins
+#              the --unless-exists filter like any --header.
+#              fleet/kickoffs/sub-panel.md is the shipped template;
+#              docs/cluster-panel.md's Sub-panel section has the whole
+#              contract.
 # --hops       non-negative mail reply-hop budget. Omitted, a roster
 #              template with a VERSION_LIMIT gets 4 * VERSION_LIMIT + 2
 #              (18 for a limit of 4): two hops per version round and room
@@ -495,13 +517,15 @@ roster_version_limit=""
 roster_suite=""
 roster_suite_seats=""
 roster_advisory=""
+parent_thread=""
+parent_thread_given=0
 review_target=""
 review_target_given=0
 unless_exists=0
 
 while (( $# > 0 )); do
     case "$1" in
-        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats|--header|--author|--panel|--secretary|--version-limit|--suite|--suite-seats|--advisory|--allow-namespace|--reach-probe|--host-alias|--seat-resources|--services-env|--context-ro|--context-secret|--budget|--review-target|--attach-file)
+        --from|--to|--cc|--subject|--summary|--focus|--template|--hops|--ci-first|--version|--seats|--header|--author|--panel|--secretary|--version-limit|--suite|--suite-seats|--advisory|--allow-namespace|--reach-probe|--host-alias|--seat-resources|--services-env|--context-ro|--context-secret|--budget|--review-target|--attach-file|--parent-thread)
             (( $# >= 2 )) || { echo "Error: $1 requires a value. See --help." >&2; exit 1; }
             ;;
     esac
@@ -532,6 +556,9 @@ while (( $# > 0 )); do
         --budget)
             (( ! budget_given )) || { echo "Error: --budget may only be given once. See --help." >&2; exit 1; }
             budget="$2"; budget_given=1; shift 2 ;;
+        --parent-thread)
+            (( ! parent_thread_given )) || { echo "Error: --parent-thread may only be given once. See --help." >&2; exit 1; }
+            parent_thread="$2"; parent_thread_given=1; shift 2 ;;
         --no-grant) no_grant=1; shift ;;
         --grant-pending) grant_pending=1; shift ;;
         --review-target)
@@ -610,6 +637,25 @@ body="$(awk '
 # composed, since a wrong roster mails the wrong people.
 # shellcheck disable=SC2016  # ${...} below is literal placeholder text.
 has_placeholder() { [[ "$body" == *'${'"$1"'}'* ]]; }
+# A sub-panel is keyed on ${PARENT_THREAD}, the way a focused round is
+# keyed on ${FOCUS}: the template that carries the child thread's rules
+# and the header that marks a child thread travel together or not at all.
+# Its author refusal waits for the roster below, which knows the author.
+if has_placeholder PARENT_THREAD && (( ! parent_thread_given )); then
+    echo "Error: template '$template' contains \${PARENT_THREAD} but --parent-thread was not given; a sub-panel's digest needs a parent thread to reach. Pass --parent-thread <thread-id>." >&2
+    exit 1
+fi
+if (( parent_thread_given )); then
+    if ! has_placeholder PARENT_THREAD; then
+        echo "Error: --parent-thread given but template '$template' has no \${PARENT_THREAD}; its seats would review as a main panel under a sub-panel header. Use a sub-panel template (--template sub-panel). See --help." >&2
+        exit 1
+    fi
+    if [[ ! "$parent_thread" =~ ^[0-9a-f][0-9a-f-]{7,63}$ ]]; then
+        echo "Error: --parent-thread '$parent_thread' is not a thread id (^[0-9a-f][0-9a-f-]{7,63}\$). See --help." >&2
+        exit 1
+    fi
+fi
+
 roster_mode=0
 has_placeholder PANEL && roster_mode=1
 if (( ! roster_mode )); then
@@ -697,6 +743,11 @@ if (( roster_mode )); then
     [[ -n "$roster_suite" ]] && roster_kv[SUITE]="$roster_suite"
     [[ -n "$roster_suite_seats" ]] && roster_kv[SUITE_SEATS]="$roster_suite_seats"
     [[ -n "$roster_advisory" ]] && roster_kv[ADVISORY]="$roster_advisory"
+
+    if (( parent_thread_given )) && { [[ -n "${roster_kv[AUTHOR]+x}" ]] || has_placeholder AUTHOR; }; then
+        echo "Error: --parent-thread cannot be combined with an author (--author, AUTHOR in '$roster_file', or \${AUTHOR} in template '$template'): a sub-panel has no author, and an Author: line would make it read as a main panel." >&2
+        exit 1
+    fi
 
     roster_needed=(PANEL)
     for roster_ph in AUTHOR SECRETARY VERSION_LIMIT; do
@@ -941,8 +992,15 @@ for header in "${headers[@]}"; do
         x-seats)
             echo "Error: --header '$header_name' is owned by this script (X-Seats); use --seats. See --help." >&2
             exit 1 ;;
+        x-lkml-parent-thread)
+            echo "Error: --header '$header_name' is owned by this script; use --parent-thread. See --help." >&2
+            exit 1 ;;
     esac
 done
+# After the checks above, which refuse a caller's own copy of it: the
+# parent header is stamped on the root like any --header, and so also
+# narrows --unless-exists to this parent's sub-panel.
+(( parent_thread_given )) && headers+=("X-Lkml-Parent-Thread: $parent_thread")
 
 # --attach-file: validated in full here, before format-patch or any
 # template filling runs, so a bad attachment is refused before anything
@@ -1578,6 +1636,7 @@ if [[ -n "$roster_advisory_block" ]]; then
 else
     drop_own_line body ADVISORY
 fi
+fill body PARENT_THREAD "$parent_thread"
 fill body HANDOFF "$handoff"
 
 # fill() above already removes an empty own-line placeholder's line and
