@@ -72,11 +72,19 @@ never counted, settled or not. Its reply is still a panel reviewer's
 reply, so it reaches rule d like any other and wakes the author when the
 gating seats warrant it.
 
+A sub-panel (docs/cluster-panel.md, "Sub-panel") touches the gate twice.
+On a main thread, its digest is relayed To: the author carrying
+X-Lkml-Sub-Panel; rule p wakes the author on it however the panel stands,
+since after convergence nothing else would. On the child thread itself
+(panel-state's parent_thread is set) there is no author: rule a does not
+apply, and the secretary is woken once every seat has ANSWERED, whatever
+the verdicts, since nothing there waits for a block to settle.
+
 Rules, in order; the first match decides, and every path prints exactly
 one "lkml-wake-gate: ..." line on stderr naming the decision and rule:
 
     a  roster.author is null, but the root names a Panel or a
-       Secretary                                  -> exit 2
+       Secretary, and the thread is not a sub-panel -> exit 2
        (a PR panel root with no readable Author line)
     b  the agent is neither roster.author nor roster.secretary -> exit 0
        (this gate judges those two seats only; a root with no Secretary
@@ -89,6 +97,12 @@ The author seat, after b:
 
     c  the trigger has an X-Upstream-Head header  -> exit 0
        (the human author's push always wakes the author)
+    p  the trigger carries X-Lkml-Sub-Panel, is To: the author, and its
+       sender is not on the panel                 -> exit 0
+       (a relayed sub-panel digest is advice for the author, not
+       reviewer chatter; it wakes mid-review and after convergence
+       alike. A panel seat's message is reviewer chatter, tag or not,
+       and goes on to the rules below)
     d  the trigger's sender is not in the panel   -> exit 0
        (operator, CI, secretary and the root are not reviewer chatter;
        the panel is panel-state's effective roster, so a seat escalated in
@@ -130,7 +144,8 @@ The secretary seat, after b:
        Version-Limit request naming what still blocks, the operator)
     k  no target with a sha, or some seat is not settled -> exit 3
        (a reviewer's verdict that leaves the panel open; the seats
-       are named)
+       are named. On a sub-panel, read "has not answered" for "is not
+       settled": a block there is a finding for the digest)
     l  panel-state's push is unanswered           -> exit 3
        (the author owes a version for the human's push first)
     m  a secretary run is live, or a secretary retry is pending
@@ -285,9 +300,10 @@ def secretary_skip(state, status, secretary, woken_on=None):
     woken_on is passed by rule i; see secretary_run."""
     target = state.get("target")
     seats = gating_seats(state)
+    done = ANSWERED if state.get("parent_thread") else SETTLED
     if not target or not target.get("sha"):
         return "k", "the thread has no review target"
-    open_ = sorted((s for s in seats if s.get("state") not in SETTLED),
+    open_ = sorted((s for s in seats if s.get("state") not in done),
                    key=lambda s: str(s.get("seat")))
     if open_ or not seats:
         return "k", "not settled: " + (", ".join(
@@ -330,7 +346,8 @@ def decide(env):
     secretary = roster.get("secretary")
     # A root naming no Author, Panel or Secretary is not a PR panel (a
     # series review, a To: @secretary request): rule b wakes, not an error.
-    if author is None and (secretary is not None or roster.get("panel")):
+    if (author is None and not state.get("parent_thread")
+            and (secretary is not None or roster.get("panel"))):
         raise Done(2, "error: the roster names no author (rule a)")
     if agent not in (author, secretary):
         raise Done(0, "wake: %s is neither the author seat %s nor the "
@@ -343,7 +360,14 @@ def decide(env):
     sender = trigger.get("from")
     sender = sender.strip() if isinstance(sender, str) else sender
     # The effective roster: the root's panel plus any escalated-in seat.
-    if sender not in (state.get("panel") or roster.get("panel") or []):
+    panel = state.get("panel") or roster.get("panel") or []
+    to = trigger.get("to")
+    if (has_header(trigger, "X-Lkml-Sub-Panel") and sender not in panel
+            and author in ["@" + bare(n) for n in (to if isinstance(to, list) else [])
+                           if isinstance(n, str)]):
+        raise Done(0, "wake: %s is a sub-panel digest from %s (rule p)"
+                   % (env["FS_HOOK_MESSAGE"], sender))
+    if sender not in panel:
         raise Done(0, "wake: %s is not a panel reviewer (rule d)" % sender)
     target = state.get("target")
     if not target or not target.get("sha"):

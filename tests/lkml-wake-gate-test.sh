@@ -758,5 +758,87 @@ expect "an advisory seat's later reply still wakes the author under the usual ru
 run advlate FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m005
 expect "secretary: an advisory NAK does not hold the panel open" 0 "o"
 
+printf '\n== sub-panels: a relayed digest and a child thread ==\n'
+cat >> "$work/fx.py" <<'FX3'
+CHILD = "0123abcd-4567-89ef-0123-456789abcdef"
+
+# The relay's post of a child digest into the main thread, To: the author.
+def relayed(seq, frm="@relay", tagged=True, to=("@pr-author",)):
+    h = [["X-Lkml-Sub-Panel", CHILD], ["X-Lkml-Digest-Of", "d0d0d0d0"]] if tagged else []
+    return msg(seq, frm, "Findings:\n- blocking | @operability | x.py | fix it\n\n"
+               "Digest-Blocking: 1", extra=h, to=list(to))
+
+SUB_BODY = "\n".join([
+    "Sub-panel review of the example change.",
+    "",
+    "Parent-Thread: " + CHILD,
+    "Panel: @core, @tests, @docs",
+    "Secretary: @secretary",
+])
+
+def sub_root():
+    return msg(1, "@deploy-bot", SUB_BODY, sha=A, ver=1, set_target=A,
+               subject="[PATCH v1] Fix the thing",
+               extra=[["X-Lkml-Parent-Thread", CHILD]])
+
+def sub_seat(seq, who, body):
+    return msg(seq, who, body, sha=A, ver=1, to=["@deploy-bot"], cc=["@secretary"])
+FX3
+gen relaymid <<'PY'
+write(D, export([root(), reviewed(2, "@core"), relayed(3), relayed(4, tagged=False)]), status())
+PY
+run relaymid FS_HOOK_MESSAGE=m003
+expect "a sub-panel digest wakes the author mid-review" 0 "p" "m003"
+run relaymid FS_HOOK_MESSAGE=m004
+expect "the same sender untagged is gated as before" 0 "d"
+gen relayconv <<'PY'
+e = settled(extra=[trailer(5, sha=A), relayed(6), relayed(7, tagged=False)])
+write(D, e, status())
+PY
+run relayconv FS_HOOK_MESSAGE=m006
+expect "a sub-panel digest wakes the author after convergence" 0 "p"
+run relayconv FS_HOOK_MESSAGE=m007
+expect "after convergence the same sender untagged is gated as before" 0 "d"
+gen relayseat <<'PY'
+write(D, export([root(), reviewed(2, "@core"), relayed(3, frm="@tests")]), status())
+PY
+run relayseat FS_HOOK_MESSAGE=m003
+expect "a panel seat cannot tag its way past the gate" 1 "h" "@docs (silent)"
+gen relayother <<'PY'
+write(D, export([root(), reviewed(2, "@core"), relayed(3, to=("@operator",))]), status())
+PY
+run relayother FS_HOOK_MESSAGE=m003
+expect "a tagged message not To: the author is gated as before" 0 "d"
+
+gen childpart <<'PY'
+write(D, export([sub_root(), sub_seat(2, "@core", "Changes-requested"),
+                 sub_seat(3, "@tests", "Reviewed-by: T")]), status())
+PY
+run childpart FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m003
+expect "child: the secretary waits while a seat has not replied" 3 "k" "@docs (silent)"
+case "$ERR" in
+    *@core*) no "child: a blocking seat has answered, and is not named" "$ERR" ;;
+    *) ok "child: a blocking seat has answered, and is not named" ;;
+esac
+gen childall <<'PY'
+write(D, export([sub_root(), sub_seat(2, "@core", "Changes-requested"),
+                 sub_seat(3, "@tests", "Reviewed-by: T"), sub_seat(4, "@docs", "NAK")]),
+      status())
+PY
+run childall FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004
+expect "child: the secretary wakes once every seat has replied, whatever the verdicts" 0 "o"
+gen childdone <<'PY'
+d = msg(5, "@secretary", "Digest.\n\nDigest-Blocking: 1\nPanel-Version: 1\n"
+        "Panel-Status: CONVERGED\nPanel-Verdict: SIGNED-OFF", sha=A, ver=1,
+        to=["@deploy-bot"])
+write(D, export([sub_root(), sub_seat(2, "@core", "Changes-requested"),
+                 sub_seat(3, "@tests", "Reviewed-by: T"), sub_seat(4, "@docs", "NAK"), d,
+                 sub_seat(6, "@docs", "NAK again")]), status())
+PY
+run childdone FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m006
+expect "child: one digest; a later reply does not wake the secretary again" 3 "n"
+run childall FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m004 FS_HOOK_AGENT=core
+expect "child: a reviewer seat is not gated" 0 "b"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
