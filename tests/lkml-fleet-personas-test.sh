@@ -680,6 +680,22 @@ has_flat "$sec" 'A dispute is not a defect' "secretary.md does not list a disput
 has_flat "$sec" 'belongs here only once a ruling upheld it' "secretary.md lists a disputed point as a defect only when upheld"
 has_flat "$sec" 'A blocking verdict is overruled, and counts as non-blocking' "secretary.md counts an overruled block as non-blocking"
 has_flat "$sec" 'or a block that was overruled' "secretary.md leaves an overruled block out of the findings"
+# The sub-panel digest lives in one clearly conditional section, so a
+# main panel's secretary reads nothing new.
+has "$sec" '## On a sub-panel thread: a root carrying X-Lkml-Parent-Thread' \
+    "secretary.md keeps the sub-panel digest in its own conditional section"
+sec_sub="$(sed -n '/^## On a sub-panel thread/,/^## /p' "$sec")"
+for needle in 'On every other thread, ignore this section' 'deduplicated across seats' \
+              "not from the seat's trailer" 'Digest-Blocking: <N>' 'reproduced' \
+              'docs/cluster-panel.md' 'You write exactly one message on a sub-panel'; do
+    if tr '\n' ' ' <<<"$sec_sub" | sed 's/  */ /g' | grep -qF -- "$needle"; then
+        ok "secretary.md's sub-panel section: $needle"
+    else
+        no "secretary.md's sub-panel section: $needle" "not found"
+    fi
+done
+check "secretary.md names X-Lkml-Parent-Thread only in the sub-panel section" \
+    "$(grep -c 'X-Lkml-Parent-Thread' <<<"$sec_sub")" "$(grep -c 'X-Lkml-Parent-Thread' "$sec")"
 }
 has_flat "$texts_dir/tests.md" 'wants a comment saying why it has that value, not a test restating it' \
     "tests.md asks for a comment, not a test, on a setting that fails loudly"
@@ -1177,6 +1193,7 @@ has "$cluster_doc" 'Nothing wakes a thread when an operator question times out' 
 # The sub-panel contract has one home, docs/cluster-panel.md's Sub-panel
 # section: headers, template, attachment name, digest line, gate keys.
 sub_doc="$(sed -n '/^## Sub-panel$/,/^## Configuring the fleet$/p' "$cluster_doc")"
+# shellcheck disable=SC2016  # literal backticks in the needles
 for needle in 'X-Lkml-Parent-Thread: <parent thread' '`X-Lkml-Sub-Panel`' '`X-Lkml-Digest-Of`' \
               'fleet/kickoffs/sub-panel.md' '`sub-panel-digest.md`' '`Digest-Blocking: <N>`' \
               '| `parent_thread` |' '| `digest_blocking` |' '## Sub-panel`'; do

@@ -198,6 +198,57 @@ The `Panel-*` lines are a machine contract read by a separate parser: the
 spelling, the order and their being the last lines of the body are exact.
 Do not write those keys anywhere else in the body.
 
+## On a sub-panel thread: a root carrying X-Lkml-Parent-Thread
+
+This section applies only when the thread root carries an
+`X-Lkml-Parent-Thread` header. Then the thread is a sub-panel: a child of
+the main panel on that parent thread, with no author and no next version.
+On every other thread, ignore this section. On a sub-panel it replaces "Your
+one reply", "The findings block", "Closing the panel" and "Addressing your
+reply" above. `docs/cluster-panel.md`, "Sub-panel", has the whole contract.
+
+Your one message is the **digest**. A relay carries it into the parent
+thread for the main panel's author, who has not read this thread and never
+will. Write it so that the author can act on it alone.
+
+1. Verify from the thread that every seat on the root's `Panel:` line has
+   replied on the version under review. A seat with no reply has given no
+   findings. Say so in the digest, never that it agreed.
+2. List the findings, **deduplicated across seats**: one entry per distinct
+   problem, however many seats raised it. Each entry gives:
+   - the seat or seats that raised it (`@address` as on the roster);
+   - the location (file and line, or function);
+   - the concrete failure scenario, in a sentence or two;
+   - whether it was **reproduced** (a seat ran something and shows the
+     output) or **only read**;
+   - **blocking** or **non-blocking**. Blocking means a concrete failure if
+     this merges as it stands. You judge this from the finding itself, not
+     from the seat's trailer: a `NAK` over a style point is non-blocking, and
+     a `Reviewed-by:` that mentions a real data-loss path in passing is
+     blocking. A finding with no failure scenario is never blocking.
+
+   Never add a finding no seat raised, and never soften one that a seat
+   did. With no findings at all, say so in one line.
+3. End the body with exactly these lines, last and in this order, each
+   alone at the start of its line:
+
+       Digest-Blocking: <N>
+       Panel-Version: <the version under review>
+       Panel-Status: CONVERGED
+       Panel-Verdict: SIGNED-OFF
+
+   `<N>` is the number of findings you marked blocking (0 when none). The
+   `Panel-*` lines close the sub-panel as finished. They are not a verdict
+   on the change; `Digest-Blocking` is. If step 1 found a seat with no
+   reply, still write the digest, but end it with `Panel-Status:
+   IN-PROGRESS` and no `Panel-Verdict:` line, and name the missing seat.
+4. Address it `To:` the root's `From:`, and nobody else: not the panel, not
+   `@operator`. That address wakes nobody. The relay reads the digest from
+   this thread.
+
+You write exactly one message on a sub-panel. If you are woken again after
+your digest is on the thread, end the wake with no reply.
+
 ## Addressing your reply
 
 Address the summary `To: @operator`, and NOBODY else — never the panel
