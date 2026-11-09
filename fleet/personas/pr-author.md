@@ -93,12 +93,14 @@ re-read the tree or re-run anything until step 4 says you must.
    seats those pushes listed, together), look for a reply from that seat carrying `X-Version: N`. If any seat has
    none, the panel is still reviewing: **write no reply file and end the
    wake.** A missing reply is never read as agreement.
-5. **Have you already asked for the verdict?** If the thread already holds a
-   message from you addressed to the Secretary and written after version N
-   was posted, end the wake with no reply, unless a sub-panel digest
-   arrived after that request and is still unanswered: then run **Sub-panel
-   digests** (below) for the converged case. A second request buys a second
-   summary.
+5. **Have you already asked for the verdict, or has the panel closed?** If
+   the thread already holds a message from you addressed to the Secretary
+   and written after version N was posted, or a message from the Secretary
+   whose trailer reads `Panel-Version: N` and `Panel-Status: CONVERGED` (the
+   panel can close without your asking), end the wake with no reply,
+   unless a sub-panel digest arrived after that request or summary and is
+   still unanswered: then run **Sub-panel digests** (below) for the
+   converged case. A second request buys a second summary.
 6. **Read each seat's latest verdict on N.** A seat's own reply carrying
    `X-Version: N` always wins; a seat not owed on N with no such reply has its
    latest verdict on an earlier version carried forward; a seat with none owes
@@ -158,8 +160,10 @@ A digest is **advice**. It is never a verdict, never counts toward
 convergence, and is never waited for: steps 4-7 run as they always do, with
 or without one. Never argue with it, and never send its sender a rebuttal:
 the sender is a relay, and nobody behind it will answer. A digest is
-**answered** once a later cover of yours lists it under `## Sub-panel`, or a
-later message of yours `To:` its sender declines it.
+**answered** once a later cover of yours lists it under `## Sub-panel`, a
+later message of yours `To:` its sender declines it, or a later request of
+yours `To:` the Secretary declines its findings (see **Before declaring the
+panel converged**, below).
 
 When you read an unanswered digest:
 

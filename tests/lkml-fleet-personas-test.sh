@@ -778,7 +778,9 @@ for needle in '## Sub-panel digests' '`X-Lkml-Sub-Panel: <child' '`X-Lkml-Digest
               'never send its sender a rebuttal' 'taken (naming the commit) or declined (a one-line reason)' \
               'If you agree with any of its findings, post a version instead of asking the Secretary' \
               'A digest after the panel converged.' '`To:` the digest'"'"'s sender only' \
-              'Change nothing else' '- `## Sub-panel`, when an unanswered sub-panel digest'; do
+              'Change nothing else' '- `## Sub-panel`, when an unanswered sub-panel digest' \
+              'or a later request of yours `To:` the Secretary declines its findings' \
+              'whose trailer reads `Panel-Version: N` and `Panel-Status: CONVERGED`'; do
     has_flat "$pra" "$needle" "pr-author.md sub-panel digests: $needle"
 done
 
