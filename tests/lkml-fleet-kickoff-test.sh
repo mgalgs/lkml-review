@@ -2940,7 +2940,7 @@ contains "a duplicate basename across two dirs names the problem" "$out_attach_d
 
 attach_many_dir="$(mktemp -d)"; tmpdirs+=("$attach_many_dir")
 attach_many_args=()
-for attach_i in $(seq 1 16); do
+for attach_i in $(seq 1 201); do
     attach_f="$attach_many_dir/f$attach_i.txt"
     printf 'x\n' > "$attach_f"
     attach_many_args+=(--attach-file "$attach_f")
@@ -2948,8 +2948,13 @@ done
 out_attach_many="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
     --from '@author' --to '@lkml-panel' --subject 'subj' "${attach_many_args[@]}" 2>&1)"
 rc_attach_many=$?
-if (( rc_attach_many != 0 )); then ok "16 --attach-file values exceed the count cap and exit non-zero"; else no "16 --attach-file values exceed the count cap and exit non-zero" "exit 0: $out_attach_many"; fi
-contains "the count-cap refusal names 15 as the limit" "$out_attach_many" "at most 15"
+if (( rc_attach_many != 0 )); then ok "201 --attach-file values exceed the count cap and exit non-zero"; else no "201 --attach-file values exceed the count cap and exit non-zero" "exit 0: $out_attach_many"; fi
+contains "the count-cap refusal names 200 as the limit" "$out_attach_many" "at most 200"
+
+out_attach_max="$(PATH="$stub_bin:$PATH" "$kickoff" "$project_dir" "master...topic" \
+    --from '@author' --to '@lkml-panel' --subject 'subj' "${attach_many_args[@]:0:400}" 2>&1)"
+rc_attach_max=$?
+if (( rc_attach_max == 0 )); then ok "200 --attach-file values are accepted"; else no "200 --attach-file values are accepted" "exit $rc_attach_max: $out_attach_max"; fi
 
 attach_sum_dir="$(mktemp -d)"; tmpdirs+=("$attach_sum_dir")
 attach_sum_args=()

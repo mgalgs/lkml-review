@@ -276,10 +276,10 @@
 #              the store's per-attachment cap) each; its basename must
 #              contain no newline and must not collide with another
 #              --attach-file's basename (the store's attachments
-#              directory is flat and keyed by basename); at most 15
-#              values total (the mail API caps a request at 16 files,
-#              leaving one for headroom); and at most 16 MiB
-#              (16777216 bytes) summed. The mail API caps a request
+#              directory is flat and keyed by basename); at most 200
+#              values total (the mail API must accept at least 201
+#              files per request, leaving one for headroom); and at
+#              most 16 MiB (16777216 bytes) summed. The mail API caps a request
 #              body at 24 MiB and base64 inflates files by 4/3, so
 #              16 MiB of files is ~21.3 MiB on the wire, leaving room
 #              for the JSON wrapper and the cover body. When
@@ -1013,8 +1013,8 @@ done
 # cap (cheap, no filesystem access) before per-file checks, and the
 # summed-size cap only after every per-file size is known to be within
 # the individual cap.
-if (( ${#attach_files[@]} > 15 )); then
-    echo "Error: --attach-file was given ${#attach_files[@]} times; at most 15 are allowed (the mail API caps a request at 16 files, leaving one for headroom). See --help." >&2
+if (( ${#attach_files[@]} > 200 )); then
+    echo "Error: --attach-file was given ${#attach_files[@]} times; at most 200 are allowed. See --help." >&2
     exit 1
 fi
 declare -A attach_basename_seen=()
