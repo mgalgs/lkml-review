@@ -173,7 +173,7 @@ while read -r name want; do
     check "$name's body + protocol-reviewer.md is its pre-split body" "$want" "$got"
 done <<'HASHES'
 architecture 51658ce02d861f9fc677fc0c048b27c51c8756df419c373945e85d502ce76e40
-core 5803a184494845b11ff797026e5dc3f3b02d0707d5770b22d88222dd2f5f09ab
+core 3bb9cd90cb20026debcb44848afd96e31fc9accee45fbbde3b429c372cc7e699
 devils-advocate fdb59184bea20f9215411a941f1ca1a103c1d40ff02840d069ea56732c439a83
 docs e0339accd4bae55722e81544b9f914f15cbbcea691ec45af5edc7b49b66b1263
 newcomer 11184491d0911895fdcac00118cd1c2442e5b81b035cb2c8eaf83b48023c874c
@@ -661,6 +661,8 @@ has_flat "$pa" 'carries `Overrule: <that verdict'"'"'s message id>` alone on its
 has_flat "$pa" 'only `@operator` can overrule `@core`' "pr-author.md: only the operator overrules @core"
 has_flat "$pa" 'upholds the block: comply' "pr-author.md complies with an upheld block"
 co="$texts_dir/core.md"
+has_flat "$co" 'A smaller roster leaves lanes with no seat' "core.md names the lanes a smaller roster leaves empty"
+has_flat "$co" 'no seat on the `Panel:` line owns it, it is yours, at the bar its own seat would hold' "core.md takes an unseated lane at its own seat's bar"
 has_flat "$co" '## First pass: hunt the bugs' "core.md has the mandatory bug-hunt first pass"
 has_flat "$co" 'at high effort, and finish it before you write anything else' "core.md runs the hunt first, at high effort"
 has_flat "$co" 'run it at `high`' "core.md uses the built-in /code-review at high when it has one"
