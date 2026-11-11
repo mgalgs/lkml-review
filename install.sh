@@ -60,6 +60,7 @@ PORCELAIN=(
     lkml-fleet-kickoff.sh
     lkml-fleet-status.sh
     lkml-forklift.sh
+    lkml-gap-monitor.py
     lkml-mailbox.sh
     lkml-panel-state.py
     lkml-render.py
