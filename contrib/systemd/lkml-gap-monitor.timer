@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily run of the lkml gap monitor
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target

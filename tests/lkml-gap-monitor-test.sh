@@ -1373,5 +1373,26 @@ mkdir -p "$WORLD/scratch/1-so1-a1/evidence"; echo stray > "$WORLD/scratch/1-so1-
 runq
 if [[ ! -e "$WORLD/scratch/1-so1-a1/evidence/stray.txt" ]]; then ok "the stray file is gone from the attach dir"; else no "the stray file is gone from the attach dir"; fi
 contains "  the handoff is the new one" "$(cat "$WORLD/scratch/1-so1-a1/handoff.md")" "Judge the feedback"
+
+# ======================= docs and units =========================================
+printf '\n== R8.1 user units ==\n'
+svc="$(cat "$repo_dir/contrib/systemd/lkml-gap-monitor.service")"; tmr="$(cat "$repo_dir/contrib/systemd/lkml-gap-monitor.timer")"
+contains "service is oneshot" "$svc" "Type=oneshot"
+check "ExecStart ends with 'lkml-gap-monitor.py run'" 1 "$(grep -c '^ExecStart=.*lkml-gap-monitor\.py run$' <<<"$svc")"
+contains "timer: OnCalendar=daily" "$tmr" "OnCalendar=daily"; contains "timer: Persistent=true" "$tmr" "Persistent=true"
+contains "timer: WantedBy=timers.target" "$tmr" "WantedBy=timers.target"
+for f in "$svc" "$tmr"; do lacks "no /home/ in a unit" "$f" "/home/"; lacks "no User= in a unit" "$f" "User="; done
+lacks "install.sh does not install the units" "$(cat "$repo_dir/install.sh")" "contrib"
+
+printf '\n== R8.2 docs and the README pointer ==\n'
+doc_md="$(cat "$repo_dir/docs/gap-monitor.md")"
+for k in repo checkout state_dir mail_cmd forge_cmd judge.model judge.harness judge.concurrency judge.wait_timeout judge.max_attempts judge.run_args sha_fetch_cmd bot_markers exclude_tier_reason xref_pattern quiet_hours lookback_days notify_cmd publish_cmd LKML_GAP_MONITOR_FILE; do
+    contains "docs name $k" "$doc_md" "\`$k\`"
+done
+for c in due waiting judged author-only xref-only empty blocked failed; do contains "docs name class $c" "$doc_md" "\`$c\`"; done
+for k in finding window integration judged judge-failed sha-unavailable; do contains "docs name $k" "$doc_md" "\`$k\`"; done
+contains "docs show systemctl --user" "$doc_md" "systemctl --user"
+check "README: exactly one line names the tool" 1 "$(grep -c 'lkml-gap-monitor' "$repo_dir/README.md")"
+contains "  and it points to the doc" "$(grep 'lkml-gap-monitor' "$repo_dir/README.md")" "docs/gap-monitor.md"
 printf "\n%d passed, %d failed\n" "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
