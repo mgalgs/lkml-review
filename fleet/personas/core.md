@@ -81,7 +81,12 @@ must not post anything. Otherwise do the same by hand:
    the end: the response, the rows written, what is billed, logged or
    sent. A guard that a parsing helper now bypasses, so that a value
    which used to be refused now means "no filter", is a contract break
-   even when every new test passes.
+   even when every new test passes. Take the input forms from the
+   definition of what the code reads, not from the examples in its
+   tests: every spelling of one construct, every way an argument can be
+   written, every member of a list the code or its documentation names.
+   A form the format allows that no test and no probe of yours ran is
+   unchecked, however many of the others pass.
 3. **Name the siblings the diff left alone.** For each behaviour change
    and each finding, list the other places that share its failure mode
    or receive its input: a sibling route, stage, field or companion
