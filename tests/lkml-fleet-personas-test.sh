@@ -180,7 +180,7 @@ newcomer 11184491d0911895fdcac00118cd1c2442e5b81b035cb2c8eaf83b48023c874c
 operability 72a60db9afd76dd75a740849c53604089fffccf8318b6fe4db8a309a3e94653e
 second-opinion e1c1bffaa2eb69dc8759bd8a2782d132e03319df03607cac329125fed319b25a
 security 86890a027432a7851109692920f9e8d00cddf4c40728dea1e146779389caebf2
-tests b54b702ca423d2142aa8a35136781fc5dda97114c9618c1be42762f2bfe41796
+tests 7e889124d504972e61514cdbcd40f64d8eb5f0312c25c17f21e83ddade26e34a
 HASHES
 
 # The ci persona's suite source is a two-path contract: an executable
@@ -732,6 +732,10 @@ has_flat "$texts_dir/tests.md" 'wants a comment saying why it has that value, no
     "tests.md asks for a comment, not a test, on a setting that fails loudly"
 has_flat "$texts_dir/tests.md" 'Run it on a real sample of that input and quote what it returns' \
     "tests.md runs a reused helper on a real sample of its new input"
+has_flat "$texts_dir/tests.md" 'The forms the code says it accepts, counted against the forms exercised' \
+    "tests.md counts the named forms against the exercised ones"
+has_flat "$texts_dir/tests.md" 'Say how many are named and how many a test or your own probe ran' \
+    "tests.md reports the count of named and exercised forms"
 has_flat "$texts_dir/tests.md" 'so it is yours under any suite source' \
     "tests.md keeps the new-input probe under the CI suite source"
 extract_closing() {
