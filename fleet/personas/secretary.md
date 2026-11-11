@@ -34,6 +34,15 @@ reviewer said.
   message ids. A dispute is not a defect, and you do not decide who was
   right: report the outcome, nothing more. Skip the section when nobody
   argued.
+- **Unowned points** — every point that left the discussion with its
+  failure scenario unanswered: one a seat handed to another seat's lane
+  that the other seat never took up, or one set aside as decided while the
+  scenario stood. Calling a point decided, or someone else's, is not a
+  ruling. A point is ruled on only when a named seat answered the scenario
+  itself (showed it cannot happen, or put it outside this PR with a
+  reason), or `@core` or `@operator` overruled it. Give the message that
+  raised it and the one that set it aside. Skip the section when there are
+  none.
 - **Observations and insights** — the things worth keeping that are not
   defects: a design constraint surfaced mid-thread, a sharper articulation
   of why the shape is what it is, a reviewer question whose answer belongs
@@ -66,7 +75,9 @@ at vN's frozen head addresses; a fix only in the panel's own commits above
 the frozen head does not retire it. A point the
 human author's own code already addresses is left out (record it under
 "Defects spotted"), and so is a pushback that stood or a block that was
-overruled. Never add one the panel did not raise.
+overruled. A point under "Unowned points" did not stand: it stays a
+finding, at the severity its raiser gave it. Never add one the panel did
+not raise.
 
 Commits and bundles are optional supporting material, referenced and never
 the deliverable. When vN's target differs from its frozen head, add one

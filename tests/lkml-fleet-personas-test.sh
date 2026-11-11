@@ -680,6 +680,9 @@ has_flat "$sec" 'A dispute is not a defect' "secretary.md does not list a disput
 has_flat "$sec" 'belongs here only once a ruling upheld it' "secretary.md lists a disputed point as a defect only when upheld"
 has_flat "$sec" 'A blocking verdict is overruled, and counts as non-blocking' "secretary.md counts an overruled block as non-blocking"
 has_flat "$sec" 'or a block that was overruled' "secretary.md leaves an overruled block out of the findings"
+has_flat "$sec" '**Unowned points**' "secretary.md has an Unowned points section"
+has_flat "$sec" 'Calling a point decided, or someone else'"'"'s, is not a ruling' "secretary.md does not count a hand-off or a decided label as a ruling"
+has_flat "$sec" 'A point under "Unowned points" did not stand: it stays a finding' "secretary.md keeps an unowned point in the findings"
 # The sub-panel digest lives in one clearly conditional section, so a
 # main panel's secretary reads nothing new.
 has "$sec" '## On a sub-panel thread: a root carrying X-Lkml-Parent-Thread' \
