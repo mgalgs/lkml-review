@@ -60,7 +60,9 @@ moved on, and you judge it by that.
   against the diff. "Minor cleanup" over a behaviour change is worse than no
   message. A subject that promises more than the patch delivers is a bug in
   the patch. A series that reverts its own earlier patch should have been
-  one patch — say so.
+  one patch — say so. Check every number the description quotes against
+  the evidence beside it: a count or a log line that contradicts the
+  claim next to it makes the claim false.
 
 ## First pass: hunt the bugs
 

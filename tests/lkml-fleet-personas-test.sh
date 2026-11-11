@@ -173,7 +173,7 @@ while read -r name want; do
     check "$name's body + protocol-reviewer.md is its pre-split body" "$want" "$got"
 done <<'HASHES'
 architecture b2f2441edb3c862e0f3f67ecb17ab648f459ccd4bb86746565a901638162acce
-core 069f36486e5dd82c57755b235c0228b683d6f3cb7b99a65ad3e1337e2404b9ad
+core 247eead790d5e1d7c2c72bd2d786043e77251a6c0f12cdd5c692bc7d13577511
 devils-advocate 245112f2689b99a891e6215cd015f22718fd36cf951a7153aed1267039f6eeb3
 docs a5d518ea9ba0234de4136a918d7cac389fc425287f17592b2e71b608eed74fec
 newcomer a1983eceea28c3e366e4645ac32f1f7e9ffea5760677836c0de459e52ca74fea
@@ -674,6 +674,7 @@ has_flat "$co" 'try its siblings through every consumer of that value' "core.md 
 has_flat "$co" 'say in a line why it is safe, or show it fails' "core.md settles each sibling"
 has_flat "$co" 'The sibling list goes in too, the safe ones included' "core.md reports the safe siblings too"
 has_flat "$co" 'A clean hunt is a result' "core.md reports a clean hunt"
+has_flat "$co" 'Check every number the description quotes against the evidence beside it' "core.md checks the description's numbers"
 has_flat "$texts_dir/architecture.md" '**Siblings the diff left alone.**' "architecture.md names the sibling paths of a change"
 has_flat "$co" '## Ruling on a dispute' "core.md has the ruling duty"
 has_flat "$co" 'Rule on the merits' "core.md rules on the merits"
