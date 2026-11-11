@@ -54,7 +54,19 @@ nothing reads the same as a seat that crashed.
 On a later version, re-check the points you raised and cast your verdict
 again: a verdict on an old version does not carry forward. Judge each
 point against the code at the new version, not against any explanation
-of it.
+of it. A point is closed when the failure it named can no longer happen,
+not when the change you asked for is there. Ask again the question that
+found it, of the whole class this time: the other writers, the other
+inputs, the next call on the same path. The probe the fix was written
+against proves that one case.
+
+The same holds for a point that is set aside instead of fixed, yours or
+another seat's. Restate its failure scenario in a line and show that the
+reason given rules that scenario out. A reason that is true and answers
+a nearby question leaves the point open: the write is atomic, when the
+point was what a concurrent reader sees; one route is safe, when others
+reach the same state; it is no worse than before, when the change is
+what makes that state reachable.
 
 A question that only the human can answer (a decision, or a fact about
 their environment) goes `To:` the Author and `@operator`, so it reaches

@@ -172,15 +172,15 @@ while read -r name want; do
             | sha256sum | cut -d' ' -f1)"
     check "$name's body + protocol-reviewer.md is its pre-split body" "$want" "$got"
 done <<'HASHES'
-architecture b2f2441edb3c862e0f3f67ecb17ab648f459ccd4bb86746565a901638162acce
-core 247eead790d5e1d7c2c72bd2d786043e77251a6c0f12cdd5c692bc7d13577511
-devils-advocate 245112f2689b99a891e6215cd015f22718fd36cf951a7153aed1267039f6eeb3
-docs a5d518ea9ba0234de4136a918d7cac389fc425287f17592b2e71b608eed74fec
-newcomer a1983eceea28c3e366e4645ac32f1f7e9ffea5760677836c0de459e52ca74fea
-operability 72357c38a47b3350316fd4c85fbed3618fcf9010884e3f6bebcfe34a4d53abae
-second-opinion abf79d3855584b670b072a3db35656bbb166f4ba124ff5626bded16ca63bdb23
-security 1005805fcef9552006e727d7165ad81a8004bd53730bb69f858dbd1c568594d9
-tests 8a5099d186dc5f6e84124056c8cbc9865990f513b189a284151e0611a06640cf
+architecture 51658ce02d861f9fc677fc0c048b27c51c8756df419c373945e85d502ce76e40
+core 65b3d16577954c55e2cb184e79e3b95fa689101ea2bf63c32cd6d65e324b2dc5
+devils-advocate fdb59184bea20f9215411a941f1ca1a103c1d40ff02840d069ea56732c439a83
+docs e0339accd4bae55722e81544b9f914f15cbbcea691ec45af5edc7b49b66b1263
+newcomer 11184491d0911895fdcac00118cd1c2442e5b81b035cb2c8eaf83b48023c874c
+operability 72a60db9afd76dd75a740849c53604089fffccf8318b6fe4db8a309a3e94653e
+second-opinion e1c1bffaa2eb69dc8759bd8a2782d132e03319df03607cac329125fed319b25a
+security 86890a027432a7851109692920f9e8d00cddf4c40728dea1e146779389caebf2
+tests b54b702ca423d2142aa8a35136781fc5dda97114c9618c1be42762f2bfe41796
 HASHES
 
 # The ci persona's suite source is a two-path contract: an executable
@@ -689,6 +689,10 @@ has_flat "$sec" 'or a block that was overruled' "secretary.md leaves an overrule
 has_flat "$sec" '**Unowned points**' "secretary.md has an Unowned points section"
 has_flat "$sec" 'Calling a point decided, or someone else'"'"'s, is not a ruling' "secretary.md does not count a hand-off or a decided label as a ruling"
 has_flat "$sec" 'A point under "Unowned points" did not stand: it stays a finding' "secretary.md keeps an unowned point in the findings"
+has_flat "$protocol_file" 'A point is closed when the failure it named can no longer happen, not when the change you asked for is there' "protocol-reviewer.md closes a point on its failure, not on the fix"
+has_flat "$protocol_file" 'Ask again the question that found it, of the whole class this time' "protocol-reviewer.md re-asks the question across the class"
+has_flat "$protocol_file" 'show that the reason given rules that scenario out' "protocol-reviewer.md holds a set-aside point to its failure scenario"
+has_flat "$protocol_file" 'A reason that is true and answers a nearby question leaves the point open' "protocol-reviewer.md does not close a point on a nearby answer"
 # The sub-panel digest lives in one clearly conditional section, so a
 # main panel's secretary reads nothing new.
 has "$sec" '## On a sub-panel thread: a root carrying X-Lkml-Parent-Thread' \
