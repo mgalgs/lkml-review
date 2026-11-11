@@ -173,7 +173,7 @@ while read -r name want; do
     check "$name's body + protocol-reviewer.md is its pre-split body" "$want" "$got"
 done <<'HASHES'
 architecture 51658ce02d861f9fc677fc0c048b27c51c8756df419c373945e85d502ce76e40
-core bcafe0969c6646e1cfd744e663f64f3b26496ba23ec7fa513430f31b3ef1574b
+core 0fa0ae7719ae4d4bdee08d5c7d3fd352fc559649372ccf91450cda2a54b8d4a4
 devils-advocate fdb59184bea20f9215411a941f1ca1a103c1d40ff02840d069ea56732c439a83
 docs e0339accd4bae55722e81544b9f914f15cbbcea691ec45af5edc7b49b66b1263
 newcomer 11184491d0911895fdcac00118cd1c2442e5b81b035cb2c8eaf83b48023c874c
@@ -670,6 +670,9 @@ has_flat "$co" 'only separators (`,` or `,,`), repeated keys, missing' "core.md 
 has_flat "$co" 'the rows written, what is billed, logged or sent' "core.md follows inputs to side effects"
 has_flat "$co" 'Take the input forms from the definition of what the code reads, not from the examples in its tests' "core.md takes the input forms from the format's definition"
 has_flat "$co" 'A form the format allows that no test and no probe of yours ran is unchecked' "core.md counts an unprobed form as unchecked"
+has_flat "$co" '**Follow each thing the change produces to its reader.**' "core.md follows what the change produces to its reader"
+has_flat "$co" 'name what reads it next, open that reader, and read it with the new value in hand' "core.md opens the reader of each produced value"
+has_flat "$co" 'ask what the next stage checks' "core.md asks what the stage after the evidence checks"
 has_flat "$co" '**Run it against state it did not create.**' "core.md runs the change against state it did not create"
 has_flat "$co" 'The second attempt, with what the failed first one left behind' "core.md follows the second attempt"
 has_flat "$co" 'every action that can move it, not only the one the change has in mind' "core.md asks what else moves a status the code gave up on"
