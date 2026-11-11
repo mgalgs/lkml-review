@@ -303,6 +303,16 @@ asks for. Beside fix_size (see "Fix size"):
     push.answered and the secretary gate are unchanged: (b) is the
     persona's literal rule, which differs for a postmaster re-freeze.
 
+Cover invariant -- an author cover may carry a `Described-Tip: <sha>` line
+alone on its line: the branch as the last leg of the wake left it. covers[]
+reports, per cover (a message from the author with one valid
+X-Review-Target-Set, the root included), whether that line equals the sha of
+the cover's own X-Review-Target-Set: `matches` true or false, with a `note`
+naming both when false, and null when the cover has no such line (older
+versions, other sites). A value that is not a full sha cannot match, and is
+reported as written (lower-cased, clipped). Reporting only: a mismatch is
+neither a reason nor an advisory note, and changes no status, verdict or wake.
+
 Overrule -- a seat's block can be ruled on, never ignored. A ruling is a
 line `Overrule: <message-id>` on a line of its own at the left margin, not
 quoted, in a message from @core (while @core is on the effective panel
@@ -601,6 +611,9 @@ Output (null, never an omitted key, for what is unknown):
      "reasons": [...],                    # empty only for CONVERGED
      "advisory_notes": [...]}             # advisory seats' conditions;
                                           # never block, see "Advisory"
+     "covers": [{"version","message_id","sha","described_tip","matches",
+                 "note"}],                # one per author cover; see "Cover
+                                          # invariant". Reporting only
      "author_wake": {"fix_size","floor","floor_note","integration",
                      "push","checkout","checkout_note"}|null}
                                           # what the author's next wake
@@ -637,6 +650,7 @@ ADDRESS_RE = re.compile(r"^@[a-z0-9][a-z0-9-]*$")
 HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
 FROZEN_HEAD_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
 FROZEN_HEAD_LINE_RE = re.compile(r"^Frozen-Head:(.*)$")
+DESCRIBED_TIP_LINE_RE = re.compile(r"^Described-Tip:(.*)$")
 ROSTER_KEYS = ("Author", "Panel", "Secretary", "Version-Limit", "Frozen-Head",
                "Suite", "Suite-Seats", "Advisory")
 ROSTER_LINE_RE = re.compile(r"^(" + "|".join(ROSTER_KEYS) + r"):(.*)$")
@@ -2058,6 +2072,28 @@ def upstream_state_of(status):
             "at": opt_str(u.get("at"))}
 
 
+def covers_of(msgs, roster):
+    """One entry per author cover, in thread order: whether the cover's
+    Described-Tip line (the branch as the last leg left it) is the sha of
+    its own X-Review-Target-Set. A cover without the line is matches=None,
+    not a mismatch. Reporting only."""
+    if roster["author"] is None:
+        return []
+    out = []
+    for m in author_covers(msgs, roster["author"]):
+        sha = single_target_header(m, "X-Review-Target-Set")[1]
+        raw = keyed_line(m["body"], DESCRIBED_TIP_LINE_RE)
+        tip = None if raw is None else clip(raw.lower(), 64)
+        matches = None if raw is None else raw.lower() == sha
+        out.append({
+            "version": int_header(m, "X-Version"), "message_id": m["id"],
+            "sha": sha, "described_tip": tip, "matches": matches,
+            "note": None if matches is not False else (
+                f"cover {m['id']}: Described-Tip {tip} is not its "
+                f"X-Review-Target {sha}")})
+    return out
+
+
 def newest_unanswered_push(msgs, roster, pushes):
     """The newest push that is not a carry and that no later cover from the
     author answers (a cover whose first Frozen-Head line is the push's sha),
@@ -2388,6 +2424,7 @@ def build_state(export, status, now):
         "upstream_state": upstream,
         "reasons": reasons,
         "advisory_notes": notes,
+        "covers": covers_of(msgs, roster),
         "author_wake": author_wake_of(msgs, roster, pushes, posted, gating,
                                       posted_head, floor_doubt, posted_seq,
                                       owed_seats),

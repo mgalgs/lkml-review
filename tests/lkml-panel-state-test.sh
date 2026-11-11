@@ -3773,7 +3773,7 @@ write(D, export([root(), msg(2, "@core", "Changes-requested: a.", sha=A, ver=1),
     msg(3, "@tests", "NAK", sha=A, ver=1),
     msg(4, "@docs", "Reviewed-by: D", sha=A, ver=1)]), status())
 PY
-run_case tw1; o1="$OUT"; run_case tw2
+run_case tw1 --now 2026-03-02T12:00:00Z; o1="$OUT"; run_case tw2 --now 2026-03-02T12:00:00Z
 strip_fs='del(.author_wake) | .seats |= map(del(.fix_size))'
 check "(tw) twin threads with and without the trailers agree apart from the size" \
     "$(jq -c "$strip_fs" <<<"$OUT")" "$(jq -c "$strip_fs" <<<"$o1")"
@@ -3977,24 +3977,67 @@ PY
 run_case in13
 check "(in13) a push the postmaster re-froze in place, no cover names it" "true m002 bbb -" "$(integ)"
 check "(in13) its floor is the re-frozen head" "$(printf 'b%.0s' $(seq 40))" "$(jr .author_wake.floor)"
-gen in14 <<'PY'
-write(D, export(itd([upstream(30, H)], tests="Changes-requested: x.")), status())
+
+printf '\n== covers: Described-Tip against the cover'"'"'s own target ==\n'
+gen cv1 <<'PY'
+write(D, export([root(), cover(2, B, 2, "Re-roll.\n\nFrozen-Head: " + F + "\nDescribed-Tip: " + B),
+    cover(3, C, 3, "Re-roll.\n\nFrozen-Head: " + F + "\nDescribed-Tip: " + A),
+    cover(4, T4, 4, "Re-roll.\n\nFrozen-Head: " + F)]), status(sha=T4, ver=4))
 PY
-run_case in14
-check "(in14) integration leaves every other pre-existing key alone" "$(jq -c 'del(.author_wake)' <<<"$OUT")" "$(jq -c 'del(.author_wake)' <<<"$("$ps" --export-file "$work/case-in14/export.json" --status-file "$work/case-in14/status.json" --now "$(jr .now)")")"
+run_case cv1
+check "(cv1) one entry per author cover, the root first" '[1,2,3,4]' "$(j '[.covers[].version]')"
+check "(cv1) equal, different, absent" '[null,true,false,null]' "$(j '[.covers[].matches]')"
+check "(cv1) only the mismatch has a note" '[null,null,"m003"]' "$(j '[.covers[] | select(.note != null) | .message_id] | [null, null] + .')"
+contains "(cv1) the note names the line and the target" "$(jr '.covers[2].note')" "Described-Tip $(printf 'a%.0s' $(seq 40)) is not its X-Review-Target $(printf 'c%.0s' $(seq 40))"
+check "(cv1) the described tip is reported" "$(printf 'b%.0s' $(seq 40))" "$(jr '.covers[1].described_tip')"
+check "(cv1) a mismatch is no reason" "0" "$(jq '[.reasons[] | select(test("Described"))] | length' <<<"$OUT")"
+gen cv2 <<'PY'
+write(D, export([root(), cover(2, B, 2, "Re-roll.\n\nFrozen-Head: " + F + "\nDescribed-Tip: ABC123")]), status(sha=B, ver=2))
+PY
+run_case cv2
+check "(cv2) a value that is not a full sha is a mismatch, as written" 'false "abc123"' "$(jr '.covers[1] | (.matches | tostring) + " \"" + .described_tip + "\""')"
+gen cv3 <<'PY'
+write(D, export([root(body="Panel: @core\nSecretary: @secretary\n")]), status())
+PY
+run_case cv3
+check "(cv3) no author: covers is empty" "[]" "$(j .covers)"
+gen cv4 <<'PY'
+e = green()
+e[0] = root(body=ROOT_BODY.replace("f" * 40, A) + "\nDescribed-Tip: " + C)
+write(D, export(e), status())
+PY
+gen cv5 <<'PY'
+write(D, export(green()), status())
+PY
+run_case cv4 --now 2026-03-02T12:00:00Z; o4="$OUT"; run_case cv5 --now 2026-03-02T12:00:00Z
+check "(cv4) a mismatched cover: CONVERGED, no reasons, no advisory notes" "CONVERGED [] []" "$(jq -r '[.status, (.reasons|tostring), (.advisory_notes|tostring)] | join(" ")' <<<"$o4")"
+check "(cv4) the report is the only difference from the twin without the line" \
+    "$(jq -c 'del(.covers)' <<<"$OUT")" "$(jq -c 'del(.covers)' <<<"$o4")"
+check "(cv4) which says false" "false" "$(jq -r '.covers[0].matches' <<<"$o4")"
+gen cv6 <<'PY'
+write(D, export([root(), cover(2, B, 2, "Re-roll.\n\nFrozen-Head: " + F + "\nDescribed-Tip: " + A),
+    msg(3, "@core", "Changes-requested: x.", sha=B, ver=2)]), status(sha=B, ver=2))
+PY
+gen cv7 <<'PY'
+write(D, export([root(), cover(2, B, 2, "Re-roll.\n\nFrozen-Head: " + F),
+    msg(3, "@core", "Changes-requested: x.", sha=B, ver=2)]), status(sha=B, ver=2))
+PY
+run_case cv6 --now 2026-03-02T12:00:00Z; o6="$OUT"; run_case cv7 --now 2026-03-02T12:00:00Z
+check "(cv6) with a blocking seat too: nothing but covers differs from the twin" \
+    "$(jq -c 'del(.covers)' <<<"$OUT")" "$(jq -c 'del(.covers)' <<<"$o6")"
 
 printf '\n== invariants over every case above ==\n'
 inv_bad=""; inv_n=0; sub_bad=""; sub_n=0; adv_bad=""; adv_n=0; inv_conv=0; diff_bad=""; diff_n=0
 # Opt-in differential check: LKML_PANEL_STATE_BASELINE names the script as
 # it was before the keys stripped below (e.g. `git show <base>:scripts/...`).
 # For every case whose export carries no Advisory: line the new output, minus
-# the keys added since (the advisory ones, and the fix size's author_wake and
+# the keys added since (the advisory ones, author_wake, covers and
 # seats[].fix_size), must equal the old output byte for
 # byte, both run at one fixed --now. Unset, it did not run, and reports
 # nothing.
 baseline="${LKML_PANEL_STATE_BASELINE:-}"
 diff_now=2026-03-02T12:02:00Z
-strip_new='del(.advisory_notes, .parent_thread, .digest_blocking, .author_wake) | .roster |= del(.advisory) | .seats |= map(del(.advisory, .fix_size))'
+strip_new='del(.advisory_notes, .parent_thread, .digest_blocking, .author_wake, .covers) | .roster |= del(.advisory) | .seats |= map(del(.advisory, .fix_size))'
 for c in "${cases_run[@]}"; do
     d="$work/case-$c"
     o="$("$ps" --export-file "$d/export.json" --status-file "$d/status.json" 2>/dev/null)" || { inv_bad+=" $c(exit)"; continue; }
@@ -4007,7 +4050,7 @@ for c in "${cases_run[@]}"; do
     fi
     sub=false; grep -q 'X-Lkml-Parent-Thread' "$d/export.json" && sub=true
     if ! jq -e --argjson sub "$sub" '
-        (["schema","thread","subject","status","verdict","target","roster","tier","panel","push","frozen_head","ci","question_timeout_hours","questions","now","seats","secretary","postmaster","bundle","upstream_state","reasons","advisory_notes","author_wake"]
+        (["schema","thread","subject","status","verdict","target","roster","tier","panel","push","frozen_head","ci","question_timeout_hours","questions","now","seats","secretary","postmaster","bundle","upstream_state","reasons","advisory_notes","author_wake","covers"]
          - keys | length) == 0
         and (.status | IN("CONVERGED","IN-PROGRESS","STALLED","NEEDS-OPERATOR","AWAITING-OPERATOR","CLOSED"))
         and ((.status == "CLOSED") == (.status != "CONVERGED" and .upstream_state.state == "closed"))
@@ -4038,6 +4081,9 @@ for c in "${cases_run[@]}"; do
         and (.target == null or (.target | has("branch") and has("sha") and has("version") and has("set_by") and has("set_at") and has("source")))
         and (.advisory_notes | type == "array")
         and all(.seats[]; (.fix_size != null) == (.state == "blocking"))
+        and (.covers | type == "array")
+        and all(.covers[]; has("version") and has("message_id") and has("sha") and has("described_tip") and has("matches") and has("note")
+                and ((.note != null) == (.matches == false)))
         and ((.author_wake == null) == (.roster.author == null))
         and (.author_wake == null or (.author_wake | has("fix_size") and has("floor") and has("floor_note")
              and has("integration") and has("push") and has("checkout") and has("checkout_note")))
