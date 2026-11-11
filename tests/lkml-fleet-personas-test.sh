@@ -1083,6 +1083,10 @@ if [[ -f "$prk" ]]; then
         "pr-review.md skips its Running-the-suite section under the CI suite source"
     has "$prk" 'lkml-fleet-kickoff.sh --template pr-review' \
         "pr-review.md header points at the kickoff script that fills its placeholders"
+    has_flat "$prk" 'find out what it would have done from its own source, templates or documentation' \
+        "pr-review.md sends a seat that cannot run a tool to the tool's own source"
+    has_flat "$prk" '"I could not run it" ends the run, not the check' \
+        "pr-review.md does not let a missing tool end the check"
     if grep -qF 'does not yet fill' "$prk"; then
         no "pr-review.md drops the stale 'does not yet fill' note" "still present"
     else
