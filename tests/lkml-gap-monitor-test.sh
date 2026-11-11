@@ -726,6 +726,9 @@ case_cls "xref_exclude_title: an excluded source beside one that passes" due "w.
 check "  the excluded source is not a trigger" 51 "$(scanj | jq -r '[.windows[0].triggers[].id] | join(",")')"
 CFG=
 case_cls "xref: 'prefix cleanup' is not 'fix' (word boundary)" xref-only "w.xref(1, 50, OLD, title='prefix cleanup')"
+case_cls "xref: a citing paragraph that says a check failed" due "w.xref(1, 50, OLD, body='This replaces the check that failed after #1 shipped.')"
+case_cls "xref: a title that names a failure" due "w.xref(1, 50, OLD, title='Retry failures in the flush job')"
+case_cls "xref: 'failover' is not 'fail' (word boundary)" xref-only "w.xref(1, 50, OLD, title='Add failover for the cache')"
 
 printf '\n== R5.5 the quiet period ==\n'
 new; py "w = World(); w.base(); w.comment(1, 11, '2026-11-10T11:00:00Z', 'bob', LONG); w.save()"; cfg

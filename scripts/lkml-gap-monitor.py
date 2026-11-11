@@ -125,7 +125,7 @@ JUDGE_KEYS = ("model", "harness", "concurrency", "wait_timeout",
 
 DEFAULT_XREF = (r"\b(fix(es|ed)?|bug|regress(ion|ed|es)?|revert(s|ed)?|"
                 r"broke(n)?|crash(es|ed)?|incorrect|wrong(ly)?|hotfix|"
-                r"follow[- ]?ups?|missed)\b")
+                r"follow[- ]?ups?|missed|fail(s|ed|ures?)?)\b")
 TRIVIAL = re.compile(
     r"^\s*(lgtm|looks good( to me)?|thanks?|thank you|done|fixed|ack|nice|"
     r"\+1|approved?|:\w+:|/[\w-]+(\s.*)?)?[\s.!]*$", re.I)
