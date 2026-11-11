@@ -201,13 +201,14 @@ expect() {
 # expect_ho <label> <rc> <rule> <n>: the decision line first (naming the
 # rule), then exactly n handover lines and nothing else.
 expect_ho() {
-    local label="$1" rc="$2" rule="$3" n="$4" first rest
+    local label="$1" rc="$2" rule="$3" n="$4" first rest total=0
     check "$label: exit $rc" "$rc" "$RC"
     first="$(head -n1 <<<"$ERR")"
     contains "$label: first line is the decision (rule $rule)" "$first" "(rule $rule)"
     rest="$(tail -n +2 <<<"$ERR")"
+    if [[ -n "$rest" ]]; then total="$(wc -l <<<"$rest" | tr -d ' ')"; fi
     check "$label: $n handover line(s)" "$n/$n" \
-        "$([[ -z "$rest" ]] && echo 0 || wc -l <<<"$rest" | tr -d ' ')/$(grep -c '^lkml-wake-gate: handover: ' <<<"$rest")"
+        "$total/$(grep -c '^lkml-wake-gate: handover: ' <<<"$rest")"
 }
 # file_is <label> <path> <bytes>: the file holds exactly those bytes.
 file_is() {
@@ -1313,9 +1314,9 @@ no_file "a reviewer wake hands nothing over" "$(sz r5)"
 printf '\n== handover: variable unset or empty ==\n'
 rm -rf -- "$work/case-s1/out"; mkdir -- "$work/case-s1/out"
 run s1; expect "unset: exactly one line, as before" 0 f
-check "unset: no file created in the case dir" "" "$(ls "$work/case-s1" | grep -v '^\(export.json\|status.json\|out\)$')"
+check "unset: no file created in the case dir" "" "$(find "$work/case-s1" -mindepth 1 -maxdepth 1 ! -name export.json ! -name status.json ! -name out)"
 run s1 FS_HOOK_PIPELINE_SIZE_FILE=; expect "empty: exactly one line, as before" 0 f
-ls "$work/case-s1/out" | grep -q . && no "unset or empty wrote a file" || ok "unset or empty wrote no file"
+check "unset or empty wrote no file" "" "$(find "$work/case-s1/out" -mindepth 1)"
 
 printf '\n== handover: cannot be made ==\n'
 run s1 "FS_HOOK_PIPELINE_SIZE_FILE=$work/case-s1/nodir/size"
@@ -1329,6 +1330,166 @@ stub_case badsz 'import json; print(json.dumps({"schema": "lkml-panel-state/1", 
 GATE="$work/stub-badsz/lkml-wake-gate.py" size_run silent; expect_ho "a size the spawner would not accept" 0 f 1
 no_file "not written" "$(sz silent)"
 GATE="$gate_src"
+
+printf '\n== handover: the finalize floor and the integration checkout ==\n'
+H="$(printf '1%.0s' $(seq 40))"; FFF="$(printf 'f%.0s' $(seq 40))"
+HO_VARS="size floor checkout"
+# ho <case> [VAR=value ...]: run with the handover variables in HO_VARS
+# pointing into a fresh out/ directory of the case.
+ho() {
+    local c="$1" d="$work/case-$1"; shift
+    rm -rf -- "$d/out"; mkdir -p -- "$d/out"
+    local a=() v
+    for v in $HO_VARS; do
+        case "$v" in
+            size) a+=("FS_HOOK_PIPELINE_SIZE_FILE=$d/out/size") ;;
+            floor) a+=("FS_HOOK_FINALIZE_FLOOR_FILE=$d/out/floor") ;;
+            checkout) a+=("FS_HOOK_CHECKOUT_FILE=$d/out/checkout") ;;
+        esac
+    done
+    run "$c" "${a[@]}" "$@"
+}
+out() { echo "$work/case-$1/out/$2"; }
+cat >> "$work/fx.py" <<'FX2'
+H, T2 = sha("1"), sha("2")
+def itd(extra=(), who=("@core", "@tests", "@docs"), tests="Fix-Size: s\nChanges-requested: leaks."):
+    e = [root()]
+    for i, w in enumerate(who):
+        e.append(msg(2 + i, w, tests if w == "@tests" else "Reviewed-by: " + w,
+                     sha=A, ver=1))
+    return e + list(extra)
+FX2
+
+gen fl_cover <<'PY'
+write(D, export([root(), upstream(2, H), cover(3, H, 2, "Frozen-Head: " + H),
+    cover(4, B, 3, "Frozen-Head: " + H), msg(9, "@operator", "Anything new?", sha=B, ver=3)]),
+    status(sha=B, ver=3))
+PY
+ho fl_cover FS_HOOK_MESSAGE=m009; expect_ho "target is an author version" 0 d 0
+file_is "the floor is its cover's Frozen-Head" "$(out fl_cover floor)" "$H"
+no_file "no size without a blocker" "$(out fl_cover size)"
+no_file "no checkout without an integration" "$(out fl_cover checkout)"
+gen fl_human <<'PY'
+write(D, export([root(), cover(2, B, 2, "Frozen-Head: " + "f" * 40), upstream(10, H),
+    cover(11, H, 3, "Frozen-Head: " + H), msg(12, "@operator", "Anything new?", sha=H, ver=3)]),
+    status(sha=H, ver=3))
+PY
+ho fl_human FS_HOOK_MESSAGE=m012; expect_ho "a head the human pushed, posted as a version" 0 d 0
+file_is "the floor is that head" "$(out fl_human floor)" "$H"
+gen fl_refrozen <<'PY'
+write(D, export([root(), upstream(2, H), msg(3, "@operator", "Anything new?", sha=H, ver=1)]),
+    status(target={"branch": "pr/example", "sha": H, "version": 1, "set_by": "@postmaster", "set_at": "2026-03-02T10:05:00Z"}))
+PY
+ho fl_refrozen FS_HOOK_MESSAGE=m003; expect_ho "a head the postmaster re-froze in place" 0 d 0
+file_is "the floor is that head" "$(out fl_refrozen floor)" "$H"
+gen fl_root <<'PY'
+write(D, export([root(), msg(2, "@operator", "Anything new?", sha=A, ver=1)]), status())
+PY
+ho fl_root FS_HOOK_MESSAGE=m002; expect_ho "the root, before any author version" 0 d 0
+file_is "the floor is the root's Frozen-Head, not its target sha" "$(out fl_root floor)" "$FFF"
+gen fl_noline <<'PY'
+write(D, export([root(), cover(2, B, 2, "Re-roll without the line."),
+    msg(3, "@operator", "Anything new?", sha=B, ver=2)]), status(sha=B, ver=2))
+PY
+ho fl_noline FS_HOOK_MESSAGE=m003; expect_ho "the author cover has no Frozen-Head line" 0 d 1
+no_file "no floor file" "$(out fl_noline floor)"
+contains "the line carries the cover's note" "$ERR" "has no Frozen-Head line"
+ho fl_root FS_HOOK_MESSAGE=m002 "FS_HOOK_FINALIZE_FLOOR_FILE=$work/case-fl_root/nodir/floor"
+expect_ho "floor directory missing" 0 d 1
+contains "the line names the path" "$ERR" "nodir/floor"
+HO_VARS="size" ho fl_root FS_HOOK_MESSAGE=m002; HO_VARS="size floor checkout"
+
+printf '\n== handover: not an author wake, or unset ==\n'
+HO_VARS="floor" ho skip FS_HOOK_MESSAGE=m004; expect_ho "rule i skips the author" 3 i 0
+no_file "a skip writes no floor" "$(out skip floor)"
+HO_VARS="floor" ho sec FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m005; expect_ho "the secretary is woken" 0 j 0
+no_file "a secretary wake writes no floor" "$(out sec floor)"
+run fl_cover FS_HOOK_MESSAGE=m009; expect "floor variable unset: one line" 0 d
+HO_VARS="size floor checkout"
+
+printf '\n== handover: size and floor are independent ==\n'
+HO_VARS="size floor" ho s1; expect_ho "a sized blocker and a known floor" 0 f 0
+file_is "the size" "$(out s1 size)" s; file_is "the floor" "$(out s1 floor)" "$FFF"
+HO_VARS="size floor" ho advalone; expect_ho "no blocker, a known floor" 0 f 0
+no_file "no size" "$(out advalone size)"; file_is "the floor" "$(out advalone floor)" "$FFF"
+gen sz_nofloor <<'PY'
+write(D, export([root(), cover(2, B, 2, "No line."),
+    msg(3, "@core", "Reviewed-by: C", sha=B, ver=2),
+    msg(4, "@tests", "Fix-Size: s\nChanges-requested: leaks.", sha=B, ver=2),
+    msg(5, "@docs", "Reviewed-by: D", sha=B, ver=2)]), status(sha=B, ver=2))
+PY
+HO_VARS="size floor" ho sz_nofloor FS_HOOK_MESSAGE=m003; expect_ho "a sized blocker, no floor" 0 f 1
+file_is "the size is written" "$(out sz_nofloor size)" s; no_file "no floor" "$(out sz_nofloor floor)"
+HO_VARS="size floor" ho s1 "FS_HOOK_PIPELINE_SIZE_FILE=$work/case-s1/nodir/size"; expect_ho "size directory missing" 0 f 1
+file_is "the floor is still written" "$(out s1 floor)" "$FFF"
+HO_VARS="size floor" ho s1 "FS_HOOK_FINALIZE_FLOOR_FILE=$work/case-s1/nodir/floor"; expect_ho "floor directory missing" 0 f 1
+file_is "the size is still written" "$(out s1 size)" s
+HO_VARS="size floor checkout"
+
+printf '\n== handover: the integration wake ==\n'
+gen int_all <<'PY'
+write(D, export(itd([upstream(30, H)])), status())
+PY
+ho int_all; expect_ho "unanswered push, every owed seat replied" 0 f 0
+file_is "the checkout is the pushed head" "$(out int_all checkout)" "$H"
+no_file "no floor" "$(out int_all floor)"; no_file "no size" "$(out int_all size)"
+gen int_abbr <<'PY'
+write(D, export(itd([upstream(30, "1" * 12)])), status())
+PY
+ho int_abbr; expect_ho "an abbreviated push sha" 0 f 1
+contains "says it is not a full sha" "$ERR" "not a full sha"
+no_file "no checkout" "$(out int_abbr checkout)"; no_file "no floor" "$(out int_abbr floor)"; no_file "no size" "$(out int_abbr size)"
+ho int_all "FS_HOOK_CHECKOUT_FILE=$work/case-int_all/nodir/checkout"; expect_ho "checkout directory missing" 0 f 1
+no_file "no floor" "$(out int_all floor)"; no_file "no size" "$(out int_all size)"
+gen int_carry <<'PY'
+write(D, export(itd([upstream(30, H, mode="carry")])), status())
+PY
+ho int_carry; expect_ho "a carry push is no integration" 0 f 0
+no_file "no checkout" "$(out int_carry checkout)"
+file_is "size is written" "$(out int_carry size)" s; file_is "floor is written" "$(out int_carry floor)" "$FFF"
+gen int_answered <<'PY'
+write(D, export(itd([upstream(30, H), cover(31, H, 2, "Frozen-Head: " + H)])[:1] + [upstream(30, H), cover(31, H, 2, "Frozen-Head: " + H),
+    msg(40, "@core", "Reviewed-by: C", sha=H, ver=2),
+    msg(41, "@tests", "Fix-Size: s\nChanges-requested: leaks.", sha=H, ver=2),
+    msg(42, "@docs", "Reviewed-by: D", sha=H, ver=2)]), status(sha=H, ver=2))
+PY
+ho int_answered FS_HOOK_MESSAGE=m040; expect_ho "an answered push" 0 f 0
+no_file "no checkout" "$(out int_answered checkout)"
+file_is "size is written" "$(out int_answered size)" s; file_is "floor is the pushed head" "$(out int_answered floor)" "$H"
+gen int_owing <<'PY'
+write(D, export(itd([upstream(30, H)], who=("@core", "@tests"))), status())
+PY
+ho int_owing FS_HOOK_MESSAGE=m030; expect_ho "the push mail wakes the author with a seat owing (rule c)" 0 c 0
+no_file "no checkout" "$(out int_owing checkout)"; file_is "floor is written" "$(out int_owing floor)" "$FFF"
+ho int_owing; expect_ho "a seat owing, a reviewer's reply defers (rule h)" 1 h 0
+no_file "nothing at all" "$(out int_owing floor)"
+HO_VARS="size floor" ho int_all; expect_ho "checkout variable unset: size and floor" 0 f 0
+file_is "size" "$(out int_all size)" s; file_is "floor" "$(out int_all floor)" "$FFF"
+HO_VARS=""
+run int_all; expect "no handover variable at all" 0 f
+HO_VARS="size floor checkout"
+gen int_sec <<'PY'
+e = itd([upstream(30, H)]); e.append(msg(50, "@operator", "Please summarize.", sha=A, ver=1))
+write(D, export(e), status())
+PY
+ho int_sec FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m050; expect_ho "the secretary is woken on an integration thread" 0 j 0
+no_file "no checkout" "$(out int_sec checkout)"; no_file "no floor" "$(out int_sec floor)"; no_file "no size" "$(out int_sec size)"
+
+printf '\n== a mismatched Described-Tip changes no decision ==\n'
+gen dt_twin <<'PY'
+e = itd([cover(30, B, 2, "Frozen-Head: " + "f" * 40 + "\nDescribed-Tip: " + C + "\n"),
+         msg(31, "@operator", "Anything new?", sha=B, ver=2)])
+write(D, export(e), status(sha=B, ver=2))
+PY
+gen dt_plain <<'PY'
+e = itd([cover(30, B, 2, "Frozen-Head: " + "f" * 40 + "\n"),
+         msg(31, "@operator", "Anything new?", sha=B, ver=2)])
+write(D, export(e), status(sha=B, ver=2))
+PY
+run dt_twin FS_HOOK_MESSAGE=m031; e1="$ERR"; rc1=$RC
+run dt_plain FS_HOOK_MESSAGE=m031; check "author wake: the same decision with and without a mismatched cover" "$rc1 $e1" "$RC $ERR"
+run dt_twin FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m031; e1="$ERR"; rc1=$RC
+run dt_plain FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m031; check "secretary wake: the same decision" "$rc1 $e1" "$RC $ERR"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

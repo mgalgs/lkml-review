@@ -113,6 +113,30 @@ handover, and the gate then behaves exactly as without this feature:
                                  with no usable Fix-Size line counts as
                                  m). Not written when no gating seat
                                  blocks.
+    FS_HOOK_FINALIZE_FLOOR_FILE  one full sha: the frozen head the author's
+                                 next version stands on, the lowest commit
+                                 the finalize script may rewrite history
+                                 down to. That is the frozen head of the
+                                 current review target as posted: for an
+                                 author version, its cover's Frozen-Head
+                                 line; for a head the human pushed (the
+                                 root included), that head. Not written,
+                                 and said, when panel-state cannot tell
+                                 (a cover without a usable line).
+    FS_HOOK_CHECKOUT_FILE        one full sha, written only for an
+                                 INTEGRATION wake: the head H the human
+                                 pushed, which the author resets its
+                                 branch to and posts unchanged, so the
+                                 wake starts at H. panel-state decides
+                                 what an integration wake is (the
+                                 persona's checklist, "Has the human
+                                 author pushed?": the newest push that is
+                                 not a carry, unanswered, with every owed
+                                 seat replied or the Secretary already
+                                 asked). For that wake, when this variable
+                                 is set, neither a floor nor a size is
+                                 written; for every other author wake
+                                 nothing is written here.
 
 Nothing is written for a skip, a defer, an error or a wake of any other
 seat (the secretary). A value that cannot be worked out, or a file that
@@ -241,7 +265,13 @@ MAX_BODY = 1 << 20
 CAPACITY_FILE = "lkml-capacity.env"
 CAPACITY_PREFIX = "LKML_CAPACITY_"
 SIZE_VAR = "FS_HOOK_PIPELINE_SIZE_FILE"
+FLOOR_VAR = "FS_HOOK_FINALIZE_FLOOR_FILE"
+CHECKOUT_VAR = "FS_HOOK_CHECKOUT_FILE"
 SIZE_RE = re.compile(r"[a-z][a-z0-9-]{0,15}")
+SHA_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
+SIZE_OR_SHA = {SIZE_VAR: SIZE_RE, FLOOR_VAR: SHA_RE, CHECKOUT_VAR: SHA_RE}
+SIZE_OR_SHA_WORDS = {SIZE_VAR: "a token the spawner accepts",
+                     FLOOR_VAR: "a full sha", CHECKOUT_VAR: "a full sha"}
 DURATION_RE = re.compile(r"(?:[0-9]+(?:ms|s|m|h|d|w|y))+")
 
 
@@ -753,26 +783,41 @@ def handover(done):
     if done.code != 0 or done.state is None:
         return []
     out = []
+
+    def put(var, name, value, why):
+        """Hand `value` over, or say why not: `why` when there is no value."""
+        if value is None:
+            if why:
+                out.append("lkml-wake-gate: handover: no %s: %s" % (name, why))
+        elif not isinstance(value, str) or not SIZE_OR_SHA[var].fullmatch(value):
+            out.append("lkml-wake-gate: handover: %s %r is not %s; not "
+                       "written" % (name, value, SIZE_OR_SHA_WORDS[var]))
+        else:
+            err = write_handover(var, name, value)
+            if err:
+                out.append("lkml-wake-gate: " + err)
+
     try:
         author = (done.state.get("roster") or {}).get("author")
         if author is None or done.agent != author:
             return []
-        wanted = [v for v in (SIZE_VAR,) if os.environ.get(v)]
-        if not wanted:
-            return []
+        wanted = [v for v in (SIZE_VAR, FLOOR_VAR, CHECKOUT_VAR)
+                  if os.environ.get(v)]
         wake = done.state.get("author_wake")
         if not isinstance(wake, dict):
             return ["lkml-wake-gate: handover: panel-state reports no "
-                    "author_wake; nothing written to %s" % ", ".join(wanted)]
-        size = wake.get("fix_size")
-        if SIZE_VAR in wanted and size is not None:
-            if not isinstance(size, str) or not SIZE_RE.fullmatch(size):
-                out.append("lkml-wake-gate: handover: fix size %r is not a "
-                           "token the spawner accepts; not written" % (size,))
-            else:
-                err = write_handover(SIZE_VAR, "fix size", size)
-                if err:
-                    out.append("lkml-wake-gate: " + err)
+                    "author_wake; nothing written to %s" % v for v in wanted]
+        # An integration wake starts at the pushed head: it gets that and
+        # neither a floor nor a size. Only when the spawner asked for it.
+        if wake.get("integration") is True and CHECKOUT_VAR in wanted:
+            put(CHECKOUT_VAR, "checkout", wake.get("checkout"),
+                wake.get("checkout_note") or "panel-state gave no pushed head")
+        else:
+            if SIZE_VAR in wanted:
+                put(SIZE_VAR, "fix size", wake.get("fix_size"), None)
+            if FLOOR_VAR in wanted:
+                put(FLOOR_VAR, "finalize floor", wake.get("floor"),
+                    wake.get("floor_note") or "panel-state gave no floor")
     except Exception as e:  # noqa: BLE001 -- a handover never changes the decision
         out.append("lkml-wake-gate: handover: failed: %s" % e)
     return out

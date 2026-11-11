@@ -3732,7 +3732,7 @@ write(D, export([root(), msg(2, "@core", "Reviewed-by: C", sha=A, ver=1),
 PY
 run_case fs13
 check "(fs13) a carried block keeps its size" "blocking true l" "$(seat @tests state) $(seat @tests carried) $(fs_size)"
-check "(fs13) and sizes the wake" '{"fix_size":"l"}' "$(j .author_wake)"
+check "(fs13) and sizes the wake" 'l' "$(jr .author_wake.fix_size)"
 check "(fs13) a seat's state decides: positive seats are null" "null" "$(seat @core fix_size)"
 
 printf '\n== author_wake.fix_size: the largest over the gating seats ==\n'
@@ -3779,6 +3779,209 @@ check "(tw) twin threads with and without the trailers agree apart from the size
     "$(jq -c "$strip_fs" <<<"$OUT")" "$(jq -c "$strip_fs" <<<"$o1")"
 check "(tw) the sizes differ" "l,xs m,m" "$(jq -r '[.seats[0].fix_size, .seats[1].fix_size] | join(",")' <<<"$o1") $(jq -r '[.seats[0].fix_size, .seats[1].fix_size] | join(",")' <<<"$OUT")"
 check "(tw) the wake's size: l, and m for two unsized blocks" "l m" "$(jq -r '.author_wake.fix_size' <<<"$o1") $(jr .author_wake.fix_size)"
+
+printf '\n== author_wake.floor: the frozen head the next version stands on ==\n'
+# F is the root's frozen head, B the target of an author cover.
+fl() { jr '.author_wake.floor'; }
+gen fl1 <<'PY'
+write(D, export([root(), cover(2, B, 2, "Re-roll.\n\nFrozen-Head: " + F),
+    upstream(30, H, mode="carry")]), status(sha=B, ver=2))
+PY
+run_case fl1
+check "(fl1) the cover's accepted line is the floor" "$(printf 'f%.0s' $(seq 40))" "$(fl)"
+check "(fl1) a carry push moves frozen_head, not the floor" "$(printf '1%.0s' $(seq 40))" "$(jr .frozen_head.sha)"
+check "(fl1) no note" "null" "$(j .author_wake.floor_note)"
+gen fl2 <<'PY'
+write(D, export([root(), cover(2, B, 2, "Re-roll, no frozen head line.")]), status(sha=B, ver=2))
+PY
+run_case fl2
+check "(fl2) a cover without the line: no floor" "null" "$(j .author_wake.floor)"
+contains "(fl2) the note says so" "$(jr .author_wake.floor_note)" "has no Frozen-Head line"
+check "(fl2) the verdict logic still falls back to the root's" "$(printf 'f%.0s' $(seq 40))" "$(jr .frozen_head.sha)"
+gen fl3 <<'PY'
+write(D, export([root(), cover(2, B, 2, "Re-roll.\n\nFrozen-Head: not-a-sha")]), status(sha=B, ver=2))
+PY
+run_case fl3
+check "(fl3) a malformed line: no floor" "null" "$(j .author_wake.floor)"
+contains "(fl3) the note says malformed" "$(jr .author_wake.floor_note)" "malformed"
+gen fl4 <<'PY'
+write(D, export([root(), cover(2, B, 2, "Re-roll.\n\nFrozen-Head: " + C)]), status(sha=B, ver=2))
+PY
+run_case fl4
+check "(fl4) an unvouched sha: no floor" "null" "$(j .author_wake.floor)"
+contains "(fl4) the note says it is not stamped" "$(jr .author_wake.floor_note)" "not a stamped"
+gen fl5 <<'PY'
+d = root(); d["headers"] = [h for h in d["headers"] if h[0] != "X-Review-Target-Set"]
+write(D, export([d]), status(target=None))
+PY
+run_case fl5
+check "(fl5) no review target: no floor" "null" "$(j .author_wake.floor)"
+contains "(fl5) the note says so" "$(jr .author_wake.floor_note)" "no review target"
+gen fl6 <<'PY'
+write(D, export([root()]), status())
+PY
+run_case fl6
+check "(fl6) the root, before any author version: its frozen head" "$(printf 'f%.0s' $(seq 40))" "$(fl)"
+gen fl7 <<'PY'
+write(D, export(refrozen_thread()), status(target=refrozen()))
+PY
+run_case fl7
+check "(fl7) a postmaster re-freeze: the target sha" "$(printf 'b%.0s' $(seq 40))" "$(fl)"
+gen fl8 <<'PY'
+write(D, export([root(), upstream(2, H), cover(3, H, 2, "Integrated.\n\nFrozen-Head: " + H)]), status(sha=H, ver=2))
+PY
+run_case fl8
+check "(fl8) a head the human pushed, posted by the author: that head" "$(printf '1%.0s' $(seq 40))" "$(fl)"
+
+printf '\n== author_wake.integration: the wake that integrates the human push ==\n'
+# itd <replies...>: the root and the listed seats' Reviewed-by on A, then
+# $EXTRA messages.
+cat >> "$work/fx.py" <<'FX6'
+def itd(extra=(), who=("@core", "@tests", "@docs"), root_body=ROOT_BODY, tests=None):
+    e = [root(body=root_body)] + panel_positive(who=who)
+    if tests is not None:
+        e = [m for m in e if m["from"] != "@tests"] + [msg(3, "@tests", tests, sha=A, ver=1)]
+    return e + list(extra)
+FX6
+integ() { jr '.author_wake | [.integration, (.push // "-"), (.checkout // "-" | .[0:3]), (.checkout_note // "-")[0:12]] | join(" ")'; }
+gen in1 <<'PY'
+write(D, export(itd([upstream(30, H, mode="carry")])), status())
+PY
+run_case in1
+check "(in1) a carry push is no integration" "false - - -" "$(integ)"
+gen in2 <<'PY'
+write(D, export(itd([upstream(30, H), cover(31, H, 2, "Integrated.\n\nFrozen-Head: " + H)] + panel_positive(sha=H, ver=2, start=40))), status(sha=H, ver=2))
+PY
+run_case in2
+check "(in2) an answered push is no integration" "false - - -" "$(integ)"
+gen in3 <<'PY'
+write(D, export(itd([upstream(30, H)], who=("@core", "@tests"))), status())
+PY
+run_case in3
+check "(in3) unanswered, a seat still owing" "false - - -" "$(integ)"
+gen in4 <<'PY'
+write(D, export(itd([upstream(30, H)], tests="Fix-Size: l\nChanges-requested: leaks.")), status())
+PY
+run_case in4
+check "(in4) unanswered, every owed seat replied" "true m030 111 -" "$(integ)"
+check "(in4) the full sha" "$(printf '1%.0s' $(seq 40))" "$(jr .author_wake.checkout)"
+check "(in4) the size and floor are still the thread's facts" "l $(printf 'f%.0s' $(seq 40))" "$(jr '.author_wake | .fix_size + " " + .floor')"
+gen in5 <<'PY'
+write(D, export(itd([upstream(30, H), msg(31, "@pr-author", "Verdict on v1?", sha=A, ver=1, to=["@secretary"])], who=("@core", "@tests"))), status())
+PY
+run_case in5
+check "(in5) a seat owing, but the Secretary was asked for this version" "true m030 111 -" "$(integ)"
+gen in6 <<'PY'
+write(D, export([root(), msg(5, "@pr-author", "Verdict on v1?", sha=A, ver=1, to=["@secretary"]),
+    cover(10, B, 2, "Re-roll.\n\nFrozen-Head: " + F),
+    msg(11, "@core", "Reviewed-by: C", sha=B, ver=2), msg(12, "@tests", "Reviewed-by: T", sha=B, ver=2),
+    upstream(30, H)]), status(sha=B, ver=2))
+PY
+run_case in6
+check "(in6) a request to the Secretary from before the version was posted does not count" "false - - -" "$(integ)"
+gen in7 <<'PY'
+write(D, export(itd([msg(30, "@operator", "X-Upstream-Head: pr/example " + H + "\n> Upstream-Head: pr/example " + H, sha=A, ver=1)])), status())
+PY
+run_case in7
+check "(in7) a header line in a body is not a push" "false - - -" "$(integ)"
+gen in8 <<'PY'
+write(D, export(itd([upstream(30, H), upstream(31, T2, mode="carry")])), status())
+PY
+run_case in8
+check "(in8) a later carry push does not hide the older unanswered one" "true m030 111 -" "$(integ)"
+gen in9 <<'PY'
+write(D, export(itd([upstream(30, H), upstream(31, T2)])), status())
+PY
+run_case in9
+check "(in9) two unanswered pushes: the newer" "true m031 222 -" "$(integ)"
+gen in10 <<'PY'
+write(D, export(itd([upstream(30, H, mode="escalate", extra=[["X-Lkml-Tier", "full"], ["X-Lkml-Add-Seats", "security"]])], root_body=ROOT_BODY)), status())
+PY
+run_case in10
+check "(in10) a seat the escalate push added is not yet owed" "true m030 111 -" "$(integ)"
+check "(in10) and it is silent" "silent" "$(seat @security state)"
+gen in11 <<'PY'
+write(D, export(itd([upstream(30, H)], who=("@core", "@tests"), root_body=ROOT_BODY + "\nAdvisory: @docs")), status())
+PY
+run_case in11
+check "(in11) a silent advisory seat is not owed" "true m030 111 -" "$(integ)"
+# @docs was owed on v1 before the escalate push named it again.
+gen in14 <<'PY'
+write(D, export(itd([upstream(30, H, mode="escalate", extra=[["X-Lkml-Tier", "full"], ["X-Lkml-Add-Seats", "docs, security"]])], who=("@core", "@tests"))), status())
+PY
+run_case in14
+check "(in14) a later escalate naming an owed seat does not excuse it" "false - - -" "$(integ)"
+gen in15 <<'PY'
+write(D, export(itd([upstream(30, H, mode="escalate", extra=[["X-Lkml-Tier", "full"], ["X-Lkml-Add-Seats", "docs, security"]])])), status())
+PY
+run_case in15
+check "(in15) once it replies, only the added seat is excused" "true m030 111 -" "$(integ)"
+gen in16 <<'PY'
+write(D, export(itd([upstream(30, H, mode="escalate", extra=[["X-Lkml-Tier", "full"], ["X-Lkml-Add-Seats", "docs"]])], who=("@core", "@tests"), root_body=ROOT_BODY + "\nAdvisory: @docs")), status())
+PY
+run_case in16
+check "(in16) an advisory seat a later escalate names was not owed" "true m030 111 -" "$(integ)"
+gen in17 <<'PY'
+write(D, export(itd([upstream(30, H)], tests="I read it; the loop looks right to me.")), status())
+PY
+run_case in17
+check "(in17) a reply with no recognised verdict is a reply" "true m030 111 -" "$(integ)"
+check "(in17) its state is still read as before" "silent" "$(seat @tests state)"
+gen in18 <<'PY'
+write(D, export(itd([upstream(30, H)], who=("@core", "@docs")) + [msg(31, "@tests", "Late.", sha=A)]), status())
+PY
+run_case in18
+check "(in18) a message without the version's X-Version is no reply" "false - - -" "$(integ)"
+# v2 answers a recheck push listing @tests only; @docs gave no verdict on
+# v1, so nothing carries for it, and it still owes one on v2 (persona
+# step 6).
+cat >> "$work/fx.py" <<'FX7'
+def recheck_v2(tests_on_v2=True, absent_too=False, who=("@core", "@tests")):
+    e = [root()] + panel_positive(who=who)
+    if absent_too:
+        e.append(upstream(9, T2))
+    e += [upstream(10, H, mode="recheck", extra=[["X-Lkml-Recheck-Seats", "tests"]]),
+          cover(11, H, 2, "Integration.\n\nFrozen-Head: " + H)]
+    if tests_on_v2:
+        e.append(msg(12, "@tests", "Reviewed-by: T", sha=H, ver=2))
+    return e + [upstream(30, C)]
+FX7
+gen in19 <<'PY'
+write(D, export(recheck_v2()), status(sha=H, ver=2))
+PY
+run_case in19
+check "(in19) an unlisted seat with nothing to carry is still owed" "false - - -" "$(integ)"
+gen in22 <<'PY'
+write(D, export(recheck_v2(who=("@core", "@tests", "@docs"))), status(sha=H, ver=2))
+PY
+run_case in22
+check "(in22) a recheck version owes only the listed seats" "true m030 ccc -" "$(integ)"
+gen in20 <<'PY'
+write(D, export(recheck_v2(tests_on_v2=False)), status(sha=H, ver=2))
+PY
+run_case in20
+check "(in20) the listed seat has not replied on v2" "false - - -" "$(integ)"
+gen in21 <<'PY'
+write(D, export(recheck_v2(absent_too=True)), status(sha=H, ver=2))
+PY
+run_case in21
+check "(in21) a version that also answers an absent-mode push owes the whole roster" "false - - -" "$(integ)"
+gen in12 <<'PY'
+write(D, export(itd([upstream(30, "1" * 12)])), status())
+PY
+run_case in12
+check "(in12) an abbreviated push sha: integration, no checkout, a note" "true m030 - the pushed s" "$(integ)"
+gen in13 <<'PY'
+write(D, export(refrozen_thread()), status(target=refrozen()))
+PY
+run_case in13
+check "(in13) a push the postmaster re-froze in place, no cover names it" "true m002 bbb -" "$(integ)"
+check "(in13) its floor is the re-frozen head" "$(printf 'b%.0s' $(seq 40))" "$(jr .author_wake.floor)"
+gen in14 <<'PY'
+write(D, export(itd([upstream(30, H)], tests="Changes-requested: x.")), status())
+PY
+run_case in14
+check "(in14) integration leaves every other pre-existing key alone" "$(jq -c 'del(.author_wake)' <<<"$OUT")" "$(jq -c 'del(.author_wake)' <<<"$("$ps" --export-file "$work/case-in14/export.json" --status-file "$work/case-in14/status.json" --now "$(jr .now)")")"
 
 printf '\n== invariants over every case above ==\n'
 inv_bad=""; inv_n=0; sub_bad=""; sub_n=0; adv_bad=""; adv_n=0; inv_conv=0; diff_bad=""; diff_n=0
@@ -3836,7 +4039,13 @@ for c in "${cases_run[@]}"; do
         and (.advisory_notes | type == "array")
         and all(.seats[]; (.fix_size != null) == (.state == "blocking"))
         and ((.author_wake == null) == (.roster.author == null))
-        and (.author_wake == null or (.author_wake | has("fix_size")))
+        and (.author_wake == null or (.author_wake | has("fix_size") and has("floor") and has("floor_note")
+             and has("integration") and has("push") and has("checkout") and has("checkout_note")))
+        and (.author_wake == null or ((.author_wake.floor == null or .author_wake.floor_note == null)
+             and (.author_wake.floor == null or (.author_wake.floor | test("^([0-9a-f]{40}|[0-9a-f]{64})$")))
+             and (.author_wake.integration or (.author_wake.push == null and .author_wake.checkout == null
+                  and .author_wake.checkout_note == null))
+             and (.author_wake.checkout == null or .author_wake.checkout_note == null)))
         and ([.seats[] | select(.advisory) | .seat] == .roster.advisory)
         and (.roster.advisory - .roster.suite_seats == .roster.advisory)
         and (.status != "CONVERGED" or (.seats | map(select(.advisory | not)) | length > 0 and all(.[]; .state == "positive" or .state == "overruled"
