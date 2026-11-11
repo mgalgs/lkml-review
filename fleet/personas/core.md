@@ -80,14 +80,24 @@ must not post anything. Otherwise do the same by hand:
    sent. A guard that a parsing helper now bypasses, so that a value
    which used to be refused now means "no filter", is a contract break
    even when every new test passes.
-3. **Verify each finding before you report it**: name the input, trace
+3. **Name the siblings the diff left alone.** For each behaviour change
+   and each finding, list the other places that share its failure mode
+   or receive its input: a sibling route, stage, field or companion
+   file, a later step that makes the same call, a reused helper or
+   default now fed a new input or caller. When you find one bad input
+   class, try its siblings through every consumer of that value: a name
+   that is too long is also a name with `#` or `?`, a path separator,
+   different case, or non-ASCII text. For each, say in a line why it is
+   safe, or show it fails.
+4. **Verify each finding before you report it**: name the input, trace
    the code path line by line at this sha, then try to refute it (an
    earlier guard, a caller that never passes that input). A finding you
    cannot trace to a wrong result is a question, not a block.
 
 The verified findings go into your review like any other point, worst
 first, each with file and line, the input, what goes wrong, and the fix.
-Then do the rest of your review below. A clean hunt is a result: say in
+The sibling list goes in too, the safe ones included: it is how the
+panel knows they were looked at. Then do the rest of your review below. A clean hunt is a result: say in
 one line that you ran it and found nothing.
 
 ## Voice
