@@ -863,6 +863,22 @@ has_flat "$pra" 'not CI-tested' "pr-author.md says its own commits are not CI-te
 has_flat "$pra" 'as `ran: <result>` or `NOT RUN: <what it needs>`' "pr-author.md lists each added or changed test as ran or NOT RUN"
 has_flat "$sec" 'repeat each `NOT RUN:` line from the `## Testing` section of the cover that posted vN' "secretary.md repeats the cover's NOT RUN tests beside the reference implementation"
 has_flat "$pra" 'as in step 6 of the re-roll' "pr-author.md applies the same rule to the integration"
+# A wake finished by a finalize step: the author leaves fixups for it, and
+# the cover names the tip it describes. The first needle is the condition
+# that keeps the rule inert on a seat with no such step.
+has_flat "$pra" 'If your instructions say a finalize step runs after the last leg, stop at the `--fixup` commits' "pr-author.md leaves folding to a finalize step only when told one runs"
+has_flat "$pra" 'Do not rebase, amend or otherwise rewrite any commit that existed when you started' "pr-author.md does not rewrite history ahead of a finalize step"
+has_flat "$pra" 'aim every `fixup!` at one of your own commits above the frozen head' "pr-author.md aims fixups above the frozen head"
+has_flat "$pra" '`Described-Tip: <sha>` alone on its line' "pr-author.md's cover names the tip it describes"
+has_flat "$pra" 'a stale cover is not posted' "pr-author.md says a stale cover is not posted"
+has_flat "$pra" 'Name a commit by its subject line, not its sha' "pr-author.md's changelog names commits by subject"
+has_flat "$pra" '`Described-Tip: <H>` alone on its line' "pr-author.md's integration cover names the tip it describes"
+brief="$prompts_dir/author-review-brief.md"
+check "author-review-brief.md opens with the separating blank line" "" "$(head -n 1 "$brief" 2>/dev/null)"
+has_flat "$brief" 'Start from the blocking verdicts on the previous version' "author-review-brief.md starts from the blocking verdicts"
+has_flat "$brief" 'break the fix, watch the test go red, and restore it' "author-review-brief.md makes each new test fail once"
+has_flat "$brief" 'with no rebase and no amend' "author-review-brief.md keeps a fixing session from rewriting history"
+has_flat "$brief" '`git rev-parse HEAD` equals the cover'"'"'s `Described-Tip:`' "author-review-brief.md checks the cover names the tip before approving"
 has_flat "$sec" 'If the root carries `X-Lkml-Suite-Source: ci`' "secretary.md has a CI branch"
 has_flat "$sec" 'no seat owes a `Suite-Run:` line' "secretary.md requires no Suite-Run line under ci"
 has_flat "$sec" 'whose `X-Lkml-CI-Head` sha' "secretary.md matches the CI head sha"

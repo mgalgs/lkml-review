@@ -276,6 +276,14 @@ anywhere. Accepted feedback is folded into the commit it belongs to.
    commit>`, then `git rebase -i --autosquash <frozen head>` with
    `GIT_SEQUENCE_EDITOR=true`, since nobody is at a terminal. Leave no
    `fixup!` or `squash!` commit behind.
+
+   One exception. If your instructions say a finalize step runs after the
+   last leg, stop at the `--fixup` commits. Do not rebase, amend or
+   otherwise rewrite any commit that existed when you started: another
+   session reviews your work before it is posted, and it reads exactly the
+   commits you added. The finalize step folds them afterwards and refuses
+   the wake if anything is left unfolded, so aim every `fixup!` at one of
+   your own commits above the frozen head.
 4. When the right end state is a change to one of the frozen commits, you
    cannot fold it there. It becomes a normal, well-formed commit on top of the
    frozen head, with a message that says what it changes and why, that a
@@ -305,7 +313,8 @@ anywhere. Accepted feedback is folded into the commit it belongs to.
    CI-tested.
 7. **Commit everything, and leave the branch checked out where it is.** The
    version's identity is your branch at its committed tip when this wake
-   ends: the mail system stamps your cover with that sha, and every reviewer's
+   ends (after the finalize step has folded it, when there is one): the mail
+   system stamps your cover with that sha, and every reviewer's
    next checkout is that sha. Anything uncommitted is not in the version. You
    never push, and cannot: the operator pulls your result as a bundle.
 8. Write the cover (next section) and nothing else.
@@ -335,9 +344,19 @@ The body carries, in this order:
   built on, which for a re-roll is vN's. Every cover you post carries this
   line, so the next reader (you, the Secretary, the parser) finds the frozen
   head on the cover.
+- `Described-Tip: <sha>` alone on its line: the output of `git rev-parse
+  HEAD` as you finish writing the cover. The cover describes that commit
+  and no other. If anything is committed after it, by you or by a session
+  that reviews your work, whoever committed brings the cover up to date
+  (the changelog, `## Testing`, this line) before the wake ends. A cover
+  that names a tip the branch has moved past is stale, and a stale cover
+  is not posted. When a finalize step folds your commits it rewrites this
+  line, the commit count in the subject and `## Since v<N>` to match the
+  folded branch; write them against the branch as you leave it.
 - A **changelog with one entry per reviewer point**: quote or name the point,
   say whether you accepted it, adapted it, or refused it, and why, naming the
-  commit that carries it or the reason you refuse. "Various fixes" is a
+  commit that carries it or the reason you refuse. Name a commit by its
+  subject line, not its sha: folding changes the sha. "Various fixes" is a
   changelog the core reviewer will NAK you for.
 - `## Sub-panel`, when an unanswered sub-panel digest is on the thread or
   attached to its root (see **Sub-panel digests**).
@@ -506,6 +525,7 @@ the upstream-moved mail; `Version: <N+1>`; `Subject: [PATCH v<N+1> 0/0]
 - `Frozen-Head: <H>` alone on its line. If the mail carried a `Base: <sha>`
   line, a `Base: <sha>` line too, and say reviewers read the PR as
   `git log <base>..HEAD`.
+- `Described-Tip: <H>` alone on its line, as on a re-roll cover.
 - `## Integration of v<N>`: one line per commit of vN's panel commits: short
   sha, subject, taken / changed / not taken, the method that decided it (a to
   e), and the reason. Add the one-line note about squashing and rebasing, and
