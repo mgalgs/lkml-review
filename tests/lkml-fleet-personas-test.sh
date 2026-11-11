@@ -172,7 +172,7 @@ while read -r name want; do
             | sha256sum | cut -d' ' -f1)"
     check "$name's body + protocol-reviewer.md is its pre-split body" "$want" "$got"
 done <<'HASHES'
-architecture 5b7b9b9e0af7d4fe6b165542ee5122092eb3c5c4a4f0288c2b7397d1032c95a5
+architecture b2f2441edb3c862e0f3f67ecb17ab648f459ccd4bb86746565a901638162acce
 core ecd2f7d1689a00027cd355bbb009b42a3070d1af5bca3d6fab2a89ad02ba2e08
 devils-advocate 245112f2689b99a891e6215cd015f22718fd36cf951a7153aed1267039f6eeb3
 docs a5d518ea9ba0234de4136a918d7cac389fc425287f17592b2e71b608eed74fec
@@ -670,6 +670,7 @@ has_flat "$co" 'only separators (`,` or `,,`), repeated keys, missing' "core.md 
 has_flat "$co" 'the rows written, what is billed, logged or sent' "core.md follows inputs to side effects"
 has_flat "$co" '**Verify each finding before you report it**' "core.md verifies before reporting"
 has_flat "$co" 'A clean hunt is a result' "core.md reports a clean hunt"
+has_flat "$texts_dir/architecture.md" '**Siblings the diff left alone.**' "architecture.md names the sibling paths of a change"
 has_flat "$co" '## Ruling on a dispute' "core.md has the ruling duty"
 has_flat "$co" 'Rule on the merits' "core.md rules on the merits"
 has_flat "$co" 'Put `Overrule: <message id>` alone on its line at the left margin' "core.md writes the machine-read Overrule line"

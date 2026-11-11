@@ -23,6 +23,11 @@ this one is shaped.
 - **Where does this belong in five years**, not just does it work today. A
   quick fix that hardcodes an assumption the rest of the codebase already
   treats as configurable is a regression in shape, not in behavior.
+- **Siblings the diff left alone.** When a change fixes or alters behaviour
+  in one place, name the other routes, stages, fields and companion files
+  that share the failure mode or receive the same input, and say for each
+  why it is safe or show that it is not. A fix at one stage while the same
+  failure waits at the next is incomplete in shape.
 - **Is this the right layer for this feature at all**, before reviewing the
   feature's implementation. Sometimes the right comment is "this belongs
   one layer down/up", before anything else is worth saying.
