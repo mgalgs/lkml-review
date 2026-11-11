@@ -52,6 +52,8 @@ error. Keys:
     exclude_tier_reason regex; a pull request with a matching thread is
                         skipped whole
     xref_pattern        regex overriding the fix/bug-report pattern
+    xref_exclude_title  regex; a cross-reference from a source whose
+                        title matches never triggers
     quiet_hours (6), lookback_days (14)
     notify_cmd          gets one line per new real defect on stdin
     publish_cmd         run with the summary path appended
@@ -116,8 +118,8 @@ except ImportError:
 
 TOP_KEYS = ("repo", "checkout", "state_dir", "mail_cmd", "forge_cmd", "judge",
             "sha_fetch_cmd", "bot_markers", "exclude_tier_reason",
-            "xref_pattern", "quiet_hours", "lookback_days", "notify_cmd",
-            "publish_cmd")
+            "xref_pattern", "xref_exclude_title", "quiet_hours",
+            "lookback_days", "notify_cmd", "publish_cmd")
 JUDGE_KEYS = ("model", "harness", "concurrency", "wait_timeout",
               "max_attempts", "run_args")
 
@@ -296,6 +298,9 @@ def load_config():
                                   if "exclude_tier_reason" in raw else None)
     cfg["xref_pattern"] = want_regex(raw.get("xref_pattern", DEFAULT_XREF),
                                      "xref_pattern", re.I)
+    cfg["xref_exclude_title"] = (want_regex(raw["xref_exclude_title"],
+                                            "xref_exclude_title", re.I)
+                                 if "xref_exclude_title" in raw else None)
     qh = raw.get("quiet_hours", 6)
     if isinstance(qh, bool) or not isinstance(qh, (int, float)) or qh < 0:
         raise ConfigError("quiet_hours must be a number >= 0")
@@ -678,6 +683,9 @@ def xref_reason(item, cfg, pr, signoff_at):
     src = item["src"]
     created = parse_when(src.get("created_at"))
     if created is None or created <= signoff_at or src.get("number") == pr:
+        return None
+    skip = cfg["xref_exclude_title"]
+    if skip and skip.search(src.get("title") or ""):
         return None
     for lab in src.get("labels") or []:
         if "bug" in str((lab or {}).get("name", "")).lower():

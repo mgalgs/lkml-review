@@ -56,6 +56,7 @@ through a shell.
 | `bot_markers` | extra substrings that mark a body as automation |
 | `exclude_tier_reason` | regex; a pull request with a thread whose tier reason matches is skipped whole |
 | `xref_pattern` | regex overriding the default fix / bug-report pattern for cross-references |
+| `xref_exclude_title` | optional regex; a cross-reference from an issue or pull request whose title matches never triggers. Set it to the title of the release or roll-up pull requests: they describe every change they carry, fixes included |
 | `quiet_hours` | default 6 |
 | `lookback_days` | default 14 |
 | `notify_cmd` | optional; run once with the message on stdin |
@@ -100,7 +101,8 @@ automation, not an integration note and not trivial (`LGTM`, thanks,
 also need 40 characters), or a cross-reference from a later issue or pull
 request (created after the sign-off) that reads as a fix or bug report:
 a label containing `bug`, or the title, or the paragraph of its body
-that cites this pull request, matches `xref_pattern`. The author's own
+that cites this pull request, matches `xref_pattern`. A source whose
+title matches `xref_exclude_title` never triggers. The author's own
 comments never trigger.
 
 A window is **due** when it holds a trigger the ledger does not record

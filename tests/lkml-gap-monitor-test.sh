@@ -386,6 +386,7 @@ bad "judge.concurrency zero" judge.concurrency $'repo: example-org/widgets\njudg
 bad "judge.max_attempts a string" judge.max_attempts $'repo: example-org/widgets\njudge:\n  max_attempts: two'
 bad "exclude_tier_reason invalid regex" exclude_tier_reason $'repo: example-org/widgets\nexclude_tier_reason: "("'
 bad "xref_pattern invalid regex" xref_pattern $'repo: example-org/widgets\nxref_pattern: "("'
+bad "xref_exclude_title invalid regex" xref_exclude_title $'repo: example-org/widgets\nxref_exclude_title: "("'
 bad "bot_markers a scalar" bot_markers $'repo: example-org/widgets\nbot_markers: nope'
 bad "mail_cmd an empty list" mail_cmd $'repo: example-org/widgets\nmail_cmd: []'
 bad "judge.run_args a string" judge.run_args $'repo: example-org/widgets\njudge:\n  run_args: --no-services'
@@ -718,6 +719,11 @@ check "  one item" 1 "$(scanj | jq -r '.windows[0].counts.xrefs')"
 CFG='xref_pattern: \bflaky\b'
 case_cls "xref_pattern override: the default title no longer matches" xref-only "w.xref(1, 50, OLD, title='Fix stale flush after retry')"
 case_cls "xref_pattern override: the new word matches" due "w.xref(1, 50, OLD, title='Flaky retry')"
+CFG='xref_exclude_title: ^release\b'
+case_cls "xref_exclude_title: a matching source never triggers, bug label or not" xref-only "w.xref(1, 50, OLD, title='Release 2026-11-09', labels=['bug'], body='- #1 -- fixes the retry')"
+case_cls "xref_exclude_title: another source still triggers" due "w.xref(1, 50, OLD, title='Fix stale flush after retry')"
+case_cls "xref_exclude_title: an excluded source beside one that passes" due "w.xref(1, 50, OLD, title='Release 2026-11-09', labels=['bug']); w.xref(1, 51, OLD, labels=['bug'])"
+check "  the excluded source is not a trigger" 51 "$(scanj | jq -r '[.windows[0].triggers[].id] | join(",")')"
 CFG=
 case_cls "xref: 'prefix cleanup' is not 'fix' (word boundary)" xref-only "w.xref(1, 50, OLD, title='prefix cleanup')"
 
@@ -1386,7 +1392,7 @@ lacks "install.sh does not install the units" "$(cat "$repo_dir/install.sh")" "c
 
 printf '\n== R8.2 docs and the README pointer ==\n'
 doc_md="$(cat "$repo_dir/docs/gap-monitor.md")"
-for k in repo checkout state_dir mail_cmd forge_cmd judge.model judge.harness judge.concurrency judge.wait_timeout judge.max_attempts judge.run_args sha_fetch_cmd bot_markers exclude_tier_reason xref_pattern quiet_hours lookback_days notify_cmd publish_cmd LKML_GAP_MONITOR_FILE; do
+for k in repo checkout state_dir mail_cmd forge_cmd judge.model judge.harness judge.concurrency judge.wait_timeout judge.max_attempts judge.run_args sha_fetch_cmd bot_markers exclude_tier_reason xref_pattern xref_exclude_title quiet_hours lookback_days notify_cmd publish_cmd LKML_GAP_MONITOR_FILE; do
     contains "docs name $k" "$doc_md" "\`$k\`"
 done
 for c in due waiting judged author-only xref-only empty blocked failed; do contains "docs name class $c" "$doc_md" "\`$c\`"; done
