@@ -99,8 +99,31 @@ lkml-capacity.env in $FORK_SANDBOX_HOOKS_DIR (else beside this script,
 symlinks followed), the environment winning. The file's KEY=value lines
 are parsed, never sourced.
 
+Handovers. When the decision is to wake the AUTHOR seat (exit 0), the
+gate can hand the spawner values panel-state derives from the thread, each
+as one value, and nothing else, in a file whose path is an optional
+environment variable. A variable that is unset or empty means no
+handover, and the gate then behaves exactly as without this feature:
+
+    FS_HOOK_PIPELINE_SIZE_FILE   the size of the fix this wake owes: the
+                                 largest Fix-Size (xs < s < m < l) over
+                                 the open blocking verdicts of gating
+                                 seats on the current version (panel-state
+                                 author_wake.fix_size; a blocking verdict
+                                 with no usable Fix-Size line counts as
+                                 m). Not written when no gating seat
+                                 blocks.
+
+Nothing is written for a skip, a defer, an error or a wake of any other
+seat (the secretary). A value that cannot be worked out, or a file that
+cannot be written, is said on stderr in one extra "lkml-wake-gate:
+handover: ..." line after the decision line, and changes nothing else:
+the exit code is the one the gate returns without the variable.
+
 Rules, in order; the first match decides, and every path prints exactly
-one "lkml-wake-gate: ..." line on stderr naming the decision and rule:
+one "lkml-wake-gate: ..." line on stderr naming the decision and rule
+(plus one "handover:" line per handover that could not be made, when a
+handover variable is set):
 
     a  roster.author is null, but the root names a Panel or a
        Secretary, and the thread is not a sub-panel -> exit 2
@@ -217,6 +240,8 @@ CAPACITY_BUDGET = 8
 MAX_BODY = 1 << 20
 CAPACITY_FILE = "lkml-capacity.env"
 CAPACITY_PREFIX = "LKML_CAPACITY_"
+SIZE_VAR = "FS_HOOK_PIPELINE_SIZE_FILE"
+SIZE_RE = re.compile(r"[a-z][a-z0-9-]{0,15}")
 DURATION_RE = re.compile(r"(?:[0-9]+(?:ms|s|m|h|d|w|y))+")
 
 
@@ -224,6 +249,10 @@ class Done(Exception):
     def __init__(self, code, text):
         self.code = code
         self.text = text
+        # The parsed state and the normalised agent, set once the gate has
+        # them, for the handover (see handover()).
+        self.state = None
+        self.agent = None
 
 
 def fail(text):
@@ -470,6 +499,7 @@ def decide_thread(env, child):
     try:
         judge(env, state, messages, trigger, agent, child)
     except Done as d:
+        d.state, d.agent = state, agent
         # A child's seats run on the self-hosted model: a wake there waits
         # for room on it. A defer, skip or error stands without a read.
         if d.code == 0 and child:
@@ -701,6 +731,53 @@ def decide_secretary(env, state, trigger, author, secretary, digest, child):
                   "close the panel (rule o)" % secretary)
 
 
+def write_handover(var, name, value):
+    """Write `value`, and nothing else, to the path in the environment
+    variable `var` -> a stderr line when it cannot be done, else None."""
+    path = os.environ.get(var, "")
+    try:
+        with open(path, "w", encoding="ascii") as f:
+            f.write(value)
+    except (OSError, ValueError) as e:
+        return "handover: %s not written to %s: %s" % (
+            name, path, getattr(e, "strerror", None) or e)
+    return None
+
+
+def handover(done):
+    """After the decision is final: when it is a wake of the author seat,
+    hand the spawner what panel-state knows about the wake, each value in
+    its own file named by its own optional variable (see the docstring,
+    "Handovers"). Returns the stderr lines for what could not be handed
+    over. Never raises and never changes the decision."""
+    if done.code != 0 or done.state is None:
+        return []
+    out = []
+    try:
+        author = (done.state.get("roster") or {}).get("author")
+        if author is None or done.agent != author:
+            return []
+        wanted = [v for v in (SIZE_VAR,) if os.environ.get(v)]
+        if not wanted:
+            return []
+        wake = done.state.get("author_wake")
+        if not isinstance(wake, dict):
+            return ["lkml-wake-gate: handover: panel-state reports no "
+                    "author_wake; nothing written to %s" % ", ".join(wanted)]
+        size = wake.get("fix_size")
+        if SIZE_VAR in wanted and size is not None:
+            if not isinstance(size, str) or not SIZE_RE.fullmatch(size):
+                out.append("lkml-wake-gate: handover: fix size %r is not a "
+                           "token the spawner accepts; not written" % (size,))
+            else:
+                err = write_handover(SIZE_VAR, "fix size", size)
+                if err:
+                    out.append("lkml-wake-gate: " + err)
+    except Exception as e:  # noqa: BLE001 -- a handover never changes the decision
+        out.append("lkml-wake-gate: handover: failed: %s" % e)
+    return out
+
+
 def main(argv):
     if len(argv) > 1:
         if argv[1] in ("-h", "--help"):
@@ -713,6 +790,8 @@ def main(argv):
         decide(os.environ)
     except Done as d:
         print("lkml-wake-gate: " + d.text, file=sys.stderr)
+        for line in handover(d):
+            print(line, file=sys.stderr)
         return d.code
     return 2  # unreachable: decide() always raises Done
 

@@ -3671,17 +3671,127 @@ run_case sub12
 check "(sub12) a main thread never reports digest_blocking" "null" "$(j .digest_blocking)"
 check "(sub12) and converges as before" "CONVERGED SIGNED-OFF" "$(jr '.status + " " + .verdict')"
 
+printf '\n== Fix-Size: the size of the fix a blocking verdict asks for ==\n'
+# fs_case <name> <tests-body>: @tests' verdict on v1 is that body; the rest
+# of the panel approves.
+fs_case() {
+    gen "$1" <<PY
+write(D, export([root()] + panel_positive(who=("@core",)) + [
+    msg(3, "@tests", """$2""", sha=A, ver=1),
+    msg(4, "@docs", "Reviewed-by: D", sha=A, ver=1)]), status())
+PY
+    run_case "$1"
+}
+fs_size() { jr '.seats[] | select(.seat == "@tests") | .fix_size'; }
+fs_case fs1 $'Fix-Size: s\nChanges-requested: the loop leaks.'
+check "(fs1) the trailer directly above the verdict" "s" "$(fs_size)"
+fs_case fs2 'Changes-requested: no size.'
+check "(fs2) no trailer: m" "m" "$(fs_size)"
+fs_case fs3 $'Fix-Size: huge\nChanges-requested: x.'
+check "(fs3) a value that is not a size: m" "m" "$(fs_size)"
+fs_case fs4 $'> Fix-Size: xs\nChanges-requested: quoted only.'
+check "(fs4) only a quoted trailer: m" "m" "$(fs_size)"
+fs_case fs5 $'Fix-Size: xs\nFix-Size: l\nChanges-requested: two.'
+check "(fs5) two trailers: the last" "l" "$(fs_size)"
+fs_case fs6 $'Fix-Size: l\nFix-Size: huge\nChanges-requested: two.'
+check "(fs6) the last trailer is not a size: m, not the earlier l" "m" "$(fs_size)"
+fs_case fs7 $'   Fix-Size:   l  \nChanges-requested: padded.'
+check "(fs7) surrounding whitespace is ignored" "l" "$(fs_size)"
+fs_case fs7b $'fix-size: l\nChanges-requested: lower-case key.'
+check "(fs7b) the key is case-sensitive: m" "m" "$(fs_size)"
+fs_case fs7c $'Fix-Size: L\nChanges-requested: upper-case value.'
+check "(fs7c) the value is case-sensitive: m" "m" "$(fs_size)"
+fs_case fs8 $'Fix-Size: l\nNAK'
+check "(fs8) a NAK is sized too" "l" "$(fs_size)"
+check "(fs8) and the verdict is still the last line's" "NAK blocking" "$(seat @tests verdict) $(seat @tests state)"
+gen fs9 <<'PY'
+write(D, export([root()] + panel_positive(who=("@core",)) + [
+    msg(3, "@tests", "Fix-Size: l\nQuestion: why?", sha=A, ver=1),
+    msg(4, "@tests", "Changes-requested: no size here.", sha=A, ver=1),
+    msg(5, "@docs", "Reviewed-by: D", sha=A, ver=1)]), status())
+PY
+run_case fs9
+check "(fs9) only the message carrying the verdict is read: m" "m" "$(fs_size)"
+fs_case fs10 $'Fix-Size: l\nQuestion: why?'
+check "(fs10) a Question is never sized" "null" "$(fs_size)"
+fs_case fs11 $'Fix-Size: l\nReviewed-by: T <t@example.com>'
+check "(fs11) a positive verdict is never sized" "null" "$(fs_size)"
+gen fs12 <<'PY'
+write(D, export([root(), msg(2, "@core", "Reviewed-by: C", sha=A, ver=1),
+    msg(3, "@tests", "Fix-Size: l\nChanges-requested: leaks.", sha=A, ver=1),
+    msg(4, "@docs", "Reviewed-by: D", sha=A, ver=1),
+    msg(5, "@core", "Overrule: m003\n\nReviewed-by: C", sha=A, ver=1)]), status())
+PY
+run_case fs12
+check "(fs12) an overruled block is not sized" "overruled null" "$(seat @tests state) $(fs_size)"
+gen fs13 <<'PY'
+write(D, export([root(), msg(2, "@core", "Reviewed-by: C", sha=A, ver=1),
+    msg(3, "@tests", "Fix-Size: l\nChanges-requested: leaks.", sha=A, ver=1),
+    msg(4, "@docs", "Reviewed-by: D", sha=A, ver=1),
+    upstream(30, H, mode="carry")]), status())
+PY
+run_case fs13
+check "(fs13) a carried block keeps its size" "blocking true l" "$(seat @tests state) $(seat @tests carried) $(fs_size)"
+check "(fs13) and sizes the wake" '{"fix_size":"l"}' "$(j .author_wake)"
+check "(fs13) a seat's state decides: positive seats are null" "null" "$(seat @core fix_size)"
+
+printf '\n== author_wake.fix_size: the largest over the gating seats ==\n'
+gen aw1 <<'PY'
+write(D, export([root(body=ROOT_BODY + "\nAdvisory: @docs"), msg(2, "@core", "Fix-Size: xs\nChanges-requested: nit.", sha=A, ver=1),
+    msg(3, "@tests", "Reviewed-by: T", sha=A, ver=1),
+    msg(4, "@docs", "Fix-Size: l\nChanges-requested: redo.", sha=A, ver=1)]), status())
+PY
+run_case aw1
+check "(aw1) an advisory l does not size the wake: xs" "xs" "$(jr .author_wake.fix_size)"
+check "(aw1) the advisory seat's own size is still reported" "l" "$(seat @docs fix_size)"
+gen aw2 <<'PY'
+write(D, export([root(), msg(2, "@core", "Fix-Size: s\nChanges-requested: a.", sha=A, ver=1),
+    msg(3, "@tests", "Changes-requested: b.", sha=A, ver=1),
+    msg(4, "@docs", "Reviewed-by: D", sha=A, ver=1)]), status())
+PY
+run_case aw2
+check "(aw2) s and an unsized block: m" "m" "$(jr .author_wake.fix_size)"
+gen aw3 <<'PY'
+write(D, export([root(), msg(2, "@core", "Reviewed-by: C", sha=A, ver=1)]), status())
+PY
+run_case aw3
+check "(aw3) nothing blocks: null" "null" "$(j .author_wake.fix_size)"
+gen aw4 <<'PY'
+write(D, export([root(body="Panel: @core\nSecretary: @secretary\n")]), status())
+PY
+run_case aw4
+check "(aw4) no author: author_wake is null" "null" "$(j .author_wake)"
+
+printf '\n== Fix-Size changes nothing else ==\n'
+gen tw1 <<'PY'
+write(D, export([root(), msg(2, "@core", "Fix-Size: l\nChanges-requested: a.", sha=A, ver=1),
+    msg(3, "@tests", "Fix-Size: xs\nNAK", sha=A, ver=1),
+    msg(4, "@docs", "Reviewed-by: D", sha=A, ver=1)]), status())
+PY
+gen tw2 <<'PY'
+write(D, export([root(), msg(2, "@core", "Changes-requested: a.", sha=A, ver=1),
+    msg(3, "@tests", "NAK", sha=A, ver=1),
+    msg(4, "@docs", "Reviewed-by: D", sha=A, ver=1)]), status())
+PY
+run_case tw1; o1="$OUT"; run_case tw2
+strip_fs='del(.author_wake) | .seats |= map(del(.fix_size))'
+check "(tw) twin threads with and without the trailers agree apart from the size" \
+    "$(jq -c "$strip_fs" <<<"$OUT")" "$(jq -c "$strip_fs" <<<"$o1")"
+check "(tw) the sizes differ" "l,xs m,m" "$(jq -r '[.seats[0].fix_size, .seats[1].fix_size] | join(",")' <<<"$o1") $(jq -r '[.seats[0].fix_size, .seats[1].fix_size] | join(",")' <<<"$OUT")"
+check "(tw) the wake's size: l, and m for two unsized blocks" "l m" "$(jq -r '.author_wake.fix_size' <<<"$o1") $(jr .author_wake.fix_size)"
+
 printf '\n== invariants over every case above ==\n'
 inv_bad=""; inv_n=0; sub_bad=""; sub_n=0; adv_bad=""; adv_n=0; inv_conv=0; diff_bad=""; diff_n=0
 # Opt-in differential check: LKML_PANEL_STATE_BASELINE names the script as
-# it was before advisory seats (e.g. `git show <base>:scripts/...`). For
-# every case whose export carries no Advisory: line the new output, minus
-# the three keys advisory seats added, must equal the old output byte for
+# it was before the keys stripped below (e.g. `git show <base>:scripts/...`).
+# For every case whose export carries no Advisory: line the new output, minus
+# the keys added since (the advisory ones, and the fix size's author_wake and
+# seats[].fix_size), must equal the old output byte for
 # byte, both run at one fixed --now. Unset, it did not run, and reports
 # nothing.
 baseline="${LKML_PANEL_STATE_BASELINE:-}"
 diff_now=2026-03-02T12:02:00Z
-strip_new='del(.advisory_notes, .parent_thread, .digest_blocking) | .roster |= del(.advisory) | .seats |= map(del(.advisory))'
+strip_new='del(.advisory_notes, .parent_thread, .digest_blocking, .author_wake) | .roster |= del(.advisory) | .seats |= map(del(.advisory, .fix_size))'
 for c in "${cases_run[@]}"; do
     d="$work/case-$c"
     o="$("$ps" --export-file "$d/export.json" --status-file "$d/status.json" 2>/dev/null)" || { inv_bad+=" $c(exit)"; continue; }
@@ -3690,11 +3800,11 @@ for c in "${cases_run[@]}"; do
         on="$("$ps" --export-file "$d/export.json" --status-file "$d/status.json" --now "$diff_now" 2>/dev/null)"
         ob="$(python3 "$baseline" --export-file "$d/export.json" --status-file "$d/status.json" --now "$diff_now" 2>/dev/null)"
         diff_n=$(( diff_n + 1 ))
-        [[ "$(jq -c "$strip_new" <<<"$on")" == "$(jq -c . <<<"$ob")" ]] || diff_bad+=" $c"
+        [[ "$(jq -c "$strip_new" <<<"$on")" == "$(jq -c "$strip_new" <<<"$ob")" ]] || diff_bad+=" $c"
     fi
     sub=false; grep -q 'X-Lkml-Parent-Thread' "$d/export.json" && sub=true
     if ! jq -e --argjson sub "$sub" '
-        (["schema","thread","subject","status","verdict","target","roster","tier","panel","push","frozen_head","ci","question_timeout_hours","questions","now","seats","secretary","postmaster","bundle","upstream_state","reasons","advisory_notes"]
+        (["schema","thread","subject","status","verdict","target","roster","tier","panel","push","frozen_head","ci","question_timeout_hours","questions","now","seats","secretary","postmaster","bundle","upstream_state","reasons","advisory_notes","author_wake"]
          - keys | length) == 0
         and (.status | IN("CONVERGED","IN-PROGRESS","STALLED","NEEDS-OPERATOR","AWAITING-OPERATOR","CLOSED"))
         and ((.status == "CLOSED") == (.status != "CONVERGED" and .upstream_state.state == "closed"))
@@ -3707,7 +3817,7 @@ for c in "${cases_run[@]}"; do
              and has("budget") and has("budget_source") and has("spawns_total") and has("grant_mode"))
         and (.roster | has("author") and has("panel") and has("secretary") and has("version_limit") and has("frozen_head")
              and has("suite") and has("suite_seats") and has("advisory"))
-        and all(.seats[]; has("seat") and has("state") and has("verdict") and has("message_id") and has("version") and has("sha") and has("suite_run") and has("carried") and has("overruled_by") and (.advisory | type == "boolean"))
+        and all(.seats[]; has("seat") and has("state") and has("verdict") and has("message_id") and has("version") and has("sha") and has("suite_run") and has("carried") and has("overruled_by") and has("fix_size") and (.advisory | type == "boolean"))
         and all(.seats[]; (.state == "overruled") == (.overruled_by != null))
         and all(.seats[]; (.suite_run == null) or (.suite_run | has("status") and has("passed") and has("failed") and has("detail")))
         and (.status != "CONVERGED" or all(.seats[]; .suite_run == null or .suite_run.status == "clean"))
@@ -3724,6 +3834,9 @@ for c in "${cases_run[@]}"; do
         and (.panel | type == "array") and (.panel[:(.roster.panel | length)] == .roster.panel)
         and (.target == null or (.target | has("branch") and has("sha") and has("version") and has("set_by") and has("set_at") and has("source")))
         and (.advisory_notes | type == "array")
+        and all(.seats[]; (.fix_size != null) == (.state == "blocking"))
+        and ((.author_wake == null) == (.roster.author == null))
+        and (.author_wake == null or (.author_wake | has("fix_size")))
         and ([.seats[] | select(.advisory) | .seat] == .roster.advisory)
         and (.roster.advisory - .roster.suite_seats == .roster.advisory)
         and (.status != "CONVERGED" or (.seats | map(select(.advisory | not)) | length > 0 and all(.[]; .state == "positive" or .state == "overruled"

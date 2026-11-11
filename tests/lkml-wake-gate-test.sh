@@ -10,7 +10,9 @@
 # non-JSON) copy the gate into a temp dir next to a stub sibling.
 #
 # Every case asserts the exit code, that stderr is exactly one
-# "lkml-wake-gate:" line, and that the line names the expected rule.
+# "lkml-wake-gate:" line, and that the line names the expected rule. The
+# handover cases (FS_HOOK_*_FILE set) use expect_ho instead: the same first
+# line, then only "lkml-wake-gate: handover:" lines, counted.
 #
 # Usage: tests/lkml-wake-gate-test.sh
 
@@ -195,6 +197,24 @@ expect() {
     [[ -n "$rule" ]] && contains "$label: names rule $rule" "$ERR" "(rule $rule)"
     for want in "$@"; do contains "$label: stderr has '$want'" "$ERR" "$want"; done
 }
+
+# expect_ho <label> <rc> <rule> <n>: the decision line first (naming the
+# rule), then exactly n handover lines and nothing else.
+expect_ho() {
+    local label="$1" rc="$2" rule="$3" n="$4" first rest
+    check "$label: exit $rc" "$rc" "$RC"
+    first="$(head -n1 <<<"$ERR")"
+    contains "$label: first line is the decision (rule $rule)" "$first" "(rule $rule)"
+    rest="$(tail -n +2 <<<"$ERR")"
+    check "$label: $n handover line(s)" "$n/$n" \
+        "$([[ -z "$rest" ]] && echo 0 || wc -l <<<"$rest" | tr -d ' ')/$(grep -c '^lkml-wake-gate: handover: ' <<<"$rest")"
+}
+# file_is <label> <path> <bytes>: the file holds exactly those bytes.
+file_is() {
+    local got; got="$(cat -- "$2" 2>/dev/null; printf x)"
+    check "$1" "$3"x "$got"
+}
+no_file() { check "$1" absent "$([[ -e "$2" ]] && echo present || echo absent)"; }
 
 [[ -x "$gate_src" ]] || { echo "not executable: $gate_src" >&2; exit 1; }
 
@@ -1170,6 +1190,145 @@ printf '%s\n' "LKML_CAPACITY_PROMETHEUS=$prom_url" > "$beside/lkml-capacity.env"
 prom '{"waiting": "0", "preempt": "0"}'
 CAP_GATE="$work/linkdir/lkml-wake-gate.py" cap_run FORK_SANDBOX_HOOKS_DIR=
 expect "file: beside the gate, symlink followed, with no hooks dir" 0 "o"
+
+printf '\n== handover: the size of the fix (FS_HOOK_PIPELINE_SIZE_FILE) ==\n'
+# One gating blocker per fixture unless stated; the author is woken by
+# rule f (every seat has answered) on trigger m002.
+gen_blk() { # gen_blk <name> <tests-body> [<docs-body>]: tests/docs verdicts
+    local d="$work/case-$1"; mkdir -p -- "$d"
+    PYTHONPATH="$work" D="$d" B1="$2" B2="${3-}" python3 -c '
+import os
+from fx import *
+D = os.environ["D"]
+ms = [root(), reviewed(2, "@core"),
+      msg(3, "@tests", os.environ["B1"], sha=A, ver=1)]
+ms.append(msg(4, "@docs", os.environ["B2"], sha=A, ver=1) if os.environ["B2"]
+          else reviewed(4, "@docs"))
+write(D, export(ms), status())
+'
+}
+size_run() { rm -rf -- "$work/case-$1/out"; mkdir -p -- "$work/case-$1/out"; run "$@" "FS_HOOK_PIPELINE_SIZE_FILE=$work/case-$1/out/size"; }
+sz() { echo "$work/case-$1/out/size"; }
+
+gen_blk s1 $'Fix-Size: s\nChanges-requested: the loop leaks.'
+size_run s1; expect "one gating blocker, Fix-Size: s" 0 f
+file_is "size file holds s, no newline" "$(sz s1)" s
+gen_blk xl $'Fix-Size: xs\nChanges-requested: nit.' $'Fix-Size: l\nChanges-requested: redo it.'
+size_run xl; expect "xs and l" 0 f
+file_is "the larger one, l" "$(sz xl)" l
+gen_blk xn $'Fix-Size: xs\nChanges-requested: nit.' 'Changes-requested: no size.'
+size_run xn; expect "xs and no trailer" 0 f
+file_is "an unsized blocker counts as m" "$(sz xn)" m
+gen_blk ln $'Fix-Size: l\nChanges-requested: redo.' 'Changes-requested: no size.'
+size_run ln; expect "l and no trailer" 0 f
+file_is "l beats the unsized m" "$(sz ln)" l
+gen_blk nn 'Changes-requested: no size.' 'NAK'
+size_run nn; expect "two blockers, neither sized" 0 f
+file_is "two unsized blockers: m" "$(sz nn)" m
+gen_blk huge $'Fix-Size: huge\nChanges-requested: redo.'
+size_run huge; expect "Fix-Size: huge" 0 f
+file_is "an unknown size counts as m" "$(sz huge)" m
+gen adv <<'PY'
+write(D, export([root(body=ROOT_BODY + "\nAdvisory: @docs"), reviewed(2, "@core"),
+    msg(3, "@tests", "Fix-Size: xs\nChanges-requested: nit.", sha=A, ver=1),
+    msg(4, "@docs", "Fix-Size: l\nChanges-requested: redo.", sha=A, ver=1)]), status())
+PY
+size_run adv; expect "advisory l, gating xs" 0 f
+file_is "an advisory seat sizes nothing: xs" "$(sz adv)" xs
+gen advalone <<'PY'
+write(D, export([root(body=ROOT_BODY + "\nAdvisory: @docs"), reviewed(2, "@core"),
+    reviewed(3, "@tests"),
+    msg(4, "@docs", "Fix-Size: l\nChanges-requested: redo.", sha=A, ver=1)]), status())
+PY
+size_run advalone; expect "only an advisory seat blocks" 0 f
+no_file "nothing written" "$(sz advalone)"
+gen v2 <<'PY'
+write(D, export([root(), reviewed(2, "@core"),
+    msg(3, "@tests", "Fix-Size: l\nChanges-requested: redo.", sha=A, ver=1),
+    msg(4, "@docs", "Reviewed-by: d", sha=A, ver=1),
+    cover(5, B, 2, "Frozen-Head: " + "f" * 40 + "\nv2."),
+    msg(6, "@operator", "Anything new?", sha=B, ver=2)]),
+    status(sha=B, ver=2))
+PY
+size_run v2 FS_HOOK_MESSAGE=m006; expect "a re-roll; the v1 blocker does not carry" 0 d
+no_file "nothing from v1 counts" "$(sz v2)"
+gen_blk later $'Fix-Size: l\nChanges-requested: redo.'
+python3 - "$work/case-later/export.json" <<'PY'
+import json, sys
+sys.path.insert(0, ".")
+p = sys.argv[1]; e = json.load(open(p))
+m = dict(e["messages"][2]); m["seq"] = 5; m["id"] = "m005"
+m["body"] = "Reviewed-by: t"; e["messages"].append(m)
+json.dump(e, open(p, "w"))
+PY
+size_run later; expect "a later approval of the same version" 0 f
+no_file "the blocker was withdrawn: nothing" "$(sz later)"
+gen_blk quest $'Fix-Size: l\nQuestion: why?' $'Question: and this?'
+size_run quest; expect "only Question verdicts" 0 f
+no_file "a Question never sizes" "$(sz quest)"
+printf 'old' > "$work/case-advalone/out/size"
+run advalone "FS_HOOK_PIPELINE_SIZE_FILE=$work/case-advalone/out/size"
+file_is "a file already there is left alone" "$work/case-advalone/out/size" old
+
+# Sizes read as the protocol says: quoted lines, several, case.
+gen_blk q1 $'> Fix-Size: xs\nChanges-requested: quoted only.'
+size_run q1; file_is "a quoted Fix-Size line counts as missing: m" "$(sz q1)" m
+gen_blk q2 $'Fix-Size: xs\nFix-Size: l\nChanges-requested: two.'
+size_run q2; file_is "the last of two trailers wins" "$(sz q2)" l
+gen_blk q3 $'  Fix-Size:   s  \nChanges-requested: padded.'
+size_run q3; file_is "surrounding whitespace ignored" "$(sz q3)" s
+gen_blk q4 $'Fix-Size: L\nChanges-requested: capital.'
+size_run q4; file_is "an upper-case value is not one: m" "$(sz q4)" m
+
+printf '\n== handover: not a wake of the author ==\n'
+gen_blk r5 $'Fix-Size: s\nChanges-requested: the loop leaks.'
+gen defer <<'PY'
+write(D, export([root(), reviewed(2, "@core"),
+    msg(3, "@tests", "Fix-Size: s\nChanges-requested: leaks.", sha=A, ver=1)]), status())
+PY
+size_run defer; expect_ho "rule h defers the author" 1 h 0
+no_file "a defer hands nothing over" "$(sz defer)"
+gen skip <<'PY'
+write(D, export([root(body=ROOT_BODY + "\nAdvisory: @docs"),
+    reviewed(2, "@core"), reviewed(3, "@tests"),
+    msg(4, "@docs", "Fix-Size: l\nChanges-requested: advisory.", sha=A, ver=1,
+        cc=["@secretary"])]), status())
+PY
+size_run skip FS_HOOK_MESSAGE=m004; expect_ho "rule i skips the author" 3 i 0
+no_file "a skip hands nothing over" "$(sz skip)"
+gen_blk sec $'Fix-Size: s\nChanges-requested: leaks.'
+python3 - "$work/case-sec/export.json" <<'PY'
+import json, sys
+p = sys.argv[1]; e = json.load(open(p))
+m = dict(e["messages"][0]); m.update(seq=5, id="m005", **{"from": "@operator"})
+m["body"] = "Please summarize."; m["headers"] = [["From", "@operator"]]
+e["messages"].append(m); json.dump(e, open(p, "w"))
+PY
+size_run sec FS_HOOK_AGENT=secretary FS_HOOK_MESSAGE=m005
+expect_ho "the secretary is woken (rule j)" 0 j 0
+no_file "a secretary wake hands nothing over" "$(sz sec)"
+size_run r5 FS_HOOK_AGENT=core; expect_ho "a reviewer seat is woken (rule b)" 0 b 0
+no_file "a reviewer wake hands nothing over" "$(sz r5)"
+
+printf '\n== handover: variable unset or empty ==\n'
+rm -rf -- "$work/case-s1/out"; mkdir -- "$work/case-s1/out"
+run s1; expect "unset: exactly one line, as before" 0 f
+check "unset: no file created in the case dir" "" "$(ls "$work/case-s1" | grep -v '^\(export.json\|status.json\|out\)$')"
+run s1 FS_HOOK_PIPELINE_SIZE_FILE=; expect "empty: exactly one line, as before" 0 f
+ls "$work/case-s1/out" | grep -q . && no "unset or empty wrote a file" || ok "unset or empty wrote no file"
+
+printf '\n== handover: cannot be made ==\n'
+run s1 "FS_HOOK_PIPELINE_SIZE_FILE=$work/case-s1/nodir/size"
+expect_ho "size directory missing" 0 f 1
+contains "the line names the path" "$ERR" "$work/case-s1/nodir/size"
+stub_case noaw 'import json; print(json.dumps({"schema": "lkml-panel-state/1", "roster": {"author": "@pr-author", "secretary": "@secretary", "panel": ["@core"]}, "panel": ["@core"], "target": {"sha": "a"*40}, "seats": [{"seat": "@core", "state": "blocking"}]}))'
+GATE="$work/stub-noaw/lkml-wake-gate.py" size_run silent; expect_ho "a sibling with no author_wake" 0 f 1
+contains "says so" "$ERR" "no author_wake"
+no_file "nothing written" "$(sz silent)"
+stub_case badsz 'import json; print(json.dumps({"schema": "lkml-panel-state/1", "roster": {"author": "@pr-author", "secretary": "@secretary", "panel": ["@core"]}, "panel": ["@core"], "target": {"sha": "a"*40}, "seats": [{"seat": "@core", "state": "blocking"}], "author_wake": {"fix_size": "XL!"}}))'
+GATE="$work/stub-badsz/lkml-wake-gate.py" size_run silent; expect_ho "a size the spawner would not accept" 0 f 1
+no_file "not written" "$(sz silent)"
+GATE="$gate_src"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

@@ -259,6 +259,19 @@ Changes-requested, Question, then the -by trailers). state is:
     overruled  blocking or question, and a ruling names that very
                message (see "Overrule"); verdict keeps the seat's tag
 
+Fix size -- a blocking verdict (Changes-requested or NAK) may state how
+big the fix it asks for is, as a line of its own in the message that
+carries it: `Fix-Size: xs`, `s`, `m` or `l` (the key is case-sensitive,
+surrounding whitespace is ignored, a quoted line never counts, and the last
+such line of the message wins). The line is not the verdict line, which
+stays the last non-empty line. seats[].fix_size is that value for a seat
+whose state is blocking (a carried blocker included), and null for every
+other state; a blocking verdict with no such line, or a last one with any
+other value, is `m`, so an unsized block never gets the smallest pipeline.
+author_wake.fix_size is the largest (xs < s < m < l) over the GATING seats'
+sizes: an advisory seat's verdict sizes nothing. Null when no gating seat
+blocks. Reporting only: no status, verdict or reason depends on it.
+
 Overrule -- a seat's block can be ruled on, never ignored. A ruling is a
 line `Overrule: <message-id>` on a line of its own at the left margin, not
 quoted, in a message from @core (while @core is on the effective panel
@@ -532,13 +545,15 @@ Output (null, never an omitted key, for what is unknown):
      "questions": [...],
      "now": "<ISO UTC>",                # the clock the ages were taken at
      "seats": [{"seat","state","verdict","message_id","version","sha",
-                "suite_run","carried","overruled_by","advisory"}],
+                "suite_run","carried","overruled_by","advisory","fix_size"}],
                                  # suite_run: null, or {"status",
                                  # "passed","failed","detail"}; see "Suite
                                  # run". carried: false = the verdict was
                                  # given on this version. overruled_by:
                                  # null, or {"seat","message_id"}; see
-                                 # "Overrule"
+                                 # "Overrule". fix_size: xs|s|m|l on a
+                                 # blocking verdict (see "Fix size"),
+                                 # else null
      "secretary": {"message_id","version","status","verdict",
                    "on_target","malformed","carried"},
      "digest_blocking": N|null,         # a sub-panel digest's count of
@@ -555,6 +570,9 @@ Output (null, never an omitted key, for what is unknown):
      "reasons": [...],                    # empty only for CONVERGED
      "advisory_notes": [...]}             # advisory seats' conditions;
                                           # never block, see "Advisory"
+     "author_wake": {"fix_size"}|null}    # what the author's next wake
+                                          # needs; null with no author; see
+                                          # "Fix size". Reporting only
 """
 
 import json
@@ -590,6 +608,8 @@ ROSTER_KEYS = ("Author", "Panel", "Secretary", "Version-Limit", "Frozen-Head",
 ROSTER_LINE_RE = re.compile(r"^(" + "|".join(ROSTER_KEYS) + r"):(.*)$")
 PANEL_LINE_RE = re.compile(r"^Panel-[A-Za-z]+:")
 PANEL_KNOWN_RE = re.compile(r"^Panel-(?:Version|Status|Verdict):")
+FIX_SIZES = ("xs", "s", "m", "l")
+FIX_SIZE_PREFIX = "Fix-Size:"
 SUITE_RUN_PREFIX = "Suite-Run:"
 SUITE_RUN_COUNTS_RE = re.compile(
     r"Suite-Run: ([0-9]{1,18}) passed, ([0-9]{1,18}) failed[ \t]*")
@@ -1123,7 +1143,7 @@ def apply_overrule(entry, why, rulings, suite_seats):
     ruling = rulings.get(entry["message_id"])
     if ruling is None or entry["state"] not in ("blocking", "question"):
         return entry, why
-    entry.update(state="overruled",
+    entry.update(state="overruled", fix_size=None,
                  overruled_by={"seat": ruling["from"], "message_id": ruling["id"]})
     if entry["suite_run"] is not None and entry["seat"] in suite_seats:
         return entry, suite_run_reason(entry["seat"], entry["suite_run"])
@@ -1484,6 +1504,22 @@ def suite_run(status, passed=None, failed=None, detail=None):
             "detail": detail}
 
 
+def parse_fix_size(body):
+    """The size a blocking verdict's message states for the fix it asks
+    for: xs, s, m or l. A line of its own, key case-sensitive, surrounding
+    whitespace ignored; quoted lines never count and the last one wins.
+    No such line, or a last one with any other value, is m: an unsized
+    blocking review must not get the smallest pipeline."""
+    last = None
+    for line in body.split("\n"):
+        if QUOTED_RE.match(line):
+            continue
+        line = line.strip(SPACE)
+        if line.startswith(FIX_SIZE_PREFIX):
+            last = line[len(FIX_SIZE_PREFIX):].strip(SPACE)
+    return last if last in FIX_SIZES else "m"
+
+
 def parse_suite_run(body):
     """The Suite-Run claim a message body makes -> a suite_run object.
     Only non-quoted lines at the left margin count; the last one wins."""
@@ -1575,7 +1611,9 @@ def judge_on(entry, seat, m, tagged, target, suite_seats, source=None):
     version being judged."""
     tag = pick_tag(m["tags"])
     entry.update(state=seat_state_of(tag), verdict=tag, message_id=m["id"],
-                 version=m["version"], sha=m["sha"], carried=source is not None)
+                 version=m["version"], sha=m["sha"], carried=source is not None,
+                 fix_size=parse_fix_size(m["body"])
+                 if tag in BLOCKING_TAGS else None)
     if seat in suite_seats:
         entry["suite_run"] = parse_suite_run(m["body"])
     if entry["state"] == "positive":
@@ -1634,7 +1672,7 @@ def judge_seat(seat, msgs, target, suite_seats=(), carry_chain=(),
     entry = {"seat": seat, "state": "silent", "verdict": None,
              "message_id": None, "version": None, "sha": None,
              "suite_run": suite_run("missing") if seat in suite_seats else None,
-             "carried": False, "overruled_by": None}
+             "carried": False, "overruled_by": None, "fix_size": None}
     if on:
         return judge_on(entry, seat, on[-1], tagged, target, suite_seats)
     fallback = dict(entry)
@@ -1732,6 +1770,26 @@ def verdict_contradiction(verdict, target, frozen_head):
     return None
 
 
+def keyed_line(body, rx):
+    """The value of the first line of `body` that, with surrounding
+    whitespace stripped, matches `rx` (a `Key:(.*)` pattern), stripped;
+    None when no line does. The key stands alone on its line."""
+    for line in body.split("\n"):
+        mt = rx.match(line.strip(" \t\r"))
+        if mt:
+            return mt.group(1).strip(" \t\r")
+    return None
+
+
+def author_covers(msgs, author, sha=None):
+    """The messages `author` sent that carry one valid X-Review-Target-Set
+    (a cover), oldest first; with `sha`, only those naming that sha."""
+    return [m for m in msgs
+            if m["ok"] and m["from"] == author
+            and (tgt := single_target_header(m, "X-Review-Target-Set"))
+            is not None and (sha is None or tgt[1] == sha)]
+
+
 def resolve_frozen_head(msgs, roster, target):
     """The frozen head of the current target -> ({sha, source}|None,
     reasons). See the module docstring, "Frozen head"."""
@@ -1742,21 +1800,11 @@ def resolve_frozen_head(msgs, roster, target):
         return fallback, []
     if refrozen(target, msgs):
         return {"sha": target["sha"], "source": "upstream"}, []
-    covers = []
-    for m in msgs:
-        if m["ok"] and m["from"] == author:
-            tgt = single_target_header(m, "X-Review-Target-Set")
-            if tgt is not None and tgt[1] == target["sha"]:
-                covers.append(m)
+    covers = author_covers(msgs, author, target["sha"])
     if not covers:
         return fallback, []
     cover = covers[-1]
-    raw = None
-    for line in cover["body"].split("\n"):
-        mt = FROZEN_HEAD_LINE_RE.match(line.strip(" \t\r"))
-        if mt:
-            raw = mt.group(1).strip(" \t\r")
-            break
+    raw = keyed_line(cover["body"], FROZEN_HEAD_LINE_RE)
     if raw is None:
         return fallback, []
     if not FROZEN_HEAD_RE.match(raw):
@@ -1964,6 +2012,16 @@ def upstream_state_of(status):
     return {"state": opt_str(u.get("state")),
             "message_id": opt_str(u.get("message_id")),
             "at": opt_str(u.get("at"))}
+
+
+def author_wake_of(roster, gating):
+    """What the spawner needs to know about the author's next wake, as the
+    thread stands (the gate decides whether the wake happens, and which
+    of these it hands over). None when the thread has no author."""
+    if roster["author"] is None:
+        return None
+    sizes = [s["fix_size"] for s in gating if s["fix_size"] in FIX_SIZES]
+    return {"fix_size": max(sizes, key=FIX_SIZES.index) if sizes else None}
 
 
 def build_state(export, status, now):
@@ -2191,6 +2249,7 @@ def build_state(export, status, now):
         "upstream_state": upstream,
         "reasons": reasons,
         "advisory_notes": notes,
+        "author_wake": author_wake_of(roster, gating),
     }
 
 
