@@ -180,7 +180,7 @@ newcomer 11184491d0911895fdcac00118cd1c2442e5b81b035cb2c8eaf83b48023c874c
 operability 72a60db9afd76dd75a740849c53604089fffccf8318b6fe4db8a309a3e94653e
 second-opinion e1c1bffaa2eb69dc8759bd8a2782d132e03319df03607cac329125fed319b25a
 security 86890a027432a7851109692920f9e8d00cddf4c40728dea1e146779389caebf2
-tests 7e889124d504972e61514cdbcd40f64d8eb5f0312c25c17f21e83ddade26e34a
+tests 8547f143415eb8eac77fd63150792ba47d547e360d258df588cf1555e99ba74b
 HASHES
 
 # The ci persona's suite source is a two-path contract: an executable
@@ -732,6 +732,10 @@ has_flat "$texts_dir/tests.md" 'wants a comment saying why it has that value, no
     "tests.md asks for a comment, not a test, on a setting that fails loudly"
 has_flat "$texts_dir/tests.md" 'Run it on a real sample of that input and quote what it returns' \
     "tests.md runs a reused helper on a real sample of its new input"
+has_flat "$texts_dir/tests.md" 'A fixture that states the outside world' \
+    "tests.md names the fixture that encodes an external assumption"
+has_flat "$texts_dir/tests.md" 'Say that the assumption is unverified against real data, and what one real sample would settle' \
+    "tests.md reports an external assumption as unverified"
 has_flat "$texts_dir/tests.md" 'The forms the code says it accepts, counted against the forms exercised' \
     "tests.md counts the named forms against the exercised ones"
 has_flat "$texts_dir/tests.md" 'Say how many are named and how many a test or your own probe ran' \
