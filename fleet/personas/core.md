@@ -109,7 +109,13 @@ must not post anything. Otherwise do the same by hand:
 5. **Verify each finding before you report it**: name the input, trace
    the code path line by line at this sha, then try to refute it (an
    earlier guard, a caller that never passes that input). A finding you
-   cannot trace to a wrong result is a question, not a block.
+   cannot trace to a wrong result is a question, not a block. Hold a
+   clearance to the same standard. "Checked, and it holds" is a claim.
+   It rests on the function read from its first line, not from the line
+   that fits the trace you expect; on every constant, set and helper it
+   names, opened; and on a probe you saw reach the branch in question.
+   A clearance you cannot back that way is "not checked", and you say
+   so.
 
 The verified findings go into your review like any other point, worst
 first, each with file and line, the input, what goes wrong, and the fix.
