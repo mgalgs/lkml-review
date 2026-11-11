@@ -87,7 +87,17 @@ must not post anything. Otherwise do the same by hand:
    written, every member of a list the code or its documentation names.
    A form the format allows that no test and no probe of yours ran is
    unchecked, however many of the others pass.
-3. **Name the siblings the diff left alone.** For each behaviour change
+3. **Run it against state it did not create.** Rows saved before the
+   rule existed. The second attempt, with what the failed first one
+   left behind. A status the code gives up on that can still move, and
+   every action that can move it, not only the one the change has in
+   mind. The reverse of every add: when the tag, member or link goes
+   away upstream, what removes it here? A failure that is not the
+   item's fault, landing it on a list nothing retries. The change
+   switched off again, with data written under it still stored. For
+   each new rule, guard and give-up branch, say which of these can
+   reach it and what happens then.
+4. **Name the siblings the diff left alone.** For each behaviour change
    and each finding, list the other places that share its failure mode
    or receive its input: a sibling route, stage, field or companion
    file, a later step that makes the same call, a reused helper or
@@ -96,7 +106,7 @@ must not post anything. Otherwise do the same by hand:
    that is too long is also a name with `#` or `?`, a path separator,
    different case, or non-ASCII text. For each, say in a line why it is
    safe, or show it fails.
-4. **Verify each finding before you report it**: name the input, trace
+5. **Verify each finding before you report it**: name the input, trace
    the code path line by line at this sha, then try to refute it (an
    earlier guard, a caller that never passes that input). A finding you
    cannot trace to a wrong result is a question, not a block.

@@ -173,7 +173,7 @@ while read -r name want; do
     check "$name's body + protocol-reviewer.md is its pre-split body" "$want" "$got"
 done <<'HASHES'
 architecture 51658ce02d861f9fc677fc0c048b27c51c8756df419c373945e85d502ce76e40
-core 6baf3b01a233540d21997e6e96c543639f88a4dba367b3deb99151786c3a68c0
+core 1045ed04d79f79b24645b476d83497bb7d3bbb0890cdb3fb63905a139e9e09ad
 devils-advocate fdb59184bea20f9215411a941f1ca1a103c1d40ff02840d069ea56732c439a83
 docs e0339accd4bae55722e81544b9f914f15cbbcea691ec45af5edc7b49b66b1263
 newcomer 11184491d0911895fdcac00118cd1c2442e5b81b035cb2c8eaf83b48023c874c
@@ -670,6 +670,10 @@ has_flat "$co" 'only separators (`,` or `,,`), repeated keys, missing' "core.md 
 has_flat "$co" 'the rows written, what is billed, logged or sent' "core.md follows inputs to side effects"
 has_flat "$co" 'Take the input forms from the definition of what the code reads, not from the examples in its tests' "core.md takes the input forms from the format's definition"
 has_flat "$co" 'A form the format allows that no test and no probe of yours ran is unchecked' "core.md counts an unprobed form as unchecked"
+has_flat "$co" '**Run it against state it did not create.**' "core.md runs the change against state it did not create"
+has_flat "$co" 'The second attempt, with what the failed first one left behind' "core.md follows the second attempt"
+has_flat "$co" 'every action that can move it, not only the one the change has in mind' "core.md asks what else moves a status the code gave up on"
+has_flat "$co" 'The reverse of every add' "core.md asks for the reverse of every add"
 has_flat "$co" '**Verify each finding before you report it**' "core.md verifies before reporting"
 has_flat "$co" '**Name the siblings the diff left alone.**' "core.md names the sibling paths of every change"
 has_flat "$co" 'try its siblings through every consumer of that value' "core.md tries the sibling classes of a bad input"
