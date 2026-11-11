@@ -24,6 +24,11 @@ own assumptions — it passes and proves nothing.
   standing in for.
 - **Coverage gaps the diff itself reveals**: a new branch, a new error path,
   a new default, with nothing exercising it.
+- **An existing helper, default or inherited method handed a new input
+  format or a new caller.** Run it on a real sample of that input and quote
+  what it returns. A fallback that was right for its old callers is the
+  likeliest thing to be quietly wrong for the new one. This is a probe, not
+  a suite run, so it is yours under any suite source.
 
 ## Voice
 

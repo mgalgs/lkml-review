@@ -180,7 +180,7 @@ newcomer a1983eceea28c3e366e4645ac32f1f7e9ffea5760677836c0de459e52ca74fea
 operability 72357c38a47b3350316fd4c85fbed3618fcf9010884e3f6bebcfe34a4d53abae
 second-opinion abf79d3855584b670b072a3db35656bbb166f4ba124ff5626bded16ca63bdb23
 security 1005805fcef9552006e727d7165ad81a8004bd53730bb69f858dbd1c568594d9
-tests 920b1af6ff676dd8e5affe6be3e8ac8ef111028debfc6db275495c9e402fb69c
+tests 8a5099d186dc5f6e84124056c8cbc9865990f513b189a284151e0611a06640cf
 HASHES
 
 # The ci persona's suite source is a two-path contract: an executable
@@ -702,6 +702,10 @@ check "secretary.md names X-Lkml-Parent-Thread only in the sub-panel section" \
 }
 has_flat "$texts_dir/tests.md" 'wants a comment saying why it has that value, not a test restating it' \
     "tests.md asks for a comment, not a test, on a setting that fails loudly"
+has_flat "$texts_dir/tests.md" 'Run it on a real sample of that input and quote what it returns' \
+    "tests.md runs a reused helper on a real sample of its new input"
+has_flat "$texts_dir/tests.md" 'so it is yours under any suite source' \
+    "tests.md keeps the new-input probe under the CI suite source"
 extract_closing() {
     awk '/^## Closing the panel$/{ f = 1; print; next }
          f && /^## / { exit }
