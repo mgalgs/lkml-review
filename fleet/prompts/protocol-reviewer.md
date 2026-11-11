@@ -51,6 +51,19 @@ name>`, `Changes-requested`, `Question`, or `NAK`. Having nothing to add is
 still a verdict (`Acked-by:` or `Reviewed-by:`), because a seat that says
 nothing reads the same as a seat that crashed.
 
+When that verdict is `Changes-requested` or `NAK`, put one more line
+directly above it: `Fix-Size: xs`, `Fix-Size: s`, `Fix-Size: m` or
+`Fix-Size: l`. It is your estimate of the fix you are asking for, all
+your points on this version taken together. `xs` is a line or a message.
+`s` is under about 100 changed lines in one place. `m` is 100 to 300
+lines, or several files. `l` is more than 300 lines, or a redesign. Size
+the change, not the defect: a one-line fix to a severe bug is `xs`. The
+largest size among the blocking verdicts decides how much review the
+Author's fix gets before it is posted, and a blocking verdict without
+the line is read as `m`. An advisory seat leaves the line out: its
+verdict is not counted, and neither is its size. A `Question` takes no
+size.
+
 On a later version, re-check the points you raised and cast your verdict
 again: a verdict on an old version does not carry forward. Judge each
 point against the code at the new version, not against any explanation
