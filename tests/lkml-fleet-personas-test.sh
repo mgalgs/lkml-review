@@ -175,7 +175,7 @@ done <<'HASHES'
 architecture 51658ce02d861f9fc677fc0c048b27c51c8756df419c373945e85d502ce76e40
 core 3bb9cd90cb20026debcb44848afd96e31fc9accee45fbbde3b429c372cc7e699
 devils-advocate fdb59184bea20f9215411a941f1ca1a103c1d40ff02840d069ea56732c439a83
-docs e0339accd4bae55722e81544b9f914f15cbbcea691ec45af5edc7b49b66b1263
+docs dc817655d8f3c7e7b3ed3951888e56f02fd4a9a0601e73d9aae35ec7507d51b7
 newcomer 11184491d0911895fdcac00118cd1c2442e5b81b035cb2c8eaf83b48023c874c
 operability 72a60db9afd76dd75a740849c53604089fffccf8318b6fe4db8a309a3e94653e
 second-opinion e1c1bffaa2eb69dc8759bd8a2782d132e03319df03607cac329125fed319b25a
@@ -732,6 +732,12 @@ has_flat "$texts_dir/tests.md" 'wants a comment saying why it has that value, no
     "tests.md asks for a comment, not a test, on a setting that fails loudly"
 has_flat "$texts_dir/tests.md" 'Run it on a real sample of that input and quote what it returns' \
     "tests.md runs a reused helper on a real sample of its new input"
+has_flat "$texts_dir/docs.md" 'search the whole tree for where else it is written down' \
+    "docs.md searches the tree for every place a changed fact is stated"
+has_flat "$texts_dir/docs.md" 'Check a documented step by doing it against the code' \
+    "docs.md walks a documented step against the code"
+has_flat "$texts_dir/docs.md" 'Check each qualifier as well as the main clause' \
+    "docs.md checks the qualifiers of a sentence"
 has_flat "$texts_dir/tests.md" 'A fixture that states the outside world' \
     "tests.md names the fixture that encodes an external assumption"
 has_flat "$texts_dir/tests.md" 'Say that the assumption is unverified against real data, and what one real sample would settle' \
