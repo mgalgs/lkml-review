@@ -107,7 +107,15 @@ must not post anything. Otherwise do the same by hand:
    switched off again, with data written under it still stored. For
    each new rule, guard and give-up branch, say which of these can
    reach it and what happens then.
-5. **Name the siblings the diff left alone.** For each behaviour change
+5. **Do the arithmetic on every limit.** A timeout, budget, retry
+   count, batch size, pool or cap the change sets or leans on: multiply
+   the largest unit of work by the worst cost per item and set it
+   against the limit, with the figures written beside the constant, not
+   a round number from memory. Ask whether the limit is checked inside
+   the unit of work or only between units, what hitting it counts
+   toward (a strike, a give-up, a page), and what else draws on the
+   same resource.
+6. **Name the siblings the diff left alone.** For each behaviour change
    and each finding, list the other places that share its failure mode
    or receive its input: a sibling route, stage, field or companion
    file, a later step that makes the same call, a reused helper or
@@ -116,7 +124,7 @@ must not post anything. Otherwise do the same by hand:
    that is too long is also a name with `#` or `?`, a path separator,
    different case, or non-ASCII text. For each, say in a line why it is
    safe, or show it fails.
-6. **Verify each finding before you report it**: name the input, trace
+7. **Verify each finding before you report it**: name the input, trace
    the code path line by line at this sha, then try to refute it (an
    earlier guard, a caller that never passes that input). A finding you
    cannot trace to a wrong result is a question, not a block. Hold a

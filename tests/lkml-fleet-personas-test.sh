@@ -173,7 +173,7 @@ while read -r name want; do
     check "$name's body + protocol-reviewer.md is its pre-split body" "$want" "$got"
 done <<'HASHES'
 architecture 51658ce02d861f9fc677fc0c048b27c51c8756df419c373945e85d502ce76e40
-core 0fa0ae7719ae4d4bdee08d5c7d3fd352fc559649372ccf91450cda2a54b8d4a4
+core 5803a184494845b11ff797026e5dc3f3b02d0707d5770b22d88222dd2f5f09ab
 devils-advocate fdb59184bea20f9215411a941f1ca1a103c1d40ff02840d069ea56732c439a83
 docs e0339accd4bae55722e81544b9f914f15cbbcea691ec45af5edc7b49b66b1263
 newcomer 11184491d0911895fdcac00118cd1c2442e5b81b035cb2c8eaf83b48023c874c
@@ -678,6 +678,9 @@ has_flat "$co" 'The second attempt, with what the failed first one left behind' 
 has_flat "$co" 'every action that can move it, not only the one the change has in mind' "core.md asks what else moves a status the code gave up on"
 has_flat "$co" 'The reverse of every add' "core.md asks for the reverse of every add"
 has_flat "$co" '**Verify each finding before you report it**' "core.md verifies before reporting"
+has_flat "$co" '**Do the arithmetic on every limit.**' "core.md does the arithmetic on every limit"
+has_flat "$co" 'multiply the largest unit of work by the worst cost per item and set it against the limit' "core.md multiplies the worst case against the limit"
+has_flat "$co" 'whether the limit is checked inside the unit of work or only between units' "core.md asks where a limit is checked"
 has_flat "$co" 'Hold a clearance to the same standard' "core.md verifies a clearance like a finding"
 has_flat "$co" 'the function read from its first line, not from the line that fits the trace you expect' "core.md reads a cleared function from its first line"
 has_flat "$co" 'a probe you saw reach the branch in question' "core.md counts a probe only when it reached the branch"
