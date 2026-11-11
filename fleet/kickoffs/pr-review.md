@@ -179,6 +179,10 @@ this is how you verify anything, since CI has already run the tests.
   and by any self-contained check: call the function from a shell, run
   a snippet against the library. A missing environment is your
   environment, not a finding against the code.
+- With no way to run a tool the change depends on, find out what it
+  would have done from its own source, templates or documentation, and
+  say which behaviour stays unverified against the real thing. "I could
+  not run it" ends the run, not the check.
 - Reproduce a bug before you raise it, and put the reproduction in your
   reply.
 

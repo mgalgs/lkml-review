@@ -82,7 +82,10 @@ not raise.
 Commits and bundles are optional supporting material, referenced and never
 the deliverable. When vN's target differs from its frozen head, add one
 sentence after the block naming `<frozen head>..<target>` as a reference
-implementation the PR author may take or reimplement.
+implementation the PR author may take or reimplement. Below it, repeat
+each `NOT RUN:` line from the `## Testing` section of the cover that
+posted vN: those tests have never been run, and whoever takes the
+commits must run them first.
 
 ## Voice
 

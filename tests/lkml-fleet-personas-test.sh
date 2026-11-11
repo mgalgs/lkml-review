@@ -172,15 +172,15 @@ while read -r name want; do
             | sha256sum | cut -d' ' -f1)"
     check "$name's body + protocol-reviewer.md is its pre-split body" "$want" "$got"
 done <<'HASHES'
-architecture b2f2441edb3c862e0f3f67ecb17ab648f459ccd4bb86746565a901638162acce
-core 247eead790d5e1d7c2c72bd2d786043e77251a6c0f12cdd5c692bc7d13577511
-devils-advocate 245112f2689b99a891e6215cd015f22718fd36cf951a7153aed1267039f6eeb3
-docs a5d518ea9ba0234de4136a918d7cac389fc425287f17592b2e71b608eed74fec
-newcomer a1983eceea28c3e366e4645ac32f1f7e9ffea5760677836c0de459e52ca74fea
-operability 72357c38a47b3350316fd4c85fbed3618fcf9010884e3f6bebcfe34a4d53abae
-second-opinion abf79d3855584b670b072a3db35656bbb166f4ba124ff5626bded16ca63bdb23
-security 1005805fcef9552006e727d7165ad81a8004bd53730bb69f858dbd1c568594d9
-tests 8a5099d186dc5f6e84124056c8cbc9865990f513b189a284151e0611a06640cf
+architecture 51658ce02d861f9fc677fc0c048b27c51c8756df419c373945e85d502ce76e40
+core 3bb9cd90cb20026debcb44848afd96e31fc9accee45fbbde3b429c372cc7e699
+devils-advocate fdb59184bea20f9215411a941f1ca1a103c1d40ff02840d069ea56732c439a83
+docs dc817655d8f3c7e7b3ed3951888e56f02fd4a9a0601e73d9aae35ec7507d51b7
+newcomer 11184491d0911895fdcac00118cd1c2442e5b81b035cb2c8eaf83b48023c874c
+operability 72a60db9afd76dd75a740849c53604089fffccf8318b6fe4db8a309a3e94653e
+second-opinion e1c1bffaa2eb69dc8759bd8a2782d132e03319df03607cac329125fed319b25a
+security 86890a027432a7851109692920f9e8d00cddf4c40728dea1e146779389caebf2
+tests 8547f143415eb8eac77fd63150792ba47d547e360d258df588cf1555e99ba74b
 HASHES
 
 # The ci persona's suite source is a two-path contract: an executable
@@ -661,6 +661,8 @@ has_flat "$pa" 'carries `Overrule: <that verdict'"'"'s message id>` alone on its
 has_flat "$pa" 'only `@operator` can overrule `@core`' "pr-author.md: only the operator overrules @core"
 has_flat "$pa" 'upholds the block: comply' "pr-author.md complies with an upheld block"
 co="$texts_dir/core.md"
+has_flat "$co" 'A smaller roster leaves lanes with no seat' "core.md names the lanes a smaller roster leaves empty"
+has_flat "$co" 'no seat on the `Panel:` line owns it, it is yours, at the bar its own seat would hold' "core.md takes an unseated lane at its own seat's bar"
 has_flat "$co" '## First pass: hunt the bugs' "core.md has the mandatory bug-hunt first pass"
 has_flat "$co" 'at high effort, and finish it before you write anything else' "core.md runs the hunt first, at high effort"
 has_flat "$co" 'run it at `high`' "core.md uses the built-in /code-review at high when it has one"
@@ -668,7 +670,23 @@ has_flat "$co" 'it must not post anything' "core.md keeps /code-review from post
 has_flat "$co" '**List every behaviour change**' "core.md enumerates every behaviour change"
 has_flat "$co" 'only separators (`,` or `,,`), repeated keys, missing' "core.md pushes blank, separator-only and repeated inputs"
 has_flat "$co" 'the rows written, what is billed, logged or sent' "core.md follows inputs to side effects"
+has_flat "$co" 'Take the input forms from the definition of what the code reads, not from the examples in its tests' "core.md takes the input forms from the format's definition"
+has_flat "$co" 'A form the format allows that no test and no probe of yours ran is unchecked' "core.md counts an unprobed form as unchecked"
+has_flat "$co" '**Follow each thing the change produces to its reader.**' "core.md follows what the change produces to its reader"
+has_flat "$co" 'name what reads it next, open that reader, and read it with the new value in hand' "core.md opens the reader of each produced value"
+has_flat "$co" 'ask what the next stage checks' "core.md asks what the stage after the evidence checks"
+has_flat "$co" '**Run it against state it did not create.**' "core.md runs the change against state it did not create"
+has_flat "$co" 'The second attempt, with what the failed first one left behind' "core.md follows the second attempt"
+has_flat "$co" 'every action that can move it, not only the one the change has in mind' "core.md asks what else moves a status the code gave up on"
+has_flat "$co" 'The reverse of every add' "core.md asks for the reverse of every add"
 has_flat "$co" '**Verify each finding before you report it**' "core.md verifies before reporting"
+has_flat "$co" '**Do the arithmetic on every limit.**' "core.md does the arithmetic on every limit"
+has_flat "$co" 'multiply the largest unit of work by the worst cost per item and set it against the limit' "core.md multiplies the worst case against the limit"
+has_flat "$co" 'whether the limit is checked inside the unit of work or only between units' "core.md asks where a limit is checked"
+has_flat "$co" 'Hold a clearance to the same standard' "core.md verifies a clearance like a finding"
+has_flat "$co" 'the function read from its first line, not from the line that fits the trace you expect' "core.md reads a cleared function from its first line"
+has_flat "$co" 'a probe you saw reach the branch in question' "core.md counts a probe only when it reached the branch"
+has_flat "$co" 'A clearance you cannot back that way is "not checked"' "core.md reports an unbacked clearance as not checked"
 has_flat "$co" '**Name the siblings the diff left alone.**' "core.md names the sibling paths of every change"
 has_flat "$co" 'try its siblings through every consumer of that value' "core.md tries the sibling classes of a bad input"
 has_flat "$co" 'say in a line why it is safe, or show it fails' "core.md settles each sibling"
@@ -689,6 +707,10 @@ has_flat "$sec" 'or a block that was overruled' "secretary.md leaves an overrule
 has_flat "$sec" '**Unowned points**' "secretary.md has an Unowned points section"
 has_flat "$sec" 'Calling a point decided, or someone else'"'"'s, is not a ruling' "secretary.md does not count a hand-off or a decided label as a ruling"
 has_flat "$sec" 'A point under "Unowned points" did not stand: it stays a finding' "secretary.md keeps an unowned point in the findings"
+has_flat "$protocol_file" 'A point is closed when the failure it named can no longer happen, not when the change you asked for is there' "protocol-reviewer.md closes a point on its failure, not on the fix"
+has_flat "$protocol_file" 'Ask again the question that found it, of the whole class this time' "protocol-reviewer.md re-asks the question across the class"
+has_flat "$protocol_file" 'show that the reason given rules that scenario out' "protocol-reviewer.md holds a set-aside point to its failure scenario"
+has_flat "$protocol_file" 'A reason that is true and answers a nearby question leaves the point open' "protocol-reviewer.md does not close a point on a nearby answer"
 # The sub-panel digest lives in one clearly conditional section, so a
 # main panel's secretary reads nothing new.
 has "$sec" '## On a sub-panel thread: a root carrying X-Lkml-Parent-Thread' \
@@ -710,6 +732,20 @@ has_flat "$texts_dir/tests.md" 'wants a comment saying why it has that value, no
     "tests.md asks for a comment, not a test, on a setting that fails loudly"
 has_flat "$texts_dir/tests.md" 'Run it on a real sample of that input and quote what it returns' \
     "tests.md runs a reused helper on a real sample of its new input"
+has_flat "$texts_dir/docs.md" 'search the whole tree for where else it is written down' \
+    "docs.md searches the tree for every place a changed fact is stated"
+has_flat "$texts_dir/docs.md" 'Check a documented step by doing it against the code' \
+    "docs.md walks a documented step against the code"
+has_flat "$texts_dir/docs.md" 'Check each qualifier as well as the main clause' \
+    "docs.md checks the qualifiers of a sentence"
+has_flat "$texts_dir/tests.md" 'A fixture that states the outside world' \
+    "tests.md names the fixture that encodes an external assumption"
+has_flat "$texts_dir/tests.md" 'Say that the assumption is unverified against real data, and what one real sample would settle' \
+    "tests.md reports an external assumption as unverified"
+has_flat "$texts_dir/tests.md" 'The forms the code says it accepts, counted against the forms exercised' \
+    "tests.md counts the named forms against the exercised ones"
+has_flat "$texts_dir/tests.md" 'Say how many are named and how many a test or your own probe ran' \
+    "tests.md reports the count of named and exercised forms"
 has_flat "$texts_dir/tests.md" 'so it is yours under any suite source' \
     "tests.md keeps the new-input probe under the CI suite source"
 extract_closing() {
@@ -818,6 +854,8 @@ has_flat "$tst" 'Write no `Suite-Run:` line' "tests.md writes no Suite-Run line 
 has_flat "$pra" 'unless the thread root carries `X-Lkml-Suite-Source: ci`' "pr-author.md exempts the re-roll's suite run under ci"
 has_flat "$pra" 'do not run the full suite' "pr-author.md does not run the full suite under ci"
 has_flat "$pra" 'not CI-tested' "pr-author.md says its own commits are not CI-tested"
+has_flat "$pra" 'as `ran: <result>` or `NOT RUN: <what it needs>`' "pr-author.md lists each added or changed test as ran or NOT RUN"
+has_flat "$sec" 'repeat each `NOT RUN:` line from the `## Testing` section of the cover that posted vN' "secretary.md repeats the cover's NOT RUN tests beside the reference implementation"
 has_flat "$pra" 'as in step 6 of the re-roll' "pr-author.md applies the same rule to the integration"
 has_flat "$sec" 'If the root carries `X-Lkml-Suite-Source: ci`' "secretary.md has a CI branch"
 has_flat "$sec" 'no seat owes a `Suite-Run:` line' "secretary.md requires no Suite-Run line under ci"
@@ -1047,6 +1085,10 @@ if [[ -f "$prk" ]]; then
         "pr-review.md skips its Running-the-suite section under the CI suite source"
     has "$prk" 'lkml-fleet-kickoff.sh --template pr-review' \
         "pr-review.md header points at the kickoff script that fills its placeholders"
+    has_flat "$prk" 'find out what it would have done from its own source, templates or documentation' \
+        "pr-review.md sends a seat that cannot run a tool to the tool's own source"
+    has_flat "$prk" '"I could not run it" ends the run, not the check' \
+        "pr-review.md does not let a missing tool end the check"
     if grep -qF 'does not yet fill' "$prk"; then
         no "pr-review.md drops the stale 'does not yet fill' note" "still present"
     else

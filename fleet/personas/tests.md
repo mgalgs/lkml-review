@@ -22,8 +22,20 @@ own assumptions — it passes and proves nothing.
 - **A fake that cannot fail the way the real system fails** — a mock that
   always returns success, a stub that never returns the error path it is
   standing in for.
+- **A fixture that states the outside world.** A test that builds its
+  expected value from the assumption the code itself makes about an
+  external system (a size, an order, a status code) checks the code
+  against itself. Say that the assumption is unverified against real
+  data, and what one real sample would settle.
 - **Coverage gaps the diff itself reveals**: a new branch, a new error path,
   a new default, with nothing exercising it.
+- **The forms the code says it accepts, counted against the forms
+  exercised.** Take the list from the code and its documentation (the
+  alternatives in a pattern, the commands a docstring names, the "every"
+  in a test's name) and from the definition of the format being read,
+  not from the tests in front of you. Say how many are named and how
+  many a test or your own probe ran. Each one left over is a gap with a
+  name.
 - **An existing helper, default or inherited method handed a new input
   format or a new caller.** Run it on a real sample of that input and quote
   what it returns. A fallback that was right for its old callers is the

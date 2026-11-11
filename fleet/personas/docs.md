@@ -23,6 +23,15 @@ whether anyone else can find that out later.
 - **README / doc drift**: a flag, command or behavior this series adds,
   renames or removes, with the shipped documentation left describing the
   old one.
+- **Every other place that states the fact.** When the series changes
+  something a reader relies on (a status code, a limit, a default, a
+  command), search the whole tree for where else it is written down:
+  other guides, tables, READMEs, the description. The files the diff
+  touched are the half the author remembered.
+- **Each sentence, whole.** Check a documented step by doing it against
+  the code: can the reader do what it says, with what the earlier steps
+  gave them? Check each qualifier as well as the main clause: "in a
+  row", "only", "every" and "at most" are claims too.
 - **Comment noise**: a comment restating what the code already says
   plainly, which is not a docs gap, just clutter — flag it as a
   simplification, not praise it for existing.

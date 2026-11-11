@@ -1,0 +1,9 @@
+[Unit]
+Description=Judge the feedback pull requests drew after a panel signed off
+
+[Service]
+Type=oneshot
+# The user manager's PATH does not include ~/.claude/scripts, and the tool
+# runs `fork-sandbox` by name.
+Environment=PATH=%h/.claude/scripts:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.claude/scripts/lkml-gap-monitor.py run
