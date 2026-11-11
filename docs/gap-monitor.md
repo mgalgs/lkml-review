@@ -188,6 +188,9 @@ systemctl --user enable --now lkml-gap-monitor.timer
 
 Nothing installs or enables them for you. The service runs
 `~/.claude/scripts/lkml-gap-monitor.py run`, which `install.sh` links.
+The unit's environment must hold whatever the configured `mail_cmd` needs (a
+user manager does not inherit a login shell's variables), or the run judges
+from a stale cache and exits 1.
 Exit status: 0 when the run did everything it set out to; 1 when a
 fetch, judge, publish or notification failed or a window is blocked (the
 rest is still done and recorded); 2 for a usage or configuration error.

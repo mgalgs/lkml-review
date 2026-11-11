@@ -506,6 +506,23 @@ as it now stands. That is a reason and the thread is not `CONVERGED`. It covers
 an author that has not run yet, one that failed to post, and one that answered
 a push with a mismatch report to the operator.
 
+Three more outputs are reporting only: no status, verdict, reason or wake
+depends on them. `seats[].fix_size` is `xs`, `s`, `m` or `l` for a seat whose
+state is `blocking` and null otherwise (see "The fix size and the author
+wake's handovers"). `author_wake` is null on a thread with no author and
+otherwise `{"fix_size", "floor", "floor_note", "integration", "push",
+"checkout", "checkout_note"}`: the largest fix size over the gating seats,
+the frozen head of the posted target (null with a `floor_note` when the
+thread does not establish it: no target, or an author cover with no usable
+`Frozen-Head:` line), and whether the author's next wake integrates the
+human's push, with that push's message id and, when its sha is a full one,
+the head to check out. `covers` has one entry per author cover, in thread
+order: `{"version", "message_id", "sha", "described_tip", "matches",
+"note"}`. `matches` compares the cover's `Described-Tip:` line with the sha
+of its own `X-Review-Target-Set`; it is null when the cover has no such line
+(older versions, other sites), and a `note` names both shas when it is
+false. A mismatch is not a reason and does not block `CONVERGED`.
+
 ### Why the gate and the personas read verdicts differently
 
 Three readers judge verdicts: the author seat, the secretary, and
@@ -922,6 +939,109 @@ agents:
   `wake-when: lkml-panel` on the secretary. A defer that no later reply ever wakes shows
   up as a `wake-deferred` flag, which `lkml-panel-state.py` reports as
   `NEEDS-OPERATOR`.
+
+### The fix size and the author wake's handovers
+
+A reviewer's blocking verdict (`Changes-requested` or `NAK`) may state the
+size of the fix it asks for as a line of its own, directly above the verdict
+line (the verdict stays the last non-empty line of the reply):
+
+```
+Fix-Size: s
+Changes-requested: the loop leaks the buffer on the error path.
+```
+
+The key is case-sensitive and the value is one of `xs`, `s`, `m`, `l`;
+surrounding whitespace is ignored, a quoted (`>`) line never counts, and the
+last such line of the message wins. A blocking verdict with no such line, or
+with a last one that is any other value, counts as `m`, so an unsized review
+never gets the smallest pipeline. A `Question` is never sized.
+
+The size of a wake is the largest `Fix-Size` over the open blocking verdicts
+of GATING seats: each gating seat's latest verdict on the current version,
+when it blocks (a block carried onto the version counts; an overruled one does
+not). An advisory seat's verdict sizes nothing, and a wake with no open
+blocking verdict (a human push, a question, a dispute) has no size.
+
+When the gate decides to wake the author seat (exit 0), it can hand the
+spawner three values, each as one value and nothing else in a file named by an
+optional environment variable. A variable that is unset or empty means no
+handover and the gate behaves as it does without this feature. Nothing is
+written for a skip, a defer, an error, or a wake of any other seat, and a
+file already at the path is never touched when there is nothing to write.
+
+| Variable | The file holds | Not written when |
+|---|---|---|
+| `FS_HOOK_PIPELINE_SIZE_FILE` | the wake's fix size (`xs`, `s`, `m` or `l`) | no gating seat blocks |
+| `FS_HOOK_FINALIZE_FLOOR_FILE` | one full sha: the frozen head of the posted review target, the lowest commit the finalize script may rewrite history down to (an author version: its cover's `Frozen-Head:`; a head the human pushed, the root included: that head) | the thread does not establish it |
+| `FS_HOOK_CHECKOUT_FILE` | one full sha: the head the human pushed, for an integration wake | the wake is not an integration wake, or the pushed sha is not a full one |
+
+An **integration wake** is the wake in which the author resets its branch to
+the pushed head and posts it unchanged. `lkml-panel-state.py` decides it,
+from the persona's checklist ("Has the human author pushed?"): the newest push
+that is not a carry (an `X-Upstream-Head` header, `X-Lkml-Push-Mode: carry`
+skipped) is unanswered, which means no later author cover carries
+`Frozen-Head: <that sha>`; and every seat owed on the current version has
+replied, or the author has already asked the Secretary for it. For an
+integration wake, when `FS_HOOK_CHECKOUT_FILE` is set, the gate writes the
+checkout and neither a floor nor a size; every other author wake writes
+nothing there and hands over size and floor as above.
+
+A value that cannot be worked out, or a file that cannot be written, never
+changes the decision: the gate writes nothing for it, prints one more line
+`lkml-wake-gate: handover: ...` after the decision line saying why, and exits
+as it would have without the variable. With no handover variable set, stderr
+is the one decision line.
+
+#### `lkml-author-finalize.sh`
+
+The runner calls it once, in the wake's clone, after the last leg of a
+composed author wake that made a commit, with no agent session alive. The
+legs leave `fixup!` commits so each review reads exactly the new work; the
+script folds them once and makes the cover true of the folded branch.
+
+Inputs, each a flag with an environment fallback: `--base` (`FS_FINALIZE_BASE`,
+the sha the wake started from, the previous version's review target),
+`--floor` (`FS_FINALIZE_FLOOR`, else the base: the lowest commit history may be
+rewritten down to, the frozen head when the gate handed one over),
+`--reply` (`FS_FINALIZE_REPLY`, the cover the wake wrote, writable), `--repo`
+(default the current directory) and `--branch` (default the checked-out
+branch; it need not be checked out). The cover carries `Frozen-Head: <sha>`
+and `Described-Tip: <sha>`, the branch as the last leg left it, each alone on
+its line in the body.
+
+In order: it refuses unless the floor is the base or below it, the base is an
+ancestor of the branch and no merge commit lies above the floor; refuses
+unless the cover carries `Frozen-Head` and `Described-Tip`, each a full sha
+naming a commit, `Described-Tip` is the branch's sha (the stale cover) and
+`Frozen-Head` is the floor or below it (above it the cover is false; strictly
+below it folding stops at the floor, said on stderr); folds
+(`git rebase -i --autosquash <floor>`) in a scratch detached worktree under a
+private hooks directory, so the checked-out branch is never rebased in place;
+refuses unless the tree is unchanged; runs `lkml-series-check.sh` with the
+cover's `Frozen-Head` as the boundary and refuses on its failure; then makes
+the cover true: the `0/<K>` commit count, the range-diff in the first
+`## Since v<N>` section, every sha naming a rewritten commit, and
+`Described-Tip`. The reply is written first and the branch ref moved last, by
+compare-and-swap, with the reply put back if the swap loses or the run is
+interrupted (TERM, INT, an error) before the ref moved; such a run is re-run
+with the same arguments. Only an untrappable kill between the two writes
+leaves a cover naming the folded tip over an unfolded branch, which a re-run
+refuses as stale. A run that folded nothing writes nothing, and a second run
+on a folded branch changes nothing and exits 0.
+
+Exit status: 0 done. 2 means the branch is fine and the reply does not
+describe it: `Frozen-Head` or `Described-Tip` is missing or is not a full sha
+naming a commit, `Described-Tip` is not the branch's sha, or `Frozen-Head` is
+above the floor or unrelated to it. A rewritten reply alone cures each of
+these, so a runner may answer exit 2 with one retry that changes only the
+reply; the first line of stderr then names the line the cover must carry,
+with the full sha. 1 is every other refusal, usage errors included. On any
+refusal the reason is the first line of stderr
+and the ref and the reply file are byte for byte as they were. It runs
+`git rebase` and `git worktree` in `--repo` with the repository's hooks,
+editors, pagers and signing neutralised, so call it where the wake's own legs
+ran, not on a repository you do not trust.
 
 ## Known limits
 
