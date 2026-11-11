@@ -341,7 +341,10 @@ The body carries, in this order:
   changelog the core reviewer will NAK you for.
 - `## Sub-panel`, when an unanswered sub-panel digest is on the thread or
   attached to its root (see **Sub-panel digests**).
-- `## Testing`: the exact command(s) and the pass/fail counts.
+- `## Testing`: the exact command(s) and the pass/fail counts. Then every
+  test this version adds or changes, one per line, as `ran: <result>` or
+  `NOT RUN: <what it needs>`. A test nobody has run is a claim, and the
+  reader has to be able to tell which ones those are.
 - `## Since v<N>`: the output of `git range-diff <frozen head>..<vN sha>
   <frozen head>..HEAD` (the one frozen head both versions share), where the vN sha is the `X-Review-Target` sha on the
   messages about vN. If the two trees are identical, say so plainly — compare

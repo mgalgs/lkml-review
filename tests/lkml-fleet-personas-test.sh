@@ -854,6 +854,8 @@ has_flat "$tst" 'Write no `Suite-Run:` line' "tests.md writes no Suite-Run line 
 has_flat "$pra" 'unless the thread root carries `X-Lkml-Suite-Source: ci`' "pr-author.md exempts the re-roll's suite run under ci"
 has_flat "$pra" 'do not run the full suite' "pr-author.md does not run the full suite under ci"
 has_flat "$pra" 'not CI-tested' "pr-author.md says its own commits are not CI-tested"
+has_flat "$pra" 'as `ran: <result>` or `NOT RUN: <what it needs>`' "pr-author.md lists each added or changed test as ran or NOT RUN"
+has_flat "$sec" 'repeat each `NOT RUN:` line from the `## Testing` section of the cover that posted vN' "secretary.md repeats the cover's NOT RUN tests beside the reference implementation"
 has_flat "$pra" 'as in step 6 of the re-roll' "pr-author.md applies the same rule to the integration"
 has_flat "$sec" 'If the root carries `X-Lkml-Suite-Source: ci`' "secretary.md has a CI branch"
 has_flat "$sec" 'no seat owes a `Suite-Run:` line' "secretary.md requires no Suite-Run line under ci"
