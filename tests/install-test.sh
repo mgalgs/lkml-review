@@ -84,6 +84,8 @@ work="$(mktemp -d)"; tmpdirs+=("$work")
 home_dir="$work/home"; mkdir -p -- "$home_dir"
 
 PORCELAIN=(
+    lkml-author-finalize.sh
+    lkml-author-finalize-bundle.sh
     lkml-cover.sh
     lkml-fleet.sh
     lkml-fleet-kickoff.sh

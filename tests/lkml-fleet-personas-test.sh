@@ -172,15 +172,15 @@ while read -r name want; do
             | sha256sum | cut -d' ' -f1)"
     check "$name's body + protocol-reviewer.md is its pre-split body" "$want" "$got"
 done <<'HASHES'
-architecture 51658ce02d861f9fc677fc0c048b27c51c8756df419c373945e85d502ce76e40
-core 3bb9cd90cb20026debcb44848afd96e31fc9accee45fbbde3b429c372cc7e699
-devils-advocate fdb59184bea20f9215411a941f1ca1a103c1d40ff02840d069ea56732c439a83
-docs dc817655d8f3c7e7b3ed3951888e56f02fd4a9a0601e73d9aae35ec7507d51b7
-newcomer 11184491d0911895fdcac00118cd1c2442e5b81b035cb2c8eaf83b48023c874c
-operability 72a60db9afd76dd75a740849c53604089fffccf8318b6fe4db8a309a3e94653e
-second-opinion e1c1bffaa2eb69dc8759bd8a2782d132e03319df03607cac329125fed319b25a
-security 86890a027432a7851109692920f9e8d00cddf4c40728dea1e146779389caebf2
-tests 8547f143415eb8eac77fd63150792ba47d547e360d258df588cf1555e99ba74b
+architecture a07fa35959a8071b218684662ea1adfbc1a62267f140bfc302d712fa6a5de331
+core 1edb02fb25826dd14d3c5f3fa974e8d92c2eac9ef63cae09ac737291d8e51bef
+devils-advocate b90b410131bcf1e9156e90af84f8f1dd52c637597f444ba708d2776e8396f768
+docs 1036d619cab9539c911d0f75c05bb608eec83843f27810c4288ee660f3b2e440
+newcomer 9a0cfc0a9dc3f5d6cc585401f6518a77c369aabffe028ad4a719c489bf0f41d2
+operability a68a607dd795d32e0bc5d17bfe4d84ee1cb2df096ea39e3e5906c6997b4ada0c
+second-opinion d94e01ca1e01efee45861fd6ff656b33927f2f0c465b3104ba208fc9b98a863e
+security 238cb3aa1c0e218feb88a631b2a09c84ab1e293f018c6fedbf4f193a0818a58e
+tests cadaf3aabdffd33fd8882139fa37fcac9b862bcda1705ac2ea796c0e95554074
 HASHES
 
 # The ci persona's suite source is a two-path contract: an executable
@@ -711,6 +711,12 @@ has_flat "$protocol_file" 'A point is closed when the failure it named can no lo
 has_flat "$protocol_file" 'Ask again the question that found it, of the whole class this time' "protocol-reviewer.md re-asks the question across the class"
 has_flat "$protocol_file" 'show that the reason given rules that scenario out' "protocol-reviewer.md holds a set-aside point to its failure scenario"
 has_flat "$protocol_file" 'A reason that is true and answers a nearby question leaves the point open' "protocol-reviewer.md does not close a point on a nearby answer"
+has_flat "$protocol_file" 'When that verdict is `Changes-requested` or `NAK`, put one more line directly above it' "protocol-reviewer.md puts Fix-Size above a blocking verdict, not after it"
+has_flat "$protocol_file" '`Fix-Size: xs`, `Fix-Size: s`, `Fix-Size: m` or `Fix-Size: l`' "protocol-reviewer.md names the four sizes"
+has_flat "$protocol_file" 'Size the change, not the defect' "protocol-reviewer.md sizes the fix, not the severity"
+has_flat "$protocol_file" 'a blocking verdict without the line is read as `m`' "protocol-reviewer.md says an unsized block is read as m"
+has_flat "$protocol_file" 'An advisory seat leaves the line out' "protocol-reviewer.md keeps advisory seats from sizing the fix"
+has_flat "$protocol_file" 'A `Question` takes no size' "protocol-reviewer.md gives a Question no size"
 # The sub-panel digest lives in one clearly conditional section, so a
 # main panel's secretary reads nothing new.
 has "$sec" '## On a sub-panel thread: a root carrying X-Lkml-Parent-Thread' \
@@ -857,6 +863,22 @@ has_flat "$pra" 'not CI-tested' "pr-author.md says its own commits are not CI-te
 has_flat "$pra" 'as `ran: <result>` or `NOT RUN: <what it needs>`' "pr-author.md lists each added or changed test as ran or NOT RUN"
 has_flat "$sec" 'repeat each `NOT RUN:` line from the `## Testing` section of the cover that posted vN' "secretary.md repeats the cover's NOT RUN tests beside the reference implementation"
 has_flat "$pra" 'as in step 6 of the re-roll' "pr-author.md applies the same rule to the integration"
+# A wake finished by a finalize step: the author leaves fixups for it, and
+# the cover names the tip it describes. The first needle is the condition
+# that keeps the rule inert on a seat with no such step.
+has_flat "$pra" 'If your instructions say a finalize step runs after the last leg, stop at the `--fixup` commits' "pr-author.md leaves folding to a finalize step only when told one runs"
+has_flat "$pra" 'Do not rebase, amend or otherwise rewrite any commit that existed when you started' "pr-author.md does not rewrite history ahead of a finalize step"
+has_flat "$pra" 'aim every `fixup!` at one of your own commits above the frozen head' "pr-author.md aims fixups above the frozen head"
+has_flat "$pra" '`Described-Tip: <sha>` alone on its line' "pr-author.md's cover names the tip it describes"
+has_flat "$pra" 'a stale cover is not posted' "pr-author.md says a stale cover is not posted"
+has_flat "$pra" 'Name a commit by its subject line, not its sha' "pr-author.md's changelog names commits by subject"
+has_flat "$pra" '`Described-Tip: <H>` alone on its line' "pr-author.md's integration cover names the tip it describes"
+brief="$prompts_dir/author-review-brief.md"
+check "author-review-brief.md opens with the separating blank line" "" "$(head -n 1 "$brief" 2>/dev/null)"
+has_flat "$brief" 'Start from the blocking verdicts on the previous version' "author-review-brief.md starts from the blocking verdicts"
+has_flat "$brief" 'break the fix, watch the test go red, and restore it' "author-review-brief.md makes each new test fail once"
+has_flat "$brief" 'with no rebase and no amend' "author-review-brief.md keeps a fixing session from rewriting history"
+has_flat "$brief" '`git rev-parse HEAD` equals the cover'"'"'s `Described-Tip:`' "author-review-brief.md checks the cover names the tip before approving"
 has_flat "$sec" 'If the root carries `X-Lkml-Suite-Source: ci`' "secretary.md has a CI branch"
 has_flat "$sec" 'no seat owes a `Suite-Run:` line' "secretary.md requires no Suite-Run line under ci"
 has_flat "$sec" 'whose `X-Lkml-CI-Head` sha' "secretary.md matches the CI head sha"

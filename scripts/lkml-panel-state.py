@@ -259,6 +259,60 @@ Changes-requested, Question, then the -by trailers). state is:
     overruled  blocking or question, and a ruling names that very
                message (see "Overrule"); verdict keeps the seat's tag
 
+Fix size -- a blocking verdict (Changes-requested or NAK) may state how
+big the fix it asks for is, as a line of its own in the message that
+carries it: `Fix-Size: xs`, `s`, `m` or `l` (the key is case-sensitive,
+surrounding whitespace is ignored, a quoted line never counts, and the last
+such line of the message wins). The line is not the verdict line, which
+stays the last non-empty line. seats[].fix_size is that value for a seat
+whose state is blocking (a carried blocker included), and null for every
+other state; a blocking verdict with no such line, or a last one with any
+other value, is `m`, so an unsized block never gets the smallest pipeline.
+author_wake.fix_size is the largest (xs < s < m < l) over the GATING seats'
+sizes: an advisory seat's verdict sizes nothing. Null when no gating seat
+blocks. Reporting only: no status, verdict or reason depends on it.
+
+Author wake -- author_wake describes the thread, not any one wake; the
+wake gate decides whether a wake happens and hands the spawner what it
+asks for. Beside fix_size (see "Fix size"):
+  floor / floor_note: the frozen head of the POSTED current target (a carry
+    push does not move it), the lowest commit the author's next version may
+    rewrite history down to. Established by a postmaster re-freeze, by the
+    author cover's Frozen-Head line when that line is accepted (see "Frozen
+    head"), or, when no author cover set the target, by the root's line.
+    Null, with floor_note saying why, when the thread has no review target
+    or the root no usable line, or when the author cover that set the target
+    has no Frozen-Head line, a malformed one, or one the thread does not
+    vouch for: a history rewrite is licensed by the line itself, never by
+    the fallback frozen_head gives the verdict logic.
+  integration / push / checkout / checkout_note: whether the author's next
+    wake integrates the human's push, per the author persona's checklist
+    ("Has the human author pushed?"): (a) the newest push that is not a
+    carry (X-Lkml-Push-Mode: carry; a push is an X-Upstream-Head HEADER),
+    (b) unanswered: no later cover from the author carries Frozen-Head:
+    <that sha> as its first such line, and (c) every seat owed on the
+    current version has replied, that is, sent a valid message carrying
+    its X-Version, whatever the message says (owed: the panel as the
+    version was posted, less advisory seats, and only the listed seats
+    when the version answers recheck pushes only; a seat an escalate push
+    adds after the version was posted is not owed, one already owed
+    stays owed), or the author has already asked the Secretary for it (a message
+    from the author since the version was posted, with the Secretary in To
+    or Cc). push is that push's message id and checkout its sha when it is a
+    full one (else null with checkout_note); all three are null otherwise.
+    push.answered and the secretary gate are unchanged: (b) is the
+    persona's literal rule, which differs for a postmaster re-freeze.
+
+Cover invariant -- an author cover may carry a `Described-Tip: <sha>` line
+alone on its line: the branch as the last leg of the wake left it. covers[]
+reports, per cover (a message from the author with one valid
+X-Review-Target-Set, the root included), whether that line equals the sha of
+the cover's own X-Review-Target-Set: `matches` true or false, with a `note`
+naming both when false, and null when the cover has no such line (older
+versions, other sites). A value that is not a full sha cannot match, and is
+reported as written (lower-cased, clipped). Reporting only: a mismatch is
+neither a reason nor an advisory note, and changes no status, verdict or wake.
+
 Overrule -- a seat's block can be ruled on, never ignored. A ruling is a
 line `Overrule: <message-id>` on a line of its own at the left margin, not
 quoted, in a message from @core (while @core is on the effective panel
@@ -532,13 +586,15 @@ Output (null, never an omitted key, for what is unknown):
      "questions": [...],
      "now": "<ISO UTC>",                # the clock the ages were taken at
      "seats": [{"seat","state","verdict","message_id","version","sha",
-                "suite_run","carried","overruled_by","advisory"}],
+                "suite_run","carried","overruled_by","advisory","fix_size"}],
                                  # suite_run: null, or {"status",
                                  # "passed","failed","detail"}; see "Suite
                                  # run". carried: false = the verdict was
                                  # given on this version. overruled_by:
                                  # null, or {"seat","message_id"}; see
-                                 # "Overrule"
+                                 # "Overrule". fix_size: xs|s|m|l on a
+                                 # blocking verdict (see "Fix size"),
+                                 # else null
      "secretary": {"message_id","version","status","verdict",
                    "on_target","malformed","carried"},
      "digest_blocking": N|null,         # a sub-panel digest's count of
@@ -555,6 +611,15 @@ Output (null, never an omitted key, for what is unknown):
      "reasons": [...],                    # empty only for CONVERGED
      "advisory_notes": [...]}             # advisory seats' conditions;
                                           # never block, see "Advisory"
+     "covers": [{"version","message_id","sha","described_tip","matches",
+                 "note"}],                # one per author cover; see "Cover
+                                          # invariant". Reporting only
+     "author_wake": {"fix_size","floor","floor_note","integration",
+                     "push","checkout","checkout_note"}|null}
+                                          # what the author's next wake
+                                          # needs; null with no author; see
+                                          # "Fix size" and "Author wake".
+                                          # Reporting only
 """
 
 import json
@@ -585,11 +650,14 @@ ADDRESS_RE = re.compile(r"^@[a-z0-9][a-z0-9-]*$")
 HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
 FROZEN_HEAD_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
 FROZEN_HEAD_LINE_RE = re.compile(r"^Frozen-Head:(.*)$")
+DESCRIBED_TIP_LINE_RE = re.compile(r"^Described-Tip:(.*)$")
 ROSTER_KEYS = ("Author", "Panel", "Secretary", "Version-Limit", "Frozen-Head",
                "Suite", "Suite-Seats", "Advisory")
 ROSTER_LINE_RE = re.compile(r"^(" + "|".join(ROSTER_KEYS) + r"):(.*)$")
 PANEL_LINE_RE = re.compile(r"^Panel-[A-Za-z]+:")
 PANEL_KNOWN_RE = re.compile(r"^Panel-(?:Version|Status|Verdict):")
+FIX_SIZES = ("xs", "s", "m", "l")
+FIX_SIZE_PREFIX = "Fix-Size:"
 SUITE_RUN_PREFIX = "Suite-Run:"
 SUITE_RUN_COUNTS_RE = re.compile(
     r"Suite-Run: ([0-9]{1,18}) passed, ([0-9]{1,18}) failed[ \t]*")
@@ -1123,7 +1191,7 @@ def apply_overrule(entry, why, rulings, suite_seats):
     ruling = rulings.get(entry["message_id"])
     if ruling is None or entry["state"] not in ("blocking", "question"):
         return entry, why
-    entry.update(state="overruled",
+    entry.update(state="overruled", fix_size=None,
                  overruled_by={"seat": ruling["from"], "message_id": ruling["id"]})
     if entry["suite_run"] is not None and entry["seat"] in suite_seats:
         return entry, suite_run_reason(entry["seat"], entry["suite_run"])
@@ -1484,6 +1552,22 @@ def suite_run(status, passed=None, failed=None, detail=None):
             "detail": detail}
 
 
+def parse_fix_size(body):
+    """The size a blocking verdict's message states for the fix it asks
+    for: xs, s, m or l. A line of its own, key case-sensitive, surrounding
+    whitespace ignored; quoted lines never count and the last one wins.
+    No such line, or a last one with any other value, is m: an unsized
+    blocking review must not get the smallest pipeline."""
+    last = None
+    for line in body.split("\n"):
+        if QUOTED_RE.match(line):
+            continue
+        line = line.strip(SPACE)
+        if line.startswith(FIX_SIZE_PREFIX):
+            last = line[len(FIX_SIZE_PREFIX):].strip(SPACE)
+    return last if last in FIX_SIZES else "m"
+
+
 def parse_suite_run(body):
     """The Suite-Run claim a message body makes -> a suite_run object.
     Only non-quoted lines at the left margin count; the last one wins."""
@@ -1554,7 +1638,7 @@ def link_pushes(msgs, roster, pushes, versions, i):
     if i <= 0:
         return None
     v, prev = versions[i], versions[i - 1]
-    fh, _ = resolve_frozen_head(msgs, roster, v)
+    fh, _, _ = resolve_frozen_head(msgs, roster, v)
     if fh is None or fh["source"] != "upstream":
         return None
     q = [p for p in pushes if prev["seq"] < p["seq"] < v["seq"]]
@@ -1575,7 +1659,9 @@ def judge_on(entry, seat, m, tagged, target, suite_seats, source=None):
     version being judged."""
     tag = pick_tag(m["tags"])
     entry.update(state=seat_state_of(tag), verdict=tag, message_id=m["id"],
-                 version=m["version"], sha=m["sha"], carried=source is not None)
+                 version=m["version"], sha=m["sha"], carried=source is not None,
+                 fix_size=parse_fix_size(m["body"])
+                 if tag in BLOCKING_TAGS else None)
     if seat in suite_seats:
         entry["suite_run"] = parse_suite_run(m["body"])
     if entry["state"] == "positive":
@@ -1634,7 +1720,7 @@ def judge_seat(seat, msgs, target, suite_seats=(), carry_chain=(),
     entry = {"seat": seat, "state": "silent", "verdict": None,
              "message_id": None, "version": None, "sha": None,
              "suite_run": suite_run("missing") if seat in suite_seats else None,
-             "carried": False, "overruled_by": None}
+             "carried": False, "overruled_by": None, "fix_size": None}
     if on:
         return judge_on(entry, seat, on[-1], tagged, target, suite_seats)
     fallback = dict(entry)
@@ -1732,50 +1818,70 @@ def verdict_contradiction(verdict, target, frozen_head):
     return None
 
 
+def keyed_line(body, rx):
+    """The value of the first line of `body` that, with surrounding
+    whitespace stripped, matches `rx` (a `Key:(.*)` pattern), stripped;
+    None when no line does. The key stands alone on its line."""
+    for line in body.split("\n"):
+        mt = rx.match(line.strip(" \t\r"))
+        if mt:
+            return mt.group(1).strip(" \t\r")
+    return None
+
+
+def author_covers(msgs, author, sha=None):
+    """The messages `author` sent that carry one valid X-Review-Target-Set
+    (a cover), oldest first; with `sha`, only those naming that sha."""
+    return [m for m in msgs
+            if m["ok"] and m["from"] == author
+            and (tgt := single_target_header(m, "X-Review-Target-Set"))
+            is not None and (sha is None or tgt[1] == sha)]
+
+
 def resolve_frozen_head(msgs, roster, target):
     """The frozen head of the current target -> ({sha, source}|None,
-    reasons). See the module docstring, "Frozen head"."""
+    reasons, doubt). See the module docstring, "Frozen head". `doubt` is
+    None when the value is the one the thread establishes for this target
+    (a vouched re-freeze, the author cover's accepted line, or the root's
+    own line when no author cover set the target), else one sentence on
+    why the returned value is only a fallback."""
     root_sha = roster["frozen_head"]
     fallback = {"sha": root_sha, "source": "root"} if root_sha else None
     author = roster["author"]
+    no_root = None if root_sha else "the root has no usable Frozen-Head line"
     if target is None or author is None:
-        return fallback, []
+        return fallback, [], "the thread has no review target" \
+            if target is None else no_root
     if refrozen(target, msgs):
-        return {"sha": target["sha"], "source": "upstream"}, []
-    covers = []
-    for m in msgs:
-        if m["ok"] and m["from"] == author:
-            tgt = single_target_header(m, "X-Review-Target-Set")
-            if tgt is not None and tgt[1] == target["sha"]:
-                covers.append(m)
+        return {"sha": target["sha"], "source": "upstream"}, [], None
+    covers = author_covers(msgs, author, target["sha"])
     if not covers:
-        return fallback, []
+        return fallback, [], no_root
     cover = covers[-1]
-    raw = None
-    for line in cover["body"].split("\n"):
-        mt = FROZEN_HEAD_LINE_RE.match(line.strip(" \t\r"))
-        if mt:
-            raw = mt.group(1).strip(" \t\r")
-            break
+    raw = keyed_line(cover["body"], FROZEN_HEAD_LINE_RE)
     if raw is None:
-        return fallback, []
+        return fallback, [], (f"the cover (seq {cover['seq']}) that set the "
+                              f"target has no Frozen-Head line")
     if not FROZEN_HEAD_RE.match(raw):
         # The root's own malformed line already has a roster reason.
         why = [] if cover is msgs[0] else [
             f"cover seq {cover['seq']}: malformed Frozen-Head "
             f"{clip(raw)!r} ignored"]
-        return fallback, why
+        return fallback, why, (f"the cover (seq {cover['seq']}) that set the "
+                               f"target has a malformed Frozen-Head line")
     cand = raw.lower()
     if cand == root_sha:
-        return {"sha": cand, "source": "root"}, []
+        return {"sha": cand, "source": "root"}, [], None
     for m in msgs:
         if m["ok"] and m["seq"] < cover["seq"]:
             for v in header_values(m, "X-Upstream-Head"):
                 parsed = parse_target_value(v)
                 if parsed is not None and parsed[1] == cand:
-                    return {"sha": cand, "source": "upstream"}, []
+                    return {"sha": cand, "source": "upstream"}, [], None
     return fallback, [f"cover Frozen-Head {cand[:8]} is not a stamped "
-                      f"X-Upstream-Head on this thread"]
+                      f"X-Upstream-Head on this thread"], (
+        f"the cover (seq {cover['seq']}) that set the target names a "
+        f"Frozen-Head that is not a stamped X-Upstream-Head")
 
 
 def carry_chain(seat, msgs, roster, pushes, versions, cur, synthetic):
@@ -1966,6 +2072,125 @@ def upstream_state_of(status):
             "at": opt_str(u.get("at"))}
 
 
+def covers_of(msgs, roster):
+    """One entry per author cover, in thread order: whether the cover's
+    Described-Tip line (the branch as the last leg left it) is the sha of
+    its own X-Review-Target-Set. A cover without the line is matches=None,
+    not a mismatch. Reporting only."""
+    if roster["author"] is None:
+        return []
+    out = []
+    for m in author_covers(msgs, roster["author"]):
+        sha = single_target_header(m, "X-Review-Target-Set")[1]
+        raw = keyed_line(m["body"], DESCRIBED_TIP_LINE_RE)
+        tip = None if raw is None else clip(raw.lower(), 64)
+        matches = None if raw is None else raw.lower() == sha
+        out.append({
+            "version": int_header(m, "X-Version"), "message_id": m["id"],
+            "sha": sha, "described_tip": tip, "matches": matches,
+            "note": None if matches is not False else (
+                f"cover {m['id']}: Described-Tip {tip} is not its "
+                f"X-Review-Target {sha}")})
+    return out
+
+
+def newest_unanswered_push(msgs, roster, pushes):
+    """The newest push that is not a carry and that no later cover from the
+    author answers (a cover whose first Frozen-Head line is the push's sha),
+    else None. See "Integration wake"."""
+    p = next((p for p in reversed(pushes) if p["mode"] != "carry"), None)
+    if p is None:
+        return None
+    for m in author_covers(msgs, roster["author"]):
+        if m["seq"] > p["seq"]:
+            raw = keyed_line(m["body"], FROZEN_HEAD_LINE_RE)
+            if raw is not None and raw.lower() == p["sha"]:
+                return None
+    return p
+
+
+def owed_on_posted(msgs, roster, pushes, posted_seq, root_advisory,
+                   versions, cur):
+    """The seats owed on the current version as it was posted: the root's
+    panel and the seats escalate pushes before the posting added, less
+    the seats advisory then; when the version answers recheck pushes only
+    (carries aside), only the seats those pushes listed, together with
+    any unlisted seat that has no verdict to carry forward (persona step
+    6: a seat with none owes one). An escalate push that arrived later
+    excuses only a seat it adds; a seat already owed stays owed."""
+    before = [p for p in pushes if p["seq"] < posted_seq]
+    panel = list(roster["panel"])
+    for p in before:
+        if p["mode"] == "escalate":
+            panel += [a for a in p["seats"] if a not in panel]
+    escalated = escalated_seats(msgs, before)
+    owed = [a for a in panel if a not in root_advisory or a in escalated]
+    q = link_pushes(msgs, roster, pushes, versions, cur) \
+        if cur is not None else None
+    asked = [p for p in q or () if p["mode"] != "carry"]
+    if asked and all(p["mode"] == "recheck" for p in asked):
+        def carries(seat):
+            chain, _ = carry_chain(seat, msgs, roster, pushes, versions,
+                                   cur, False)
+            shas = {v["sha"] for v in chain}
+            return any(m["ok"] and m["from"] == seat and m["tags"]
+                       and m["sha"] in shas for m in msgs)
+        owed = [a for a in owed
+                if any(a in p["seats"] for p in asked) or not carries(a)]
+    return owed
+
+
+def integration_of(msgs, roster, pushes, posted, posted_seq, owed_seats):
+    """-> (push, why not): the push the author's next wake integrates, when
+    that wake is an integration wake, else None. The persona's checklist
+    ("Has the human author pushed?") is the spec: (a) the newest push that
+    is not a carry, (b) unanswered, (c) every owed seat (owed_on_posted)
+    has replied on the current version, or the author has already asked
+    the secretary for it. Replied is receipt (step 4): a valid message
+    from the seat carrying the posted version's X-Version (its
+    X-Review-Target when the version is unknown), whatever it says."""
+    p = newest_unanswered_push(msgs, roster, pushes)
+    if p is None:
+        return None
+    n = posted["version"] if posted else None
+    tsha = posted["sha"] if posted else None
+
+    def replied(seat):
+        return any(m["ok"] and m["from"] == seat
+                   and (m["version"] == n if n is not None
+                        else tsha is not None and m["sha"] == tsha)
+                   for m in msgs)
+    sec = roster["secretary"]
+    asked = sec is not None and any(
+        m["ok"] and m["from"] == roster["author"] and m["seq"] > posted_seq
+        and sec in m["to"] + m["cc"] for m in msgs)
+    if all(replied(a) for a in owed_seats) or asked:
+        return p
+    return None
+
+
+def author_wake_of(msgs, roster, pushes, posted, gating, floor, floor_doubt,
+                   posted_seq, owed_seats):
+    """What the spawner needs to know about the author's next wake, as the
+    thread stands (the gate decides whether the wake happens, and which
+    of these it hands over). None when the thread has no author."""
+    if roster["author"] is None:
+        return None
+    sizes = [s["fix_size"] for s in gating if s["fix_size"] in FIX_SIZES]
+    p = integration_of(msgs, roster, pushes, posted, posted_seq, owed_seats)
+    full = p is not None and FROZEN_HEAD_RE.match(p["sha"]) is not None
+    return {
+        "fix_size": max(sizes, key=FIX_SIZES.index) if sizes else None,
+        "floor": floor["sha"] if floor_doubt is None and floor else None,
+        "floor_note": floor_doubt,
+        "integration": p is not None,
+        "push": p["message_id"] if p else None,
+        "checkout": p["sha"] if full else None,
+        "checkout_note": (f"the pushed sha {p['sha']} is not a full sha"
+                          if p is not None and not full else None),
+    }
+
+
 def build_state(export, status, now):
     if not isinstance(export, dict) or not isinstance(export.get("thread"), str) \
             or not isinstance(export.get("messages"), list):
@@ -2010,6 +2235,7 @@ def build_state(export, status, now):
     # push asked for a seat's verdict on purpose, so it gates.
     notes = []
     escalated = escalated_seats(msgs, pushes)
+    root_advisory = list(roster["advisory"])
     for a in roster["advisory"]:
         if a in escalated:
             notes.append(f"{a}: named on Advisory, but push {escalated[a]} "
@@ -2041,13 +2267,20 @@ def build_state(export, status, now):
     target, target_reasons = resolve_target(status, msgs)
     reasons += target_reasons
 
-    frozen_head, fh_reasons = resolve_frozen_head(msgs, roster, target)
+    frozen_head, fh_reasons, floor_doubt = resolve_frozen_head(msgs, roster, target)
     reasons += fh_reasons
+    # The frozen head of the POSTED target: a carry push does not move it.
+    posted_head = frozen_head
 
     versions = posted_versions(msgs)
     cur = next((i for i in range(len(versions) - 1, -1, -1)
                 if target is not None and versions[i]["sha"] == target["sha"]),
                None)
+    posted_seq = (versions[cur]["seq"] if cur is not None
+                  else versions[-1]["seq"] if versions else 0)
+    owed_seats = owed_on_posted(msgs, roster, pushes, posted_seq,
+                                root_advisory, versions, cur)
+    posted = target
     carry_from = None
     if cur is not None:
         target, frozen_head, carry_from = carry_overlay(
@@ -2191,6 +2424,10 @@ def build_state(export, status, now):
         "upstream_state": upstream,
         "reasons": reasons,
         "advisory_notes": notes,
+        "covers": covers_of(msgs, roster),
+        "author_wake": author_wake_of(msgs, roster, pushes, posted, gating,
+                                      posted_head, floor_doubt, posted_seq,
+                                      owed_seats),
     }
 
 
