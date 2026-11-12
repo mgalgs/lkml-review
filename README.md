@@ -149,6 +149,7 @@ scheduling and reading are different jobs held by different sessions.
 | `lkml-revise.sh` | the author leg: produces the next version answering review |
 | `lkml-cover.sh` | drafts the cover letter |
 | `lkml-author-finalize.sh` | the author wake's last step: folds its `fixup!` commits onto a floor and makes the cover true of the folded branch; see `docs/cluster-panel.md` |
+| `lkml-author-finalize-bundle.sh` | generates the one POSIX sh file a runner executes for that step when nothing else from this checkout is present: `--output FILE` writes it, `--check FILE` says whether a staged copy is current; see `docs/cluster-panel.md` |
 | `lkml-series.sh` | series-level operations across versions |
 | `lkml-status.sh` | the one-screen summary |
 | `lkml-summarize.sh` | per-version results summary |

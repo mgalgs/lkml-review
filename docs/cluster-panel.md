@@ -1043,6 +1043,22 @@ and the ref and the reply file are byte for byte as they were. It runs
 editors, pagers and signing neutralised, so call it where the wake's own legs
 ran, not on a repository you do not trust.
 
+A runner that executes the finalize step with nothing else from this checkout
+present runs a generated file instead. `lkml-author-finalize-bundle.sh
+--output FILE` writes one POSIX sh file that carries this script and
+everything it runs; `lkml-author-finalize-bundle.sh --check FILE` exits 0
+only when FILE is a regular executable file with exactly the bytes `--output`
+would write now. The file is run as `sh FILE` in the clone, takes
+`FS_FINALIZE_BASE`, `FS_FINALIZE_FLOOR` and `FS_FINALIZE_REPLY` from the
+environment, and behaves as the script does given the same values. It needs
+`bash`, `python3`, `git` and `grep` on PATH, besides `sed`, `awk` and
+coreutils, and writes only under `${TMPDIR:-/tmp}`, the clone and the reply.
+The script runs in a process group of its own. A TERM or INT sent to the
+file is passed on to that group, so the reply is put back as above; a group
+still there five seconds later is killed, because a KILL sent to the file
+would not reach it. The file then exits 143 (130 on INT). A deploy stages the
+file from a pinned checkout and runs `--check` before relying on it.
+
 ## Known limits
 
 - Nothing wakes a thread when an operator question times out: no mail
