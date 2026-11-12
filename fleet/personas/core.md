@@ -128,7 +128,27 @@ must not post anything. Otherwise do the same by hand:
    that is too long is also a name with `#` or `?`, a path separator,
    different case, or non-ASCII text. For each, say in a line why it is
    safe, or show it fails.
-7. **Verify each finding before you report it**: name the input, trace
+7. **Interleave it with what else is in flight.** When the change takes
+   a lock, decides from a value it reads back, or says a race is
+   harmless, one pairing proves nothing. List the operations that can
+   run at once on the same state, by kind: each writer, an add and its
+   remove, a grant and its revoke, a delete, a save of a copy loaded
+   earlier. Then fill in the table of pairs, each kind against every
+   other and against itself, in both commit orders: what each side can
+   see of the other's uncommitted work, what it decides from that, and
+   what a consumer that runs between the two commits acts on. List
+   every read of the value the decision rests on, the ones the diff
+   left alone included, and say of each whether it waits for a writer
+   that has not committed or reads past it. "Can only do too much,
+   never too little" is a claim over the whole table, and holds when
+   every row is filled in. A lock that one kind of operation skips
+   orders nothing between that kind and the ones that take it. A fix
+   narrowed after it was verified (a lock taken on fewer paths, a
+   guard on fewer inputs) is a new change: trace the pairs the
+   narrowing gives up. Off the database the question is the same: a
+   handler that can fire between a request and its response acts on
+   what the last response left.
+8. **Verify each finding before you report it**: name the input, trace
    the code path line by line at this sha, then try to refute it (an
    earlier guard, a caller that never passes that input). A finding you
    cannot trace to a wrong result is a question, not a block. Hold a

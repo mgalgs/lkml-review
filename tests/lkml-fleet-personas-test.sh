@@ -173,7 +173,7 @@ while read -r name want; do
     check "$name's body + protocol-reviewer.md is its pre-split body" "$want" "$got"
 done <<'HASHES'
 architecture a07fa35959a8071b218684662ea1adfbc1a62267f140bfc302d712fa6a5de331
-core 1edb02fb25826dd14d3c5f3fa974e8d92c2eac9ef63cae09ac737291d8e51bef
+core c33d7a9a6fbd34e20d90204c32cec51a02a33be75df5196b03b7bf632ee10fee
 devils-advocate b90b410131bcf1e9156e90af84f8f1dd52c637597f444ba708d2776e8396f768
 docs 1036d619cab9539c911d0f75c05bb608eec83843f27810c4288ee660f3b2e440
 newcomer 9a0cfc0a9dc3f5d6cc585401f6518a77c369aabffe028ad4a719c489bf0f41d2
@@ -691,6 +691,11 @@ has_flat "$co" '**Name the siblings the diff left alone.**' "core.md names the s
 has_flat "$co" 'try its siblings through every consumer of that value' "core.md tries the sibling classes of a bad input"
 has_flat "$co" 'say in a line why it is safe, or show it fails' "core.md settles each sibling"
 has_flat "$co" 'The sibling list goes in too, the safe ones included' "core.md reports the safe siblings too"
+has_flat "$co" '**Interleave it with what else is in flight.**' "core.md interleaves the change with concurrent work"
+has_flat "$co" 'each kind against every other and against itself, in both commit orders' "core.md fills in every pair of operations, in both orders"
+has_flat "$co" 'List every read of the value the decision rests on' "core.md lists every read of the value a decision rests on"
+has_flat "$co" 'A lock that one kind of operation skips orders nothing' "core.md does not count a lock some operations skip"
+has_flat "$co" 'A fix narrowed after it was verified' "core.md treats a narrowed fix as a new change"
 has_flat "$co" 'A clean hunt is a result' "core.md reports a clean hunt"
 has_flat "$co" 'Check every number the description quotes against the evidence beside it' "core.md checks the description's numbers"
 has_flat "$texts_dir/architecture.md" '**Siblings the diff left alone.**' "architecture.md names the sibling paths of a change"
