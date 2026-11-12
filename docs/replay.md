@@ -86,9 +86,10 @@ whose persona names another harness is refused.
 
 Only entries strictly before the cut are kept: the file is cut before its
 first entry stamped at or after the cut, so the reply being tested never
-reaches the seat. Untimestamped lines are kept only ahead of that point. A
-later line stamped earlier than one already dropped means the file is not
-in order, and the replay refuses (exit 2). Subagent transcripts are cut the
+reaches the seat. Untimestamped lines are kept only ahead of that point.
+Entries after the cut may be slightly out of order among themselves; a
+later line stamped before the cut means the file is not in order, and the
+replay refuses (exit 2). Subagent transcripts are cut the
 same way; other files in the sibling directory are copied as they are.
 
 The cut file is placed where the postmaster's own resume path finds it: the

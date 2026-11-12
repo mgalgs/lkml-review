@@ -189,7 +189,7 @@ cut = when(cut_text)
 def cut_lines(path):
     """Lines strictly before the cut, as raw bytes, and how many were dropped."""
     lines = path.read_bytes().splitlines(keepends=True)
-    kept = None; latest_dropped = None
+    kept = None
     for n, line in enumerate(lines, 1):
         if not line.strip():
             stamp = None
@@ -204,13 +204,14 @@ def cut_lines(path):
                     stamp = when(stamp)
                 except (TypeError, ValueError):
                     sys.exit(f'Error: {path}: line {n} has an unreadable timestamp')
+        # Entries after the cut may be slightly out of order among
+        # themselves (claude stamps them as they are built); only one from
+        # before the cut appearing after it makes the cut unsafe.
         if kept is None:
             if stamp is not None and stamp >= cut:
-                kept = n - 1; latest_dropped = stamp
-        elif stamp is not None:
-            if stamp < latest_dropped:
-                sys.exit(f'Error: {path}: line {n} is earlier than a dropped entry; the cut cannot be trusted')
-            latest_dropped = stamp
+                kept = n - 1
+        elif stamp is not None and stamp < cut:
+            sys.exit(f'Error: {path}: line {n} is stamped before the cut but follows an entry after it; the cut cannot be trusted')
     if kept is None:
         kept = len(lines)
     return b''.join(lines[:kept]), kept, len(lines) - kept

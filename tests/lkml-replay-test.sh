@@ -96,6 +96,7 @@ def entry(ts,text,kind='user'):
 (root/sid/'subagents'/'agent-a.jsonl').write_text(entry('02.000','MARKER-SUB-EARLY')+entry('06.000','MARKER-SUB-LATE'))
 (root/sid/'tool-results'/'r1.txt').write_text('tool output\n')
 (root/'disorder.jsonl').write_text(entry('01.000','a')+entry('06.000','b')+entry('04.000','c'))
+(root/'jitter.jsonl').write_text(entry('01.000','a')+entry('07.000','b')+entry('06.000','c'))
 PY
 live=$tmp/live/$sid.jsonl
 label='unknown flag refused'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --bogus
@@ -231,7 +232,14 @@ assert d['reply_path']
 PY
     label='other session id named on stderr'; check grep -q 'did not resume session' "$tmp/resume-other.err"
     label='out-of-order transcript refused'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" --session-transcript "$tmp/live/disorder.jsonl" --session-id "$sid" --session-cut 2026-01-01T00:00:05Z --work-dir "$tmp/disorder"
-    label='out-of-order refusal says why'; check grep -q 'earlier than a dropped entry' "$tmp/refuse.out"
+    label='out-of-order refusal says why'; check grep -q 'stamped before the cut but follows' "$tmp/refuse.out"
+    "$script" "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" --session-transcript "$tmp/live/jitter.jsonl" --session-id "$sid" --session-cut 2026-01-01T00:00:05Z --work-dir "$tmp/jitter" > /dev/null 2> "$tmp/jitter.err"
+    rc=$?
+    label='disorder past the cut still resumes'; check test "$rc" -eq 0
+    label='disorder past the cut keeps only the early entry'; check python3 - "$tmp/jitter/replay.json" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1])); assert d['session_entries_kept']==1 and d['session_entries_dropped']==2
+PY
     mkdir "$tmp/codex-overlay"
     printf -- '---\nharness: codex\nmodel: m\nprotocol: reviewer\n---\n\nA codex core.\n' > "$tmp/codex-overlay/core.md"
     label='resume refused for another harness'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" --personas-overlay "$tmp/codex-overlay" "${resume_args[@]}" --work-dir "$tmp/codex"
