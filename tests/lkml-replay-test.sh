@@ -25,6 +25,25 @@ if [[ "${STUB_HANG:-}" == 1 ]]; then
     printf '  run dir:  %s\n' "$run"
     exit 0
 fi
+state='' resume='' clone=''
+args=("$@")
+for ((i=0; i<${#args[@]}; i++)); do
+    case "${args[i]}" in
+        --session-state) state=${args[i+1]};; --resume-session) resume=${args[i+1]};; --clone-dir) clone=${args[i+1]};;
+    esac
+done
+if [[ -n "$resume" ]]; then
+    # Resume only what claude would find: the store bound at
+    # ~/.claude/projects, under the project key of the wake's working dir.
+    key=$(printf '%s' "$clone" | sed 's/[^A-Za-z0-9]/-/g')
+    if [[ -f "$state/$key/$resume.jsonl" ]]; then
+        cp "$state/$key/$resume.jsonl" "$STUB_RUN_ROOT/resumed.jsonl"
+        sid=${STUB_INIT_ID:-$resume}
+    else
+        sid=ffffffff-0000-4000-8000-000000000000
+    fi
+    printf '{"type":"system","subtype":"init","session_id":"%s","claude_code_version":"%s"}\n' "$sid" "${STUB_CLI_VERSION:-9.9.9}" > "$run/events.jsonl"
+fi
 printf 'Subject: synthetic reply\n\nStub reply.\n' > "$run/outbox/mail-1.md"
 printf '0\n' > "$run/exit-code"
 printf '{"exit_code":0}\n' > "$run/summary.json"
@@ -61,6 +80,24 @@ refuse() {
     local rc=$?
     [[ "$rc" == "$expected" ]]
 }
+sid=0123abcd-0000-4000-8000-000000000001
+python3 - "$tmp/live" "$sid" <<'PY'
+import json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); sid=sys.argv[2]
+def entry(ts,text,kind='user'):
+    e={'type':kind,'sessionId':sid,'cwd':'/work/clone','message':{'role':kind,'content':text}}
+    if ts: e['timestamp']=f'2026-01-01T00:00:{ts}Z'
+    return json.dumps(e)+'\n'
+(root/sid/'subagents').mkdir(parents=True); (root/sid/'tool-results').mkdir()
+(root/f'{sid}.jsonl').write_text(json.dumps({'type':'summary','summary':'MARKER-UNSTAMPED-HEAD'})+'\n'
+    +entry('01.000','MARKER-EARLY-NOTE')+entry('04.999','MARKER-CREDENTIAL-READ','assistant')
+    +entry('05.000','MARKER-AT-CUT')+json.dumps({'type':'summary','summary':'MARKER-UNSTAMPED-TAIL'})+'\n'
+    +entry('09.000','MARKER-AFTER-CUT'))
+(root/sid/'subagents'/'agent-a.jsonl').write_text(entry('02.000','MARKER-SUB-EARLY')+entry('06.000','MARKER-SUB-LATE'))
+(root/sid/'tool-results'/'r1.txt').write_text('tool output\n')
+(root/'disorder.jsonl').write_text(entry('01.000','a')+entry('06.000','b')+entry('04.000','c'))
+PY
+live=$tmp/live/$sid.jsonl
 label='unknown flag refused'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --bogus
 label='missing model refused by name'; check refuse 2 --export "$tmp/thread.json" --cut 3 --seat core --project "$repo" --personas-ref "$new_ref" --thinking high
 label='missing model named'; check grep -q -- --model "$tmp/refuse.out"
@@ -73,6 +110,13 @@ python3 - "$tmp/thread.json" <<'PY'
 import json,sys
 p=sys.argv[1];d=json.load(open(p));d['messages'][1]['attachments']=[{'name':'missing.patch','bytes':4}];json.dump(d,open(p,'w'))
 PY
+for partial in "--session-transcript $live" "--session-id $sid" "--session-cut 2026-01-01T00:00:05Z" "--session-transcript $live --session-id $sid" "--session-id $sid --session-cut 2026-01-01T00:00:05Z"; do
+    read -r -a partial_args <<< "$partial"
+    label="partial session options refused: $partial"; check refuse 2 "${args[@]}" --personas-ref "$new_ref" "${partial_args[@]}" --work-dir "$tmp/partial"
+    label="partial session refusal names the set: $partial"; check grep -q 'go together' "$tmp/refuse.out"
+done
+label='non-UTC session cut refused'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --session-transcript "$live" --session-id "$sid" --session-cut 2026-01-01T00:00:05+02:00 --work-dir "$tmp/zone"
+label='malformed session id refused'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --session-transcript "$live" --session-id ../x --session-cut 2026-01-01T00:00:05Z --work-dir "$tmp/bad-id"
 label='missing attachment refused with exit 2 and name'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --work-dir "$tmp/missing"
 label='missing attachment named'; check grep -q missing.patch "$tmp/refuse.out"
 python3 - "$tmp/thread.json" <<'PY'
@@ -123,6 +167,75 @@ for key in ('handoff','thread_snapshot'):
 PY
         label="$arm warns about stub launcher"; check grep -q 'nonstandard postmaster launcher' "$tmp/$arm.err"
     done
+    label='fresh replays ask for no resume'; check python3 - "$STUB_ARGS_LOG" <<'PY'
+import pathlib,sys
+lines=pathlib.Path(sys.argv[1]).read_text().splitlines()
+assert len(lines)==2 and not any('--resume-session' in l for l in lines)
+PY
+    label='fresh record says not resumed'; check python3 - "$tmp/new/replay.json" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert d['resumed'] is False and d['session_transcript'] is None and d['exit_status']==0
+PY
+    resume_args=(--session-transcript "$live" --session-id "$sid" --session-cut 2026-01-01T00:00:05Z)
+    rm -f "$tmp/resumed.jsonl"
+    resume_out=$("$script" "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" "${resume_args[@]}" --live-cli-version 9.9.9 --work-dir "$tmp/resume" 2> "$tmp/resume.err")
+    rc=$?
+    if ((rc)); then cat "$tmp/resume.err" >&2; fi
+    label='resumed replay succeeds'; check test "$rc" -eq 0
+    label='resumed reply harvested'; check grep -q 'Stub reply' "$resume_out"
+    label='postmaster asks to resume the seeded id'; check grep -q -- "--resume-session $sid" <(tail -1 "$STUB_ARGS_LOG")
+    label='seeded session is where the CLI looks, cut strictly before the cut time'; check python3 - "$live" "$tmp/resumed.jsonl" <<'PY'
+import pathlib,sys
+lines=pathlib.Path(sys.argv[1]).read_bytes().splitlines(keepends=True)
+assert pathlib.Path(sys.argv[2]).read_bytes()==b''.join(lines[:3])
+PY
+    for marker in MARKER-AT-CUT MARKER-UNSTAMPED-TAIL MARKER-AFTER-CUT; do
+        label="seeded session lacks $marker"; if grep -q "$marker" "$tmp/resumed.jsonl"; then no "$label"; else ok "$label"; fi
+    done
+    label='subagent transcripts cut and other files copied'; check python3 - "$tmp/resume" "$sid" <<'PY'
+import pathlib,sys
+root=pathlib.Path(sys.argv[1]); sid=sys.argv[2]
+sub=next(root.glob(f'mail/.postmaster/state/*/core/*/{sid}/subagents/agent-a.jsonl')).read_text()
+assert 'MARKER-SUB-EARLY' in sub and 'MARKER-SUB-LATE' not in sub
+assert next(root.glob(f'mail/.postmaster/state/*/core/*/{sid}/tool-results/r1.txt')).read_text()=='tool output\n'
+PY
+    label='resumed record has provenance and no transcript text'; check python3 - "$tmp/resume/replay.json" "$live" "$sid" <<'PY'
+import hashlib,json,pathlib,sys
+path,live,sid=sys.argv[1:]; text=pathlib.Path(path).read_text(); d=json.loads(text)
+sha=lambda p: hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+assert d['exit_status']==0 and d['resumed'] is True and d['session_id']==sid and d['init_session_id']==sid
+assert d['session_transcript']==live and d['session_transcript_sha256']==sha(live)
+assert pathlib.Path(d['seeded_transcript']).name==sid+'.jsonl' and d['seeded_transcript_sha256']==sha(d['seeded_transcript'])
+assert d['session_cut']=='2026-01-01T00:00:05Z' and d['session_entries_kept']==3 and d['session_entries_dropped']==3
+assert d['cli_version']=='9.9.9' and d['cli_version_source']=='init' and d['live_cli_version']=='9.9.9'
+assert 'MARKER' not in text
+PY
+    label='matching CLI version does not warn'; if grep -q 'live wake ran' "$tmp/resume.err"; then no "$label"; else ok "$label"; fi
+    "$script" "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" "${resume_args[@]}" --live-cli-version 1.2.3 --work-dir "$tmp/resume-version" > /dev/null 2> "$tmp/resume-version.err"
+    rc=$?
+    label='differing CLI version still resumes'; check test "$rc" -eq 0
+    label='differing CLI version warns'; check grep -q 'replay ran claude 9.9.9; the live wake ran 1.2.3' "$tmp/resume-version.err"
+    label='differing CLI version records both'; check python3 - "$tmp/resume-version/replay.json" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1])); assert d['cli_version']=='9.9.9' and d['live_cli_version']=='1.2.3'
+PY
+    STUB_INIT_ID=eeeeeeee-0000-4000-8000-000000000000 "$script" "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" "${resume_args[@]}" --work-dir "$tmp/resume-other" > /dev/null 2> "$tmp/resume-other.err"
+    rc=$?
+    label='other session id exits 3'; check test "$rc" -eq 3
+    label='other session id recorded as not resumed'; check python3 - "$tmp/resume-other/replay.json" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert d['exit_status']==3 and d['resumed'] is False and d['init_session_id']=='eeeeeeee-0000-4000-8000-000000000000'
+assert d['reply_path']
+PY
+    label='other session id named on stderr'; check grep -q 'did not resume session' "$tmp/resume-other.err"
+    label='out-of-order transcript refused'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" --session-transcript "$tmp/live/disorder.jsonl" --session-id "$sid" --session-cut 2026-01-01T00:00:05Z --work-dir "$tmp/disorder"
+    label='out-of-order refusal says why'; check grep -q 'earlier than a dropped entry' "$tmp/refuse.out"
+    mkdir "$tmp/codex-overlay"
+    printf -- '---\nharness: codex\nmodel: m\nprotocol: reviewer\n---\n\nA codex core.\n' > "$tmp/codex-overlay/core.md"
+    label='resume refused for another harness'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" --personas-overlay "$tmp/codex-overlay" "${resume_args[@]}" --work-dir "$tmp/codex"
+    label='harness refusal names harness'; check grep -q "harness 'codex'" "$tmp/refuse.out"
     label='target differs from project HEAD'; check test "$sha" != "$(git -C "$repo" rev-parse HEAD)"
     label='every wake checks out frozen target'; check python3 - "$STUB_ARGS_LOG" "$sha" <<'PY'
 import pathlib,sys
