@@ -65,6 +65,56 @@ and `thread_snapshot_sha256`, for the files the postmaster wrote. A nonstandard
 launcher produces a warning. On failure, replay stops every unfinished wake;
 stop failures appear on stderr and in `stop_failures`.
 
+## Resuming the live conversation
+
+A live claude seat is one conversation per thread: the postmaster creates a
+session at the seat's first wake and resumes it on every later wake there.
+To replay that seat rather than a fresh one, pass the live session:
+
+```sh
+scripts/lkml-replay.sh ... \
+    --session-transcript <session-id>.jsonl --session-id <session-id> \
+    --session-cut <replayed-wake-spawned_at> [--live-cli-version <version>]
+```
+
+The transcript is the claude JSONL file from the live seat's session store,
+copied by the operator; a sibling directory of the same name next to it
+(subagent transcripts) is picked up too. `--session-cut` is the replayed
+wake's `spawned_at`, an ISO-8601 UTC time. The three options go together;
+any one alone is refused with exit 2. Only claude seats can resume; a seat
+whose persona names another harness is refused.
+
+Only entries strictly before the cut are kept: the file is cut before its
+first entry stamped at or after the cut, so the reply being tested never
+reaches the seat. Untimestamped lines are kept only ahead of that point. A
+later line stamped earlier than one already dropped means the file is not
+in order, and the replay refuses (exit 2). Subagent transcripts are cut the
+same way; other files in the sibling directory are copied as they are.
+
+The cut file is placed where the postmaster's own resume path finds it: the
+seat's session store, under the claude project key of the local wake's
+working directory, with the id in the postmaster's sessions record. The
+transcript's content, including its recorded working directory, is not
+rewritten. The replay passes no resume flag of its own.
+
+claude starts fresh when a resume fails and still replies, so after the
+harvest the replay reads the wake's init event. If its session id is not
+`--session-id`, the replay records `resumed: false` and exits 3. A resumed
+replay records `resumed: true`.
+
+`replay.json` records the transcript's path and SHA-256, the seeded file's
+path and SHA-256, the cut, entries kept and dropped, the session id, the id
+the wake reported (`init_session_id`) and `cli_version`, from the init event
+or else the launcher's `claude --version`. With `--live-cli-version`, a
+different version prints a warning and both are recorded. Transcript text is
+never recorded: a live transcript can hold anything the seat read, including
+credentials.
+
+The earlier turns of a resumed conversation were written under whatever
+persona and prompt text ran at those live wakes. A persona arm therefore
+measures the new text deployed mid-thread at the cut, not a seat that had it
+from its first wake.
+
 ## Differences from a live wake
 
 - No grants are seeded, so preview and other granted environments are absent.
@@ -72,7 +122,7 @@ stop failures appear on stderr and in `stop_failures`.
 - Live persona and prompt text depend on what was deployed when the wake spawned; pass the ref and overlay live at that time.
 - A model alias such as `opus` resolves through the CLI version in the live image; pass a full model ID when known.
 - Postmaster refreezes that move a target after a force push without a header cannot be reproduced.
-- A live claude or codex seat resumes its own conversation from its earlier wakes on the thread; a replay starts the seat fresh, so read a result as what a fresh seat does at the cut.
+- A live claude or codex seat resumes its own conversation from its earlier wakes on the thread. Without the session options a replay starts the seat fresh, so read that result as what a fresh seat does at the cut.
 
 The replay sets both `FORK_SANDBOX_MAIL_ROOT` and `FORK_SANDBOX_CONFIG_DIR`
 under its work directory and never calls `--remote`. The local postmaster and
