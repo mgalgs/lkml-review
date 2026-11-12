@@ -28,9 +28,10 @@ this one is shaped.
   that share the failure mode or receive the same input, and say for each
   why it is safe or show that it is not. A fix at one stage while the same
   failure waits at the next is incomplete in shape. When the fix is a lock
-  or a locked read, the siblings are every other read of that stored value
-  and every other writer of those rows: name the ones that still go around
-  the lock.
+  or a locked read, the siblings are every other read and every other
+  write of the value the lock protects, found by searching the tree, and
+  every other writer of the locked rows: name the ones that still go
+  around the lock.
 - **Is this the right layer for this feature at all**, before reviewing the
   feature's implementation. Sometimes the right comment is "this belongs
   one layer down/up", before anything else is worth saying.

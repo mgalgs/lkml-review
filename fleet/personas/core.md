@@ -133,7 +133,11 @@ must not post anything. Otherwise do the same by hand:
    harmless, one pairing proves nothing. List the operations that can
    run at once on the same state, by kind: each writer, an add and its
    remove, a grant and its revoke, a delete, a save of a copy loaded
-   earlier. Then fill in the table of pairs, each kind against every
+   earlier. Search the tree for the writers, not the diff: one that
+   goes around the hooks the change relies on (a bulk update, a raw
+   write, a job with its own repair) is a kind too, and so is a path the
+   description lists as a known gap. Being out of scope says nothing
+   about what it does to the rest. Then fill in the table of pairs, each kind against every
    other and against itself, in both commit orders: what each side can
    see of the other's uncommitted work, what it decides from that, and
    what a consumer that runs between the two commits acts on. List

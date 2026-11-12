@@ -172,8 +172,8 @@ while read -r name want; do
             | sha256sum | cut -d' ' -f1)"
     check "$name's body + protocol-reviewer.md is its pre-split body" "$want" "$got"
 done <<'HASHES'
-architecture f8e380f63cdb093cc8419baa01170adb8ac81655b34a89ab4a0b62df3cf3f0be
-core c33d7a9a6fbd34e20d90204c32cec51a02a33be75df5196b03b7bf632ee10fee
+architecture 7b66ee7e4079003351a1e115122290fbdddcdbb547316aebe91c6fd9ec0a9826
+core 8466af93c6b81403963985db969ea5ede565018255986428b1c0e35a59a9a5aa
 devils-advocate b90b410131bcf1e9156e90af84f8f1dd52c637597f444ba708d2776e8396f768
 docs 1036d619cab9539c911d0f75c05bb608eec83843f27810c4288ee660f3b2e440
 newcomer 9a0cfc0a9dc3f5d6cc585401f6518a77c369aabffe028ad4a719c489bf0f41d2
@@ -694,12 +694,14 @@ has_flat "$co" 'The sibling list goes in too, the safe ones included' "core.md r
 has_flat "$co" '**Interleave it with what else is in flight.**' "core.md interleaves the change with concurrent work"
 has_flat "$co" 'each kind against every other and against itself, in both commit orders' "core.md fills in every pair of operations, in both orders"
 has_flat "$co" 'List every read of the value the decision rests on' "core.md lists every read of the value a decision rests on"
+has_flat "$co" 'Search the tree for the writers, not the diff' "core.md finds the writers outside the diff"
+has_flat "$co" 'so is a path the description lists as a known gap' "core.md puts a known-gap path in the table of pairs"
 has_flat "$co" 'A lock that one kind of operation skips orders nothing' "core.md does not count a lock some operations skip"
 has_flat "$co" 'A fix narrowed after it was verified' "core.md treats a narrowed fix as a new change"
 has_flat "$co" 'A clean hunt is a result' "core.md reports a clean hunt"
 has_flat "$co" 'Check every number the description quotes against the evidence beside it' "core.md checks the description's numbers"
 has_flat "$texts_dir/architecture.md" '**Siblings the diff left alone.**' "architecture.md names the sibling paths of a change"
-has_flat "$texts_dir/architecture.md" 'the siblings are every other read of that stored value and every other writer of those rows' "architecture.md counts the readers and writers a lock leaves out as siblings"
+has_flat "$texts_dir/architecture.md" 'the siblings are every other read and every other write of the value the lock protects, found by searching the tree' "architecture.md counts the readers and writers a lock leaves out as siblings"
 has_flat "$co" '## Ruling on a dispute' "core.md has the ruling duty"
 has_flat "$co" 'Rule on the merits' "core.md rules on the merits"
 has_flat "$co" 'Put `Overrule: <message id>` alone on its line at the left margin' "core.md writes the machine-read Overrule line"
