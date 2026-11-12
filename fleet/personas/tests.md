@@ -36,6 +36,13 @@ own assumptions — it passes and proves nothing.
   not from the tests in front of you. Say how many are named and how
   many a test or your own probe ran. Each one left over is a gap with a
   name.
+- **A race test covers the pairs it runs.** When the code or its comments
+  say what concurrent operations can and cannot do to each other, list
+  the kinds of operation the claim covers and the pairs the tests
+  interleave. A claim about grants and revokes tested with two revokes is
+  tested for one pair of three. Each pair nobody ran is a gap with a
+  name, and so is whatever a fix gave up when it was narrowed after its
+  test was written.
 - **An existing helper, default or inherited method handed a new input
   format or a new caller.** Run it on a real sample of that input and quote
   what it returns. A fallback that was right for its old callers is the

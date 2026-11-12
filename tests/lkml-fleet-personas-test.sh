@@ -180,7 +180,7 @@ newcomer 9a0cfc0a9dc3f5d6cc585401f6518a77c369aabffe028ad4a719c489bf0f41d2
 operability a68a607dd795d32e0bc5d17bfe4d84ee1cb2df096ea39e3e5906c6997b4ada0c
 second-opinion d94e01ca1e01efee45861fd6ff656b33927f2f0c465b3104ba208fc9b98a863e
 security 238cb3aa1c0e218feb88a631b2a09c84ab1e293f018c6fedbf4f193a0818a58e
-tests cadaf3aabdffd33fd8882139fa37fcac9b862bcda1705ac2ea796c0e95554074
+tests 7258be77198f01906b8bfdd6f67d86e5028f08454b7e8e76297c7afd93e44847
 HASHES
 
 # The ci persona's suite source is a two-path contract: an executable
@@ -756,6 +756,10 @@ has_flat "$texts_dir/tests.md" 'Say that the assumption is unverified against re
     "tests.md reports an external assumption as unverified"
 has_flat "$texts_dir/tests.md" 'The forms the code says it accepts, counted against the forms exercised' \
     "tests.md counts the named forms against the exercised ones"
+has_flat "$texts_dir/tests.md" 'A race test covers the pairs it runs' \
+    "tests.md counts the interleaved pairs against a concurrency claim"
+has_flat "$texts_dir/tests.md" 'Each pair nobody ran is a gap with a name' \
+    "tests.md names each pair of operations no test interleaves"
 has_flat "$texts_dir/tests.md" 'Say how many are named and how many a test or your own probe ran' \
     "tests.md reports the count of named and exercised forms"
 has_flat "$texts_dir/tests.md" 'so it is yours under any suite source' \
