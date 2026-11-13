@@ -54,8 +54,10 @@ digits.
 fleet configuration can override persona frontmatter. The record stores those
 values, the full persona commit, and the
 fork-sandbox commit. A staged fork-sandbox copy without `.git` cannot reveal
-its commit; set `FORK_SANDBOX_COMMIT` to the deployed full SHA in that case.
-If it is unavailable, the record says `unknown`.
+its commit; pass `--fork-sandbox-ref <full-sha>` (the commit it was staged
+from) in that case. For a git checkout the flag must match its HEAD, or the
+replay refuses with exit 2. Without either, `FORK_SANDBOX_COMMIT` is read,
+and failing that the record says `unknown`.
 
 `--personas-overlay <dir>` copies that directory's `*.md` persona files over
 the extracted ref files before the run. A same-name site file wins, and a

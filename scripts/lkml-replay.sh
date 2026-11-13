@@ -7,21 +7,22 @@
 # not resume that id exits 3 after recording; see docs/replay.md.
 set -euo pipefail
 
-usage() { echo 'Usage: lkml-replay.sh --export JSON --cut SEQ --seat NAME --personas-ref SHA --project DIR --model M --thinking T [--personas-overlay DIR] [--no-review-target] [--attachments-dir DIR] [--allow-missing-attachments] [--fork-sandbox DIR] [--work-dir DIR] [--timeout SECONDS] [--claude-credentials FILE] [--session-transcript FILE --session-id ID --session-cut ISO-8601-UTC --live-cli-version V] [--live-cli-version V] [--k8s --k8s-env FILE --seat-image REF] [--prepare-only]'; }
+usage() { echo 'Usage: lkml-replay.sh --export JSON --cut SEQ --seat NAME --personas-ref SHA --project DIR --model M --thinking T [--personas-overlay DIR] [--no-review-target] [--attachments-dir DIR] [--allow-missing-attachments] [--fork-sandbox DIR] [--fork-sandbox-ref SHA] [--work-dir DIR] [--timeout SECONDS] [--claude-credentials FILE] [--session-transcript FILE --session-id ID --session-cut ISO-8601-UTC --live-cli-version V] [--live-cli-version V] [--k8s --k8s-env FILE --seat-image REF] [--prepare-only]'; }
 die() { echo "Error: $*" >&2; exit 2; }
 repo=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 export_file='' cut='' seat='' ref='' project='' model='' thinking='' attachments_dir='' personas_overlay='' fork_sandbox='' work='' timeout=3600 allow_missing=0 no_review_target=0
-session_transcript='' session_id='' session_cut='' live_cli_version='' claude_credentials=''
+fork_sandbox_ref='' session_transcript='' session_id='' session_cut='' live_cli_version='' claude_credentials=''
 k8s=0 k8s_env='' seat_image='' prepare_only=0
 while (($#)); do
     case "$1" in
-        --export|--cut|--seat|--personas-ref|--project|--model|--thinking|--attachments-dir|--personas-overlay|--fork-sandbox|--work-dir|--timeout|--session-transcript|--session-id|--session-cut|--live-cli-version|--claude-credentials|--k8s-env|--seat-image)
+        --export|--cut|--seat|--personas-ref|--project|--model|--thinking|--attachments-dir|--personas-overlay|--fork-sandbox|--fork-sandbox-ref|--work-dir|--timeout|--session-transcript|--session-id|--session-cut|--live-cli-version|--claude-credentials|--k8s-env|--seat-image)
             (($# >= 2)) || die "$1 requires a value"
             case "$1" in
                 --export) export_file=$2;; --cut) cut=$2;; --seat) seat=$2;; --personas-ref) ref=$2;; --project) project=$2;;
                 --model) model=$2;; --thinking) thinking=$2;; --attachments-dir) attachments_dir=$2;;
                 --personas-overlay) personas_overlay=$2;;
-                --fork-sandbox) fork_sandbox=$2;; --work-dir) work=$2;; --timeout) timeout=$2;;
+                --fork-sandbox) fork_sandbox=$2;; --fork-sandbox-ref) fork_sandbox_ref=$2;;
+                --work-dir) work=$2;; --timeout) timeout=$2;;
                 --session-transcript) session_transcript=$2;; --session-id) session_id=$2;;
                 --session-cut) session_cut=$2;; --live-cli-version) live_cli_version=$2;;
                 --claude-credentials) claude_credentials=$2;;
@@ -40,6 +41,7 @@ done
 [[ -n "$model" ]] || die '--model is required'
 [[ -n "$thinking" ]] || die '--thinking is required'
 [[ "$cut" =~ ^[1-9][0-9]*$ && "$timeout" =~ ^[1-9][0-9]*$ && "$seat" =~ ^[a-z][a-z0-9-]*$ ]] || die 'invalid cut, timeout or seat'
+[[ -z "$fork_sandbox_ref" || "$fork_sandbox_ref" =~ ^[0-9a-f]{40}$ ]] || die '--fork-sandbox-ref must be a full 40-hex commit'
 if ((k8s)); then
     [[ -f "$k8s_env" && -n "$seat_image" ]] || die '--k8s requires --k8s-env FILE and --seat-image REF'
     [[ "$seat_image" =~ ^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$ ]] || die 'invalid --seat-image reference'
@@ -84,7 +86,10 @@ else
 fi
 [[ -x "$fork_sandbox/scripts/fork-sandbox-postmaster.sh" ]] || die 'fork-sandbox checkout missing'
 fork_ref=$(git -C "$fork_sandbox" rev-parse HEAD 2>/dev/null || true)
-fork_ref=${fork_ref:-${FORK_SANDBOX_COMMIT:-unknown}}
+if [[ -n "$fork_ref" && -n "$fork_sandbox_ref" && "$fork_ref" != "$fork_sandbox_ref" ]]; then
+    die "--fork-sandbox-ref $fork_sandbox_ref does not match the checkout's HEAD $fork_ref"
+fi
+fork_ref=${fork_ref:-${fork_sandbox_ref:-${FORK_SANDBOX_COMMIT:-unknown}}}
 if [[ -z "$work" ]]; then work=$(mktemp -d /var/tmp/claude-scratch/lkml-replay.XXXXXX); else mkdir -p -- "$work"; work=$(readlink -f "$work"); fi
 [[ "$work" == /var/tmp/claude-scratch/* && "$work" != /var/tmp/claude-scratch/forks/* ]] || die 'work dir must be under /var/tmp/claude-scratch, outside forks'
 [[ -z "$(ls -A "$work")" ]] || die 'work dir must be empty'

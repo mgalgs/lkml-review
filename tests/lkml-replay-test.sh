@@ -156,6 +156,33 @@ python3 - "$tmp/thread.json" <<'PY'
 import json,sys
 p=sys.argv[1];d=json.load(open(p));d['messages'][1]['attachments']=[];json.dump(d,open(p,'w'))
 PY
+label='short fork-sandbox ref refused'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --fork-sandbox-ref abc123 --work-dir "$tmp/fs-short"
+label='short fork-sandbox ref refusal says why'; check grep -q '40-hex' "$tmp/refuse.out"
+# A staged fork-sandbox copy has no .git; prepare-only needs only the postmaster's path.
+mkdir -p "$tmp/fs-copy/scripts"
+printf '#!/bin/sh\nexit 0\n' > "$tmp/fs-copy/scripts/fork-sandbox-postmaster.sh"
+chmod +x "$tmp/fs-copy/scripts/fork-sandbox-postmaster.sh"
+fs_ref=$(printf 'a%.0s' {1..40})
+"$script" "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$tmp/fs-copy" --fork-sandbox-ref "$fs_ref" --work-dir "$tmp/fs-ref" --prepare-only > /dev/null 2> "$tmp/fs-ref.err"
+rc=$?
+label='fork-sandbox ref on a copy without git accepted'; check test "$rc" -eq 0
+label='fork-sandbox ref recorded'; check python3 - "$tmp/fs-ref/replay.json" "$fs_ref" <<'PY'
+import json,sys
+assert json.load(open(sys.argv[1]))['fork_sandbox_commit']==sys.argv[2]
+PY
+cp -r "$tmp/fs-copy" "$tmp/fs-git"
+git -C "$tmp/fs-git" init -q
+git -C "$tmp/fs-git" -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false commit -q --allow-empty -m t
+fs_head=$(git -C "$tmp/fs-git" rev-parse HEAD)
+label='fork-sandbox ref contradicting the checkout refused'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$tmp/fs-git" --fork-sandbox-ref "$fs_ref" --work-dir "$tmp/fs-mismatch" --prepare-only
+label='contradiction refusal says why'; check grep -q 'does not match' "$tmp/refuse.out"
+"$script" "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$tmp/fs-git" --fork-sandbox-ref "$fs_head" --work-dir "$tmp/fs-match" --prepare-only > /dev/null 2>&1
+rc=$?
+label='fork-sandbox ref matching the checkout accepted'; check test "$rc" -eq 0
+label='matching ref recorded'; check python3 - "$tmp/fs-match/replay.json" "$fs_head" <<'PY'
+import json,sys
+assert json.load(open(sys.argv[1]))['fork_sandbox_commit']==sys.argv[2]
+PY
 if [[ -z "${1:-}" ]]; then
     echo 'SKIP postmaster-dependent cases: pass a fork-sandbox checkout as argument'
 else
