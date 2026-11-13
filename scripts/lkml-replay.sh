@@ -7,14 +7,14 @@
 # not resume that id exits 3 after recording; see docs/replay.md.
 set -euo pipefail
 
-usage() { echo 'Usage: lkml-replay.sh --export JSON --cut SEQ --seat NAME --personas-ref SHA --project DIR --model M --thinking T [--personas-overlay DIR] [--no-review-target] [--attachments-dir DIR] [--allow-missing-attachments] [--fork-sandbox DIR] [--work-dir DIR] [--timeout SECONDS] [--session-transcript FILE --session-id ID --session-cut ISO-8601-UTC [--live-cli-version V]]'; }
+usage() { echo 'Usage: lkml-replay.sh --export JSON --cut SEQ --seat NAME --personas-ref SHA --project DIR --model M --thinking T [--personas-overlay DIR] [--no-review-target] [--attachments-dir DIR] [--allow-missing-attachments] [--fork-sandbox DIR] [--work-dir DIR] [--timeout SECONDS] [--claude-credentials FILE] [--session-transcript FILE --session-id ID --session-cut ISO-8601-UTC [--live-cli-version V]]'; }
 die() { echo "Error: $*" >&2; exit 2; }
 repo=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 export_file='' cut='' seat='' ref='' project='' model='' thinking='' attachments_dir='' personas_overlay='' fork_sandbox='' work='' timeout=3600 allow_missing=0 no_review_target=0
-session_transcript='' session_id='' session_cut='' live_cli_version=''
+session_transcript='' session_id='' session_cut='' live_cli_version='' claude_credentials=''
 while (($#)); do
     case "$1" in
-        --export|--cut|--seat|--personas-ref|--project|--model|--thinking|--attachments-dir|--personas-overlay|--fork-sandbox|--work-dir|--timeout|--session-transcript|--session-id|--session-cut|--live-cli-version)
+        --export|--cut|--seat|--personas-ref|--project|--model|--thinking|--attachments-dir|--personas-overlay|--fork-sandbox|--work-dir|--timeout|--session-transcript|--session-id|--session-cut|--live-cli-version|--claude-credentials)
             (($# >= 2)) || die "$1 requires a value"
             case "$1" in
                 --export) export_file=$2;; --cut) cut=$2;; --seat) seat=$2;; --personas-ref) ref=$2;; --project) project=$2;;
@@ -23,6 +23,7 @@ while (($#)); do
                 --fork-sandbox) fork_sandbox=$2;; --work-dir) work=$2;; --timeout) timeout=$2;;
                 --session-transcript) session_transcript=$2;; --session-id) session_id=$2;;
                 --session-cut) session_cut=$2;; --live-cli-version) live_cli_version=$2;;
+                --claude-credentials) claude_credentials=$2;;
             esac
             shift 2;;
         --allow-missing-attachments) allow_missing=1; shift;;
@@ -50,6 +51,10 @@ if [[ -n "$session_transcript" || -n "$session_id" || -n "$session_cut" ]]; then
     resume=1
 fi
 [[ -z "$attachments_dir" ]] || attachments_dir=$(readlink -f "$attachments_dir")
+if [[ -n "$claude_credentials" ]]; then
+    [[ -f "$claude_credentials" ]] || die "claude credentials missing: $claude_credentials"
+    claude_credentials=$(readlink -f "$claude_credentials")
+fi
 if [[ -n "$personas_overlay" ]]; then
     [[ -d "$personas_overlay" ]] || die 'personas overlay directory missing'
     personas_overlay=$(readlink -f "$personas_overlay")
@@ -67,6 +72,8 @@ if [[ -z "$work" ]]; then work=$(mktemp -d /var/tmp/claude-scratch/lkml-replay.X
 [[ "$work" == /var/tmp/claude-scratch/* && "$work" != /var/tmp/claude-scratch/forks/* ]] || die 'work dir must be under /var/tmp/claude-scratch, outside forks'
 [[ -z "$(ls -A "$work")" ]] || die 'work dir must be empty'
 mkdir -p "$work/text" "$work/config" "$work/mail" "$work/hooks" "$work/runs" "$work/personas"
+# fork-sandbox reads the credential pin from claude.env in its config dir.
+[[ -z "$claude_credentials" ]] || printf 'CLAUDE_CREDENTIALS=%s\n' "$claude_credentials" > "$work/config/claude.env"
 git -C "$repo" archive "$ref" fleet/personas fleet/prompts | tar -x -C "$work/text" || die 'could not extract persona text'
 overlay_files=()
 if [[ -n "$personas_overlay" ]]; then
@@ -260,6 +267,7 @@ record() {
     REPLAY_EXPORT=$export_file REPLAY_SEAT=$seat REPLAY_REF=$ref REPLAY_MODEL=$model \
     REPLAY_THINKING=$thinking REPLAY_FORK_REF=$fork_ref REPLAY_OVERLAY=$personas_overlay \
     REPLAY_LAUNCHER=$FORK_SANDBOX_POSTMASTER_LAUNCHER REPLAY_LIVE_CLI=$live_cli_version \
+    REPLAY_CREDENTIALS=$claude_credentials \
     REPLAY_STOPPED="$(printf '%s\n' "${stopped_runs[@]}")" \
     REPLAY_STOP_FAILURES="$(printf '%s\n' "${stop_failures[@]}")" \
     REPLAY_OVERLAY_FILES="$(printf '%s\n' "${overlay_files[@]}")" python3 - "$work" <<'PY'
@@ -274,6 +282,7 @@ data.update({'export':os.environ['REPLAY_EXPORT'],'seat':os.environ['REPLAY_SEAT
  'exit_status':int(os.environ['REPLAY_STATUS']),'run_dir':os.environ['REPLAY_RUN_DIR'],'reply_path':os.environ['REPLAY_REPLY'],
  'personas_overlay':os.environ['REPLAY_OVERLAY'] or None,
  'launcher':os.environ['REPLAY_LAUNCHER'],
+ 'claude_credentials':os.environ['REPLAY_CREDENTIALS'] or None,
  'stopped_runs':[x for x in os.environ['REPLAY_STOPPED'].splitlines() if x],
  'stop_failures':[x for x in os.environ['REPLAY_STOP_FAILURES'].splitlines() if x],
  'overlaid_files':[x for x in os.environ['REPLAY_OVERLAY_FILES'].splitlines() if x] if os.environ['REPLAY_OVERLAY'] else [],

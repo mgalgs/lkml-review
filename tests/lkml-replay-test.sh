@@ -240,6 +240,16 @@ PY
 import json,sys
 d=json.load(open(sys.argv[1])); assert d['session_entries_kept']==1 and d['session_entries_dropped']==2
 PY
+    printf '{}\n' > "$tmp/creds.json"
+    "$script" "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" --claude-credentials "$tmp/creds.json" --work-dir "$tmp/creds" > /dev/null 2> "$tmp/creds.err"
+    rc=$?
+    label='pinned credential still replies'; check test "$rc" -eq 0
+    label='pinned credential written for fork-sandbox'; check grep -qx "CLAUDE_CREDENTIALS=$tmp/creds.json" "$tmp/creds/config/claude.env"
+    label='pinned credential recorded'; check python3 - "$tmp/creds/replay.json" "$tmp/creds.json" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1])); assert d['claude_credentials']==sys.argv[2]
+PY
+    label='missing credential file refused'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" --claude-credentials "$tmp/no-such-creds.json" --work-dir "$tmp/creds-missing"
     mkdir "$tmp/codex-overlay"
     printf -- '---\nharness: codex\nmodel: m\nprotocol: reviewer\n---\n\nA codex core.\n' > "$tmp/codex-overlay/core.md"
     label='resume refused for another harness'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" --personas-overlay "$tmp/codex-overlay" "${resume_args[@]}" --work-dir "$tmp/codex"

@@ -25,6 +25,9 @@ to choose it, or let the script make a fresh directory under
 `/var/tmp/claude-scratch`. An explicit work directory must be empty and under
 that scratch root, outside `forks/`, because fork-sandbox validates handoff
 paths there. `--timeout` defaults to 3600 seconds, the wake's own default.
+`--claude-credentials FILE` pins the claude account the wake runs on, through
+fork-sandbox's `claude.env`; without it the wake uses fork-sandbox's default.
+`replay.json` records the path as `claude_credentials`.
 
 `--model` and `--thinking` are required. Pass the values the live fleet used;
 fleet configuration can override persona frontmatter. The record stores those
