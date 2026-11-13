@@ -391,20 +391,24 @@ import json,pathlib,sys
 root=pathlib.Path(sys.argv[1]); seed=json.loads((root/'session-seed.json').read_text())
 path=pathlib.Path(seed['seeded_transcript'])
 drop=None
-if path.is_file():
-    for line in path.read_text(errors='replace').splitlines()[seed['session_entries_kept']:]:
-        try: entry=json.loads(line)
-        except ValueError: continue
-        attachments=[]
-        if isinstance(entry,dict):
-            attachments=entry.get('attachments',[])
-            if isinstance(entry.get('attachment'),dict): attachments=[entry['attachment'],*attachments]
-        for attachment in attachments:
-            if isinstance(attachment,dict) and attachment.get('type')=='thinking_drop':
-                newly=attachment.get('newlyDropped',{})
-                drop={k:newly.get(k) for k in ('reason','reasonCounts','blockCount')}
-                break
-        if drop is not None: break
+if not path.is_file():
+    sys.exit(4)
+lines=path.read_text(errors='replace').splitlines()
+if len(lines)<=seed['session_entries_kept']:
+    sys.exit(4)
+for line in lines[seed['session_entries_kept']:]:
+    try: entry=json.loads(line)
+    except ValueError: continue
+    attachments=[]
+    if isinstance(entry,dict):
+        attachments=entry.get('attachments',[])
+        if isinstance(entry.get('attachment'),dict): attachments=[entry['attachment'],*attachments]
+    for attachment in attachments:
+        if isinstance(attachment,dict) and attachment.get('type')=='thinking_drop':
+            newly=attachment.get('newlyDropped',{})
+            drop={k:newly.get(k) for k in ('reason','reasonCounts','blockCount')}
+            break
+    if drop is not None: break
 print(json.dumps(drop) if drop is not None else '')
 PY
 }
@@ -412,16 +416,35 @@ PY
 cleanup() {
     status=$?
     if (( status != 0 )); then
-        local env_file candidate
+        local env_file candidate backend branch pid identity current_identity i
+        local -a argv
         for env_file in "$work/mail/.postmaster/runs/"*.env; do
             [[ -f "$env_file" ]] || continue
             candidate=$(sed -n 's/^RUN_DIR=//p' "$env_file")
             [[ -n "$candidate" && ! -f "$candidate/summary.json" ]] || continue
             stopped_runs+=("$candidate")
-            if ! "$fork_sandbox/scripts/fork-sandbox" stop "$candidate"; then
-                echo "Error: could not stop run $candidate" >&2
-                stop_failures+=("$candidate")
+            backend=$(sed -n 's/^BACKEND=//p' "$env_file")
+            if [[ "$backend" == k8s ]]; then
+                argv=()
+                [[ -f "$candidate/fs-argv" ]] && mapfile -d '' -t argv < "$candidate/fs-argv"
+                branch=''
+                for ((i=0; i+1<${#argv[@]}; i++)); do
+                    [[ "${argv[i]}" == --branch ]] && { branch=${argv[i+1]}; break; }
+                done
+                pid=$(cat "$candidate/pid" 2>/dev/null || true)
+                identity=$(cat "$candidate/pid-identity" 2>/dev/null || true)
+                current_identity="$(readlink /proc/self/ns/pid 2>/dev/null || true) $(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+                if [[ "$pid" =~ ^[1-9][0-9]*$ && -n "$identity" && "$identity" == "$current_identity" ]]; then
+                    kill -TERM "$pid" 2>/dev/null || true
+                fi
+                if [[ -n "$branch" ]] && "${FORK_SANDBOX_POSTMASTER_K8S:-$fork_sandbox/scripts/fork-sandbox-k8s.sh}" rm --branch "$branch"; then
+                    continue
+                fi
+            elif "$fork_sandbox/scripts/fork-sandbox" stop "$candidate"; then
+                continue
             fi
+            echo "Error: could not stop run $candidate" >&2
+            stop_failures+=("$candidate")
         done
     fi
     record
@@ -463,7 +486,11 @@ while (( SECONDS < deadline )); do
             exit 3
         fi
         if ((resume)); then
-            drop_metadata=$(check_faithfulness) || die 'could not check transcript faithfulness'
+            drop_metadata=$(check_faithfulness) || {
+                faithful=false
+                echo 'Error: replay transcript was not recovered; do not score this run' >&2
+                exit 4
+            }
             if [[ -n "$drop_metadata" ]]; then
                 faithful=false
                 echo 'Error: replay dropped earlier thinking blocks; do not score this run' >&2

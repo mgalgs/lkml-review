@@ -43,6 +43,11 @@ if [[ -n "$resume" ]]; then
         if [[ "${STUB_THINKING_DROP:-}" == 1 ]]; then
             printf '%s\n' '{"timestamp":"2026-01-01T00:00:06Z","attachment":{"type":"thinking_drop","newlyDropped":{"reason":"prefix_mismatch","reasonCounts":{"prefix_mismatch":2},"blockCount":2},"secret":"DO-NOT-RECORD"},"message":"DO-NOT-RECORD"}' >> "$state/$key/$resume.jsonl"
         fi
+        if [[ "${STUB_TRANSCRIPT_STATE:-}" == missing ]]; then
+            rm -- "$state/$key/$resume.jsonl"
+        elif [[ "${STUB_TRANSCRIPT_STATE:-}" != unchanged ]]; then
+            printf '%s\n' '{"timestamp":"2026-01-01T00:00:07Z","type":"assistant"}' >> "$state/$key/$resume.jsonl"
+        fi
     else
         sid=ffffffff-0000-4000-8000-000000000000
     fi
@@ -252,6 +257,26 @@ import json,sys
 d=json.load(open(sys.argv[1])); assert d['faithful'] is True and d['resumed'] is True
 assert d['seat_image'].endswith('a'*64) and d['prepared'] is False
 PY
+    label='k8s wake branch carries the rekeyed thread'; check python3 - "$tmp/k8s-run" <<'PY'
+import json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); d=json.loads((root/'replay.json').read_text())
+argv=next(root.glob('runs/pm-k8s-wake.*/fs-argv')).read_bytes().split(b'\0')
+branch=argv[argv.index(b'--branch')+1].decode()
+assert branch.startswith('sbx-mail-'+d['thread'][:8]+'-') and d['source_thread'][:8] not in branch
+PY
+    for transcript_state in unchanged missing; do
+        STUB_TRANSCRIPT_STATE="$transcript_state" FORK_SANDBOX_POSTMASTER_K8S_WAKE_SCRIPT="$tmp/k8s-wake" FORK_SANDBOX_POSTMASTER_K8S_DETACH=inline \
+            "$script" "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" "${resume_args[@]}" \
+            --k8s --k8s-env "$tmp/k8s.env" --seat-image registry.example/seat:sha-ab12 \
+            --work-dir "$tmp/k8s-$transcript_state" > /dev/null 2> "$tmp/k8s-$transcript_state.err"
+        rc=$?
+        label="k8s $transcript_state transcript exits 4"; check test "$rc" -eq 4
+        label="k8s $transcript_state transcript is unfaithful"; check python3 - "$tmp/k8s-$transcript_state/replay.json" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1])); assert d['exit_status']==4 and d['faithful'] is False
+assert 'thinking_drop' not in d
+PY
+    done
     rm -f "$tmp/resumed.jsonl"
     resume_out=$("$script" "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" "${resume_args[@]}" --live-cli-version 9.9.9 --work-dir "$tmp/resume" 2> "$tmp/resume.err")
     rc=$?
@@ -281,7 +306,10 @@ sha=lambda p: hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
 assert d['exit_status']==0 and d['resumed'] is True and d['session_id']==sid and d['init_session_id']==sid
 assert d['faithful'] is True
 assert d['session_transcript']==live and d['session_transcript_sha256']==sha(live)
-assert pathlib.Path(d['seeded_transcript']).name==sid+'.jsonl' and d['seeded_transcript_sha256']==sha(d['seeded_transcript'])
+seeded=pathlib.Path(d['seeded_transcript'])
+assert seeded.name==sid+'.jsonl'
+assert d['seeded_transcript_sha256']==hashlib.sha256(b''.join(pathlib.Path(live).read_bytes().splitlines(keepends=True)[:3])).hexdigest()
+assert len(seeded.read_bytes().splitlines())>d['session_entries_kept']
 assert d['session_cut']=='2026-01-01T00:00:05Z' and d['session_entries_kept']==3 and d['session_entries_dropped']==3
 assert d['cli_version']=='9.9.9' and d['cli_version_source']=='init' and d['live_cli_version']=='9.9.9'
 assert 'MARKER' not in text
@@ -426,6 +454,41 @@ d=json.load(open(sys.argv[1])); err=pathlib.Path(sys.argv[2]).read_text()
 assert len(d['stopped_runs'])==1 and d['stop_failures']==d['stopped_runs']
 assert 'could not stop run' in err
 PY
+    cat > "$tmp/k8s-hang-wake" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == --detach ]]; then
+    "$0" "$2" </dev/null >/dev/null 2>&1 &
+    exit 0
+fi
+wake=$1
+printf '%s\n' "$$" > "$wake/pid"
+printf '%s %s' "$(readlink /proc/self/ns/pid)" "$(cat /proc/sys/kernel/random/boot_id)" > "$wake/pid-identity"
+while :; do sleep 1; done
+STUB
+    cat > "$tmp/k8s-rm" <<'STUB'
+#!/usr/bin/env bash
+[[ "$1" == rm && "$2" == --branch && -n "${3:-}" ]] || exit 2
+printf '%s\n' "$3" >> "$STUB_K8S_RM_LOG"
+STUB
+    chmod +x "$tmp/k8s-hang-wake" "$tmp/k8s-rm"
+    export STUB_K8S_RM_LOG="$tmp/k8s-rm.log"
+    FORK_SANDBOX_POSTMASTER_K8S_WAKE_SCRIPT="$tmp/k8s-hang-wake" FORK_SANDBOX_POSTMASTER_K8S="$tmp/k8s-rm" \
+        "$script" "${args[@]}" --timeout 3 --personas-ref "$new_ref" --fork-sandbox "$fs" \
+        --k8s --k8s-env "$tmp/k8s.env" --seat-image registry.example/seat:sha-ab12 \
+        --work-dir "$tmp/k8s-timeout" > "$tmp/k8s-timeout.out" 2> "$tmp/k8s-timeout.err"
+    rc=$?
+    label='k8s timeout is nonzero'; check test "$rc" -ne 0
+    label='k8s timeout uses rm branch contract'; check python3 - "$tmp/k8s-timeout" "$STUB_K8S_RM_LOG" <<'PY'
+import json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); d=json.loads((root/'replay.json').read_text())
+branches=pathlib.Path(sys.argv[2]).read_text().splitlines()
+assert len(branches)==1 and branches[0].startswith('sbx-mail-'+d['thread'][:8]+'-')
+assert d['source_thread'][:8] not in branches[0]
+assert len(d['stopped_runs'])==1 and d['stop_failures']==[]
+PY
+    k8s_pid=$(cat "$tmp/k8s-timeout/runs/pm-k8s-wake."*/pid)
+    label='k8s detached wrapper terminated'; if kill -0 "$k8s_pid" 2>/dev/null && [[ "$(ps -o stat= -p "$k8s_pid" 2>/dev/null)" != Z* ]]; then no "$label"; else ok "$label"; fi
     for second_agent in core tests; do
         export STUB_SECOND_AGENT="$second_agent"
         "$script" "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" --work-dir "$tmp/second-$second_agent" > "$tmp/second-$second_agent.out" 2> "$tmp/second-$second_agent.err"
