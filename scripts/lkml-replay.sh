@@ -7,14 +7,15 @@
 # not resume that id exits 3 after recording; see docs/replay.md.
 set -euo pipefail
 
-usage() { echo 'Usage: lkml-replay.sh --export JSON --cut SEQ --seat NAME --personas-ref SHA --project DIR --model M --thinking T [--personas-overlay DIR] [--no-review-target] [--attachments-dir DIR] [--allow-missing-attachments] [--fork-sandbox DIR] [--work-dir DIR] [--timeout SECONDS] [--claude-credentials FILE] [--session-transcript FILE --session-id ID --session-cut ISO-8601-UTC [--live-cli-version V]]'; }
+usage() { echo 'Usage: lkml-replay.sh --export JSON --cut SEQ --seat NAME --personas-ref SHA --project DIR --model M --thinking T [--personas-overlay DIR] [--no-review-target] [--attachments-dir DIR] [--allow-missing-attachments] [--fork-sandbox DIR] [--work-dir DIR] [--timeout SECONDS] [--claude-credentials FILE] [--session-transcript FILE --session-id ID --session-cut ISO-8601-UTC --live-cli-version V] [--live-cli-version V] [--k8s --k8s-env FILE --seat-image REF] [--prepare-only]'; }
 die() { echo "Error: $*" >&2; exit 2; }
 repo=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 export_file='' cut='' seat='' ref='' project='' model='' thinking='' attachments_dir='' personas_overlay='' fork_sandbox='' work='' timeout=3600 allow_missing=0 no_review_target=0
 session_transcript='' session_id='' session_cut='' live_cli_version='' claude_credentials=''
+k8s=0 k8s_env='' seat_image='' prepare_only=0
 while (($#)); do
     case "$1" in
-        --export|--cut|--seat|--personas-ref|--project|--model|--thinking|--attachments-dir|--personas-overlay|--fork-sandbox|--work-dir|--timeout|--session-transcript|--session-id|--session-cut|--live-cli-version|--claude-credentials)
+        --export|--cut|--seat|--personas-ref|--project|--model|--thinking|--attachments-dir|--personas-overlay|--fork-sandbox|--work-dir|--timeout|--session-transcript|--session-id|--session-cut|--live-cli-version|--claude-credentials|--k8s-env|--seat-image)
             (($# >= 2)) || die "$1 requires a value"
             case "$1" in
                 --export) export_file=$2;; --cut) cut=$2;; --seat) seat=$2;; --personas-ref) ref=$2;; --project) project=$2;;
@@ -24,10 +25,13 @@ while (($#)); do
                 --session-transcript) session_transcript=$2;; --session-id) session_id=$2;;
                 --session-cut) session_cut=$2;; --live-cli-version) live_cli_version=$2;;
                 --claude-credentials) claude_credentials=$2;;
+                --k8s-env) k8s_env=$2;; --seat-image) seat_image=$2;;
             esac
             shift 2;;
         --allow-missing-attachments) allow_missing=1; shift;;
         --no-review-target) no_review_target=1; shift;;
+        --k8s) k8s=1; shift;;
+        --prepare-only) prepare_only=1; shift;;
         -h|--help) usage; exit 0;;
         *) die "unknown option '$1'";;
     esac
@@ -36,12 +40,25 @@ done
 [[ -n "$model" ]] || die '--model is required'
 [[ -n "$thinking" ]] || die '--thinking is required'
 [[ "$cut" =~ ^[1-9][0-9]*$ && "$timeout" =~ ^[1-9][0-9]*$ && "$seat" =~ ^[a-z][a-z0-9-]*$ ]] || die 'invalid cut, timeout or seat'
+if ((k8s)); then
+    [[ -f "$k8s_env" && -n "$seat_image" ]] || die '--k8s requires --k8s-env FILE and --seat-image REF'
+    [[ "$seat_image" =~ ^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$ ]] || die 'invalid --seat-image reference'
+    if [[ "$seat_image" == *@sha256:* ]]; then
+        [[ "$seat_image" =~ @sha256:[0-9a-fA-F]{64}$ ]] || die 'invalid --seat-image digest'
+    else
+        [[ "$seat_image" =~ :sha-[0-9a-fA-F]+$ ]] || die '--seat-image must have a sha-<hex> tag or sha256 digest'
+    fi
+    k8s_env=$(readlink -f "$k8s_env")
+elif [[ -n "$k8s_env$seat_image" ]]; then
+    die '--k8s-env and --seat-image require --k8s'
+fi
 export_file=$(readlink -f "$export_file")
 project=$(readlink -f "$project")
 resume=0
 if [[ -n "$session_transcript" || -n "$session_id" || -n "$session_cut" ]]; then
     [[ -n "$session_transcript" && -n "$session_id" && -n "$session_cut" ]] \
         || die '--session-transcript, --session-id and --session-cut go together'
+    [[ -n "$live_cli_version" ]] || die 'a resumed replay requires --live-cli-version (the live wake init line)'
     [[ -f "$session_transcript" ]] || die "session transcript missing: $session_transcript"
     # The shape the postmaster accepts for a session it resumes.
     [[ "$session_id" =~ ^[0-9a-f][0-9a-f-]{7,63}$ ]] || die 'invalid session id'
@@ -74,6 +91,15 @@ if [[ -z "$work" ]]; then work=$(mktemp -d /var/tmp/claude-scratch/lkml-replay.X
 mkdir -p "$work/text" "$work/config" "$work/mail" "$work/hooks" "$work/runs" "$work/personas"
 # fork-sandbox reads the credential pin from claude.env in its config dir.
 [[ -z "$claude_credentials" ]] || printf 'CLAUDE_CREDENTIALS=%s\n' "$claude_credentials" > "$work/config/claude.env"
+if ((k8s)); then
+    python3 - "$k8s_env" "$work/config/k8s.env" "$seat_image" <<'PY'
+import pathlib,sys
+source,dest,image=pathlib.Path(sys.argv[1]),pathlib.Path(sys.argv[2]),sys.argv[3]
+lines=source.read_text().splitlines()
+lines=[line for line in lines if not line.startswith(('K8S_IMAGE=','K8S_PROJECT_IMAGES='))]
+dest.write_text('\n'.join([*lines,'K8S_IMAGE='+image,'K8S_PROJECT_IMAGES='])+'\n')
+PY
+fi
 git -C "$repo" archive "$ref" fleet/personas fleet/prompts | tar -x -C "$work/text" || die 'could not extract persona text'
 overlay_files=()
 if [[ -n "$personas_overlay" ]]; then
@@ -89,16 +115,19 @@ export FORK_SANDBOX_MAIL_ROOT="$work/mail" FORK_SANDBOX_CONFIG_DIR="$work/config
 export FORK_SANDBOX_PERSONAS_DIR="$work/personas" FORK_SANDBOX_PROMPTS_DIR="$work/text/fleet/prompts"
 export FORK_SANDBOX_FLEET_FILE="$work/config/fleet.yaml" FORK_SANDBOX_HOOKS_DIR="$work/hooks"
 export FORK_SANDBOX_POSTMASTER_DEBOUNCE=0 FORK_SANDBOX_POSTMASTER_LAUNCHER="${FORK_SANDBOX_POSTMASTER_LAUNCHER:-$fork_sandbox/scripts/fork-sandbox.sh}"
+if ((k8s)); then export FORK_SANDBOX_POSTMASTER_K8S_WAKE_ROOT="$work/runs"; fi
 [[ "$FORK_SANDBOX_POSTMASTER_LAUNCHER" == "$fork_sandbox/scripts/fork-sandbox.sh" ]] || echo "Warning: nonstandard postmaster launcher: $FORK_SANDBOX_POSTMASTER_LAUNCHER" >&2
 unset FORK_SANDBOX_MAIL_API_URL FORK_SANDBOX_MAIL_API_TOKEN_FILE FORK_SANDBOX_MAIL_API_RETRY_SECONDS
-python3 - "$export_file" "$cut" "$seat" "$work" "$attachments_dir" "$allow_missing" "$no_review_target" <<'PY' || die 'could not seed export'
-import json, pathlib, re, shutil, sys
-source,cut,seat,work,attach_dir,allow,no_target=sys.argv[1:]
+python3 - "$export_file" "$cut" "$seat" "$work" "$attachments_dir" "$allow_missing" "$no_review_target" "$k8s" <<'PY' || die 'could not seed export'
+import json, pathlib, re, shutil, sys, uuid
+source,cut,seat,work,attach_dir,allow,no_target,k8s=sys.argv[1:]
 cut=int(cut); root=pathlib.Path(work); data=json.load(open(source)); messages=data['messages']
 if len(messages)<cut or [m['seq'] for m in messages[:cut]]!=list(range(1,cut+1)):
     sys.exit('Error: cut beyond export or non-contiguous sequence')
-tid=data['thread']
+source_tid=data['thread']; tid=source_tid
 if not re.fullmatch(r'[0-9a-f-]{36}',tid): sys.exit('Error: invalid thread id')
+if k8s=='1':
+    while tid[:8]==source_tid[:8]: tid=str(uuid.uuid4())
 trigger=messages[cut-1]
 addresses=trigger['to']+trigger['cc']
 if '@'+seat not in addresses:
@@ -112,8 +141,9 @@ for m in messages[:cut]:
     headers=m['headers']
     if not isinstance(headers,list) or any(len(h)!=2 or '\n' in h[0]+h[1] or '\r' in h[0]+h[1] for h in headers):
         sys.exit('Error: invalid headers')
-    if dict(headers).get('Message-ID')!=mid or dict(headers).get('Thread-ID')!=tid:
+    if dict(headers).get('Message-ID')!=mid or dict(headers).get('Thread-ID')!=source_tid:
         sys.exit('Error: inconsistent message headers')
+    if k8s=='1': headers=[(k,tid if k=='Thread-ID' else v) for k,v in headers]
     (thread/f'{m["seq"]:03d}-{mid}.msg').write_bytes((''.join(f'{k}: {v}\n' for k,v in headers)+'\n'+m['body']).encode())
     if m['seq']<cut:
         (root/'mail'/'.postmaster'/'routed').mkdir(parents=True,exist_ok=True)
@@ -148,16 +178,16 @@ if rt:
     dest.write_text(f'BRANCH={branch}\nSHA={sha}\nVERSION={version}\nSET_BY={target_message["from"]}\nSET_AT={target_message["date"]}\n')
 else:
     print('Warning: no review target; reviewing --project HEAD',file=sys.stderr)
-meta={'thread':tid,'cut':cut,'cut_message_id':trigger['id'],'review_target':rt or None,
+meta={'thread':tid,'source_thread':source_tid,'cut':cut,'cut_message_id':trigger['id'],'review_target':rt or None,
       'review_target_seq':target_message['seq'] if target_message else None,
       'missing_attachments':sorted(set(missing)),'other_seats':sorted(other)}
 (root/'seed.json').write_text(json.dumps(meta))
 PY
-python3 - "$work" "$seat" "$model" "$thinking" <<'PY'
+python3 - "$work" "$seat" "$model" "$thinking" "$k8s" <<'PY'
 import json, pathlib, sys
-root=pathlib.Path(sys.argv[1]); seat,model,thinking=sys.argv[2:]
+root=pathlib.Path(sys.argv[1]); seat,model,thinking,k8s=sys.argv[2:]
 meta=json.loads((root/'seed.json').read_text())
-agents={seat:{'backend':'local','model':model,'thinking':thinking,'review-target':'follow'}}
+agents={seat:{'backend':'k8s' if k8s=='1' else 'local','model':model,'thinking':thinking,'review-target':'follow'}}
 with (root/'config'/'fleet.yaml').open('w') as f:
     f.write('agents:\n')
     for name,fields in agents.items():
@@ -180,9 +210,9 @@ if ((resume)); then
     # in state/<thread>/<seat>/, which the wake binds at ~/.claude/projects.
     # The local wake runs claude in its persistent clone, bound at its own
     # path, so the transcript goes under that directory's project key.
-    python3 - "$work" "$seat" "$session_transcript" "$session_id" "$session_cut" <<'PY' || die 'could not seed session'
+    python3 - "$work" "$seat" "$session_transcript" "$session_id" "$session_cut" "$k8s" <<'PY' || die 'could not seed session'
 import datetime, hashlib, json, pathlib, re, shutil, sys
-root, seat, source, sid, cut_text = sys.argv[1:]
+root, seat, source, sid, cut_text, k8s = sys.argv[1:]
 root = pathlib.Path(root); source = pathlib.Path(source)
 
 def when(text):
@@ -224,7 +254,7 @@ def cut_lines(path):
     return b''.join(lines[:kept]), kept, len(lines) - kept
 
 seed = json.loads((root / 'seed.json').read_text()); tid = seed['thread']
-workspace = str(root / 'mail' / '.postmaster' / 'workspaces' / tid / seat)
+workspace = '/work/clone' if k8s=='1' else str(root / 'mail' / '.postmaster' / 'workspaces' / tid / seat)
 key = re.sub(r'[^A-Za-z0-9]', '-', workspace)
 if len(key) > 200:
     sys.exit('Error: work dir path too long for a claude project key; use a shorter --work-dir')
@@ -268,6 +298,7 @@ record() {
     REPLAY_THINKING=$thinking REPLAY_FORK_REF=$fork_ref REPLAY_OVERLAY=$personas_overlay \
     REPLAY_LAUNCHER=$FORK_SANDBOX_POSTMASTER_LAUNCHER REPLAY_LIVE_CLI=$live_cli_version \
     REPLAY_CREDENTIALS=$claude_credentials REPLAY_FAITHFUL=$faithful REPLAY_DROP=$drop_metadata \
+    REPLAY_K8S_ENV=$k8s_env REPLAY_IMAGE=$seat_image REPLAY_PREPARED=$prepare_only \
     REPLAY_STOPPED="$(printf '%s\n' "${stopped_runs[@]}")" \
     REPLAY_STOP_FAILURES="$(printf '%s\n' "${stop_failures[@]}")" \
     REPLAY_OVERLAY_FILES="$(printf '%s\n' "${overlay_files[@]}")" python3 - "$work" <<'PY'
@@ -283,6 +314,9 @@ data.update({'export':os.environ['REPLAY_EXPORT'],'seat':os.environ['REPLAY_SEAT
  'personas_overlay':os.environ['REPLAY_OVERLAY'] or None,
  'launcher':os.environ['REPLAY_LAUNCHER'],
  'claude_credentials':os.environ['REPLAY_CREDENTIALS'] or None,
+ 'k8s_env':os.environ['REPLAY_K8S_ENV'] or None,
+ 'seat_image':os.environ['REPLAY_IMAGE'] or None,
+ 'prepared':os.environ['REPLAY_PREPARED']=='1',
  'stopped_runs':[x for x in os.environ['REPLAY_STOPPED'].splitlines() if x],
  'stop_failures':[x for x in os.environ['REPLAY_STOP_FAILURES'].splitlines() if x],
  'overlaid_files':[x for x in os.environ['REPLAY_OVERLAY_FILES'].splitlines() if x] if os.environ['REPLAY_OVERLAY'] else [],
@@ -312,10 +346,19 @@ PY
 # replies, so only the init line tells a resumed replay from a fresh one.
 check_session() {
     local launcher_cli=''
+    local events_file=''
+    if [[ -n "$run_dir" ]]; then
+        events_file="$run_dir/events.jsonl"
+        if ((k8s)) && [[ -f "$run_dir/k8s-run-dir" ]]; then
+            local k8s_run_dir
+            k8s_run_dir=$(cat "$run_dir/k8s-run-dir")
+            events_file="$k8s_run_dir/events.jsonl"
+        fi
+    fi
     if command -v claude > /dev/null 2>&1; then
         launcher_cli=$(timeout 10 claude --version 2>/dev/null | awk 'NR==1 {print $1}') || launcher_cli=''
     fi
-    python3 - "$work" "${run_dir:+$run_dir/events.jsonl}" "$session_id" "$launcher_cli" "$live_cli_version" <<'PY'
+    python3 - "$work" "$events_file" "$session_id" "$launcher_cli" "$live_cli_version" <<'PY'
 import json, pathlib, sys
 root, events, sid, launcher_cli, live = sys.argv[1:]
 root = pathlib.Path(root)
@@ -386,6 +429,12 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
+if ((prepare_only)); then
+    status=0
+    record
+    echo "$work"
+    exit 0
+fi
 deadline=$((SECONDS+timeout))
 while (( SECONDS < deadline )); do
     "$fork_sandbox/scripts/fork-sandbox-postmaster.sh" deliver --project "$project" --once >> "$work/postmaster.log" 2>&1 || die "postmaster failed; see $work/postmaster.log"
@@ -421,7 +470,7 @@ while (( SECONDS < deadline )); do
                 exit 4
             fi
             # faithful=true is the one signal that a resumed run may be scored.
-            if [[ -n "$live_cli_version" ]] && [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("cli_version") or "")' "$work/session-check.json")" != "$live_cli_version" ]]; then
+            if [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("cli_version") or "")' "$work/session-check.json")" != "$live_cli_version" ]]; then
                 faithful=false
                 echo 'Error: replay CLI version differs from the live wake; do not score this run' >&2
                 exit 5

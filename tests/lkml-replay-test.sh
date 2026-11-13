@@ -25,14 +25,15 @@ if [[ "${STUB_HANG:-}" == 1 ]]; then
     printf '  run dir:  %s\n' "$run"
     exit 0
 fi
-state='' resume='' clone=''
+state='' resume='' clone='' k8s=0
 args=("$@")
 for ((i=0; i<${#args[@]}; i++)); do
     case "${args[i]}" in
-        --session-state) state=${args[i+1]};; --resume-session) resume=${args[i+1]};; --clone-dir) clone=${args[i+1]};;
+        --session-state) state=${args[i+1]};; --resume-session) resume=${args[i+1]};; --clone-dir) clone=${args[i+1]};; --k8s) k8s=1;;
     esac
 done
 if [[ -n "$resume" ]]; then
+    ((k8s)) && clone=/work/clone
     # Resume only what claude would find: the store bound at
     # ~/.claude/projects, under the project key of the wake's working dir.
     key=$(printf '%s' "$clone" | sed 's/[^A-Za-z0-9]/-/g')
@@ -57,6 +58,20 @@ fi
 printf '  run dir:  %s\n' "$run"
 STUB
 chmod +x "$tmp/launcher"
+cat > "$tmp/k8s-wake" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+wake=${!#}
+mapfile -d '' -t argv < "$wake/fs-argv"
+out=$("${argv[@]}")
+run=$(sed -n 's/^  run dir:  *//p' <<< "$out" | head -1)
+printf '%s' "$run" > "$wake/k8s-run-dir"
+cp "$run/exit-code" "$wake/exit-code"
+cp "$run/summary.json" "$wake/summary.json"
+mkdir -p "$wake/outbox"
+cp "$run/outbox/"* "$wake/outbox/"
+STUB
+chmod +x "$tmp/k8s-wake"
 export FORK_SANDBOX_POSTMASTER_LAUNCHER="$tmp/launcher"
 sha=$(git -C "$repo" rev-parse HEAD^)
 python3 - "$tmp/thread.json" "$sha" <<'PY'
@@ -119,8 +134,17 @@ for partial in "--session-transcript $live" "--session-id $sid" "--session-cut 2
     label="partial session options refused: $partial"; check refuse 2 "${args[@]}" --personas-ref "$new_ref" "${partial_args[@]}" --work-dir "$tmp/partial"
     label="partial session refusal names the set: $partial"; check grep -q 'go together' "$tmp/refuse.out"
 done
-label='non-UTC session cut refused'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --session-transcript "$live" --session-id "$sid" --session-cut 2026-01-01T00:00:05+02:00 --work-dir "$tmp/zone"
-label='malformed session id refused'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --session-transcript "$live" --session-id ../x --session-cut 2026-01-01T00:00:05Z --work-dir "$tmp/bad-id"
+label='resume without live CLI version refused'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --session-transcript "$live" --session-id "$sid" --session-cut 2026-01-01T00:00:05Z --work-dir "$tmp/no-live-cli"
+label='resume without live CLI version names the flag'; check grep -q -- '--live-cli-version' "$tmp/refuse.out"
+label='non-UTC session cut refused'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --session-transcript "$live" --session-id "$sid" --session-cut 2026-01-01T00:00:05+02:00 --live-cli-version 9.9.9 --work-dir "$tmp/zone"
+label='non-UTC refusal says why'; check grep -q 'ISO-8601 UTC' "$tmp/refuse.out"
+label='malformed session id refused'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --session-transcript "$live" --session-id ../x --session-cut 2026-01-01T00:00:05Z --live-cli-version 9.9.9 --work-dir "$tmp/bad-id"
+label='malformed session id refusal says why'; check grep -q 'invalid session id' "$tmp/refuse.out"
+printf 'K8S_CONTEXT=fixture\nK8S_NAMESPACE=fixture\nK8S_IMAGE=registry.example/seat:latest\nK8S_PROJECT_IMAGES=repo=registry.example/seat:latest\n' > "$tmp/k8s.env"
+label='k8s needs env'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --k8s --seat-image registry.example/seat:sha-ab12
+label='k8s needs image'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --k8s --k8s-env "$tmp/k8s.env"
+label='k8s refuses latest'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --k8s --k8s-env "$tmp/k8s.env" --seat-image registry.example/seat:latest
+label='k8s refuses untagged'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --k8s --k8s-env "$tmp/k8s.env" --seat-image registry.example/seat
 label='missing attachment refused with exit 2 and name'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --work-dir "$tmp/missing"
 label='missing attachment named'; check grep -q missing.patch "$tmp/refuse.out"
 python3 - "$tmp/thread.json" <<'PY'
@@ -182,7 +206,52 @@ d=json.load(open(sys.argv[1]))
 assert d['resumed'] is False and d['session_transcript'] is None and d['exit_status']==0
 assert d['faithful'] is None
 PY
-    resume_args=(--session-transcript "$live" --session-id "$sid" --session-cut 2026-01-01T00:00:05Z)
+    "$script" "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" --live-cli-version 1.2.3 --work-dir "$tmp/fresh-version" > /dev/null 2> "$tmp/fresh-version.err"
+    rc=$?
+    label='fresh CLI mismatch only warns'; check test "$rc" -eq 0
+    label='fresh CLI mismatch warning recorded'; check grep -q 'live wake ran 1.2.3' "$tmp/fresh-version.err"
+    "$script" "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" --work-dir "$tmp/host-prepared" --prepare-only > "$tmp/host-prepared.out"
+    rc=$?
+    label='host prepare succeeds'; check test "$rc" -eq 0
+    label='host prepare launches nothing'; check test ! -e "$tmp/host-prepared/postmaster.log"
+    resume_args=(--session-transcript "$live" --session-id "$sid" --session-cut 2026-01-01T00:00:05Z --live-cli-version 9.9.9)
+    printf 'credential-fixture-do-not-record' > "$tmp/k8s-credential.json"
+    FORK_SANDBOX_POSTMASTER_K8S_WAKE_SCRIPT="$tmp/k8s-wake" FORK_SANDBOX_POSTMASTER_K8S_DETACH=inline \
+        "$script" "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" "${resume_args[@]}" \
+        --k8s --k8s-env "$tmp/k8s.env" --seat-image registry.example/seat:sha-ab12 \
+        --claude-credentials "$tmp/k8s-credential.json" --work-dir "$tmp/k8s-prepared" --prepare-only > "$tmp/k8s-prepared.out"
+    rc=$?
+    label='k8s prepare succeeds'; check test "$rc" -eq 0
+    label='prepare prints work dir'; check grep -qx "$tmp/k8s-prepared" "$tmp/k8s-prepared.out"
+    label='prepare launches nothing'; check test ! -e "$tmp/k8s-prepared/postmaster.log"
+    label='k8s prepared files and rekey'; check python3 - "$tmp/k8s-prepared" "$tmp/k8s.env" <<'PY'
+import json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); d=json.loads((root/'replay.json').read_text())
+assert d['prepared'] is True and d['k8s_env']==sys.argv[2] and d['seat_image']=='registry.example/seat:sha-ab12'
+assert d['claude_credentials']==str(root.parent/'k8s-credential.json')
+assert (root/'config/claude.env').read_text()==f"CLAUDE_CREDENTIALS={d['claude_credentials']}\n"
+assert d['thread'][:8]!=d['source_thread'][:8]
+assert 'backend: k8s' in (root/'config/fleet.yaml').read_text()
+assert 'grant:' not in (root/'config/fleet.yaml').read_text()
+config=(root/'config/k8s.env').read_text()
+assert 'K8S_IMAGE=registry.example/seat:sha-ab12' in config
+assert 'K8S_PROJECT_IMAGES=' in config and ':latest' not in config
+assert (root/'mail/.postmaster/state'/d['thread']/'core'/'-work-clone').is_dir()
+assert d['thread'][:8] in next(root.glob('mail/threads/*')).name
+assert 'MARKER' not in (root/'replay.json').read_text()
+assert 'credential-fixture-do-not-record' not in (root/'replay.json').read_text()
+PY
+    FORK_SANDBOX_POSTMASTER_K8S_WAKE_SCRIPT="$tmp/k8s-wake" FORK_SANDBOX_POSTMASTER_K8S_DETACH=inline \
+        "$script" "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" "${resume_args[@]}" \
+        --k8s --k8s-env "$tmp/k8s.env" --seat-image "registry.example/seat@sha256:$(printf 'a%.0s' {1..64})" \
+        --work-dir "$tmp/k8s-run" > "$tmp/k8s-run.out" 2> "$tmp/k8s-run.err"
+    rc=$?
+    label='k8s digest replay succeeds'; check test "$rc" -eq 0
+    label='k8s digest replay is faithful'; check python3 - "$tmp/k8s-run/replay.json" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1])); assert d['faithful'] is True and d['resumed'] is True
+assert d['seat_image'].endswith('a'*64) and d['prepared'] is False
+PY
     rm -f "$tmp/resumed.jsonl"
     resume_out=$("$script" "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" "${resume_args[@]}" --live-cli-version 9.9.9 --work-dir "$tmp/resume" 2> "$tmp/resume.err")
     rc=$?
@@ -248,9 +317,9 @@ assert d['exit_status']==3 and d['resumed'] is False and d['init_session_id']=='
 assert d['reply_path']
 PY
     label='other session id named on stderr'; check grep -q 'did not resume session' "$tmp/resume-other.err"
-    label='out-of-order transcript refused'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" --session-transcript "$tmp/live/disorder.jsonl" --session-id "$sid" --session-cut 2026-01-01T00:00:05Z --work-dir "$tmp/disorder"
+    label='out-of-order transcript refused'; check refuse 2 "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" --session-transcript "$tmp/live/disorder.jsonl" --session-id "$sid" --session-cut 2026-01-01T00:00:05Z --live-cli-version 9.9.9 --work-dir "$tmp/disorder"
     label='out-of-order refusal says why'; check grep -q 'stamped before the cut but follows' "$tmp/refuse.out"
-    "$script" "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" --session-transcript "$tmp/live/jitter.jsonl" --session-id "$sid" --session-cut 2026-01-01T00:00:05Z --work-dir "$tmp/jitter" > /dev/null 2> "$tmp/jitter.err"
+    "$script" "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" --session-transcript "$tmp/live/jitter.jsonl" --session-id "$sid" --session-cut 2026-01-01T00:00:05Z --live-cli-version 9.9.9 --work-dir "$tmp/jitter" > /dev/null 2> "$tmp/jitter.err"
     rc=$?
     label='disorder past the cut still resumes'; check test "$rc" -eq 0
     label='disorder past the cut keeps only the early entry'; check python3 - "$tmp/jitter/replay.json" <<'PY'
