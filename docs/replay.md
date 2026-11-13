@@ -44,6 +44,11 @@ Kubernetes Job and Secret names include the thread id's first eight hex
 digits. A k8s replay assigns a fresh thread id with a different prefix and
 keys the seeded session by that id, so a replay cannot collide with the live
 thread's cluster objects. `replay.json` records `source_thread` and `thread`.
+The id is drawn afresh on every invocation, so a `--prepare-only` run's id
+is not the id a later launch uses. Each invocation prints
+`Replay thread: <id> (source <id>)` on stderr before any wake; give that id to
+whoever watches the namespace, since the Job names carry its first eight
+digits.
 
 `--model` and `--thinking` are required. Pass the values the live fleet used;
 fleet configuration can override persona frontmatter. The record stores those

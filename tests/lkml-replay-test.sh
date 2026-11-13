@@ -224,9 +224,14 @@ PY
     FORK_SANDBOX_POSTMASTER_K8S_WAKE_SCRIPT="$tmp/k8s-wake" FORK_SANDBOX_POSTMASTER_K8S_DETACH=inline \
         "$script" "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" "${resume_args[@]}" \
         --k8s --k8s-env "$tmp/k8s.env" --seat-image registry.example/seat:sha-ab12 \
-        --claude-credentials "$tmp/k8s-credential.json" --work-dir "$tmp/k8s-prepared" --prepare-only > "$tmp/k8s-prepared.out"
+        --claude-credentials "$tmp/k8s-credential.json" --work-dir "$tmp/k8s-prepared" --prepare-only > "$tmp/k8s-prepared.out" 2> "$tmp/k8s-prepared.err"
     rc=$?
     label='k8s prepare succeeds'; check test "$rc" -eq 0
+    label='k8s prepare announces its rekeyed thread'; check python3 - "$tmp/k8s-prepared/replay.json" "$tmp/k8s-prepared.err" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert f"Replay thread: {d['thread']} (source {d['source_thread']})" in open(sys.argv[2]).read().splitlines()
+PY
     label='prepare prints work dir'; check grep -qx "$tmp/k8s-prepared" "$tmp/k8s-prepared.out"
     label='prepare launches nothing'; check test ! -e "$tmp/k8s-prepared/postmaster.log"
     label='k8s prepared files and rekey'; check python3 - "$tmp/k8s-prepared" "$tmp/k8s.env" <<'PY'
@@ -256,6 +261,11 @@ PY
 import json,sys
 d=json.load(open(sys.argv[1])); assert d['faithful'] is True and d['resumed'] is True
 assert d['seat_image'].endswith('a'*64) and d['prepared'] is False
+PY
+    label='k8s run announces its rekeyed thread'; check python3 - "$tmp/k8s-run/replay.json" "$tmp/k8s-run.err" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert f"Replay thread: {d['thread']} (source {d['source_thread']})" in open(sys.argv[2]).read().splitlines()
 PY
     label='k8s wake branch carries the rekeyed thread'; check python3 - "$tmp/k8s-run" <<'PY'
 import json,pathlib,sys

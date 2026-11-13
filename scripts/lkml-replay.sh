@@ -182,6 +182,7 @@ meta={'thread':tid,'source_thread':source_tid,'cut':cut,'cut_message_id':trigger
       'review_target_seq':target_message['seq'] if target_message else None,
       'missing_attachments':sorted(set(missing)),'other_seats':sorted(other)}
 (root/'seed.json').write_text(json.dumps(meta))
+print(f'Replay thread: {tid} (source {source_tid})',file=sys.stderr)
 PY
 python3 - "$work" "$seat" "$model" "$thinking" "$k8s" <<'PY'
 import json, pathlib, sys
