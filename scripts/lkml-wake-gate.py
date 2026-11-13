@@ -97,7 +97,11 @@ on the model server (docs/cluster-panel.md, "Sub-panel capacity").
 Its LKML_CAPACITY_* settings come from the environment or from the file
 lkml-capacity.env in $FORK_SANDBOX_HOOKS_DIR (else beside this script,
 symlinks followed), the environment winning. The file's KEY=value lines
-are parsed, never sourced.
+are parsed, never sourced. The one exception is a seat named in
+LKML_CAPACITY_EXEMPT_SEATS (a comma list of bare fleet names, for seats
+on another model): its wake skips the read, the decision line ending
+"; capacity: exempt", and its gate errors exit 2 as on a main thread.
+The rules judge it like any other seat.
 
 Handovers. When the decision is to wake the AUTHOR seat (exit 0), the
 gate can hand the spawner values panel-state derives from the thread, each
@@ -510,7 +514,8 @@ def decide(env):
     except Done as d:
         # The postmaster wakes a seat whose gate fails, and a child's seat
         # must not wake past the capacity check: defer instead.
-        if d.code == 2 and child:
+        if d.code == 2 and child and not capacity_exempt(
+                env, env.get("FS_HOOK_AGENT")):
             raise Done(1, "child: defer: gate " + d.text)
         raise
 
@@ -530,9 +535,12 @@ def decide_thread(env, child):
         judge(env, state, messages, trigger, agent, child)
     except Done as d:
         d.state, d.agent = state, agent
-        # A child's seats run on the self-hosted model: a wake there waits
-        # for room on it. A defer, skip or error stands without a read.
-        if d.code == 0 and child:
+        # A child's seats run on the self-hosted model, exempt seats aside:
+        # a wake there waits for room on it. A defer, skip or error stands
+        # without a read.
+        if d.code == 0 and child and capacity_exempt(env, agent):
+            d.text += "; capacity: exempt"
+        elif d.code == 0 and child:
             busy = capacity_busy(env)
             if busy:
                 raise Done(1, "capacity: defer: %s; held: %s" % (busy, d.text))
@@ -630,6 +638,16 @@ def capacity_settings(env):
     settings.update((k, v) for k, v in env.items()
                     if k.startswith(CAPACITY_PREFIX))
     return settings, path
+
+
+def capacity_exempt(env, agent):
+    """Whether agent is named in LKML_CAPACITY_EXEMPT_SEATS, a comma list
+    of bare fleet names whose seats do not run on the model server."""
+    settings, _ = capacity_settings(env)
+    names = {bare(n) for n in
+             (settings.get("LKML_CAPACITY_EXEMPT_SEATS") or "").split(",")}
+    names.discard("")
+    return bool(agent) and bare(agent) in names
 
 
 def capacity_config(env):

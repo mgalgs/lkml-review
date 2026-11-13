@@ -1194,6 +1194,40 @@ prom '{"waiting": "0", "preempt": "0"}'
 CAP_GATE="$work/linkdir/lkml-wake-gate.py" cap_run FORK_SANDBOX_HOOKS_DIR=
 expect "file: beside the gate, symlink followed, with no hooks dir" 0 "o"
 
+printf '\n== capacity: a seat in LKML_CAPACITY_EXEMPT_SEATS skips the read ==\n'
+# A seat on another model (codex) needs no room on the model server.
+prom '{"waiting": "3", "preempt": "0"}'
+run childall FS_HOOK_AGENT=core FS_HOOK_MESSAGE=m004 LKML_CAPACITY_EXEMPT_SEATS=core
+expect "exempt: busy, an exempt reviewer seat wakes" 0 "b" "capacity: exempt"
+check "exempt: no capacity read" "" "$(promql)"
+run childall FS_HOOK_AGENT=core FS_HOOK_MESSAGE=m004 "LKML_CAPACITY_EXEMPT_SEATS= docs , @core ,"
+expect "exempt: a padded list with '@' and an empty entry" 0 "b" "capacity: exempt"
+run childall FS_HOOK_AGENT=core FS_HOOK_MESSAGE=m004 LKML_CAPACITY_EXEMPT_SEATS=docs,core-x
+expect "exempt: an unlisted seat still defers" 1 "b" "capacity: defer: 3 requests waiting"
+run childall FS_HOOK_AGENT=core FS_HOOK_MESSAGE=m004 "LKML_CAPACITY_EXEMPT_SEATS=docs core"
+expect "exempt: a space-separated list names no seat" 1 "b" "capacity: defer: "
+run childauthor LKML_CAPACITY_EXEMPT_SEATS=pr-author
+expect "exempt: a rule h defer still stands" 1 "h" "@docs (silent)"
+run silent LKML_CAPACITY_EXEMPT_SEATS=pr-author
+check "exempt: a main thread never says exempt" no \
+    "$([[ "$ERR" == *"capacity: exempt"* ]] && echo yes || echo no)"
+prom '{"waiting": "3", "preempt": "0"}'
+GATE="$work/stub-exit1/lkml-wake-gate.py" run childall FS_HOOK_AGENT=secretary \
+    FS_HOOK_MESSAGE=m004 LKML_CAPACITY_EXEMPT_SEATS=secretary
+expect "exempt: a gate error errors, as on a main thread" 2 "" \
+    "lkml-wake-gate: error: lkml-panel-state.py exited 1"
+GATE="$work/stub-exit1/lkml-wake-gate.py" run childall FS_HOOK_AGENT=secretary \
+    FS_HOOK_MESSAGE=m004 LKML_CAPACITY_EXEMPT_SEATS=core
+expect "exempt: an unlisted seat's gate error still defers" 1 "" "child: defer: gate error: "
+check "exempt: no gate error reads capacity" "" "$(promql)"
+cap_file "LKML_CAPACITY_PROMETHEUS=$prom_url" LKML_CAPACITY_EXEMPT_SEATS=secretary
+cap_run
+expect "exempt: the list read from the file" 0 "o" "capacity: exempt"
+cap_run LKML_CAPACITY_EXEMPT_SEATS=
+expect "exempt: an empty list in the environment overrides the file" 1 "o" \
+    "capacity: defer: 3 requests waiting"
+rm -f -- "$hooks/lkml-capacity.env"
+
 printf '\n== handover: the size of the fix (FS_HOOK_PIPELINE_SIZE_FILE) ==\n'
 # One gating blocker per fixture unless stated; the author is woken by
 # rule f (every seat has answered) on trigger m002.

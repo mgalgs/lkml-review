@@ -684,6 +684,7 @@ without the server being saturated. These settings configure the check:
 | `LKML_CAPACITY_MAX_WAITING` | requests waiting allowed | `0` |
 | `LKML_CAPACITY_MAX_PREEMPTIONS` | preemptions in the window allowed | `0` |
 | `LKML_CAPACITY_WINDOW` | PromQL duration of the preemption window | `5m` |
+| `LKML_CAPACITY_EXEMPT_SEATS` | comma list of bare fleet names that skip the check, e.g. `be-security` | empty |
 
 The gate reads each setting from its environment, or from
 `lkml-capacity.env` in `$FORK_SANDBOX_HOOKS_DIR` (else beside the gate
@@ -707,6 +708,14 @@ A thread is a child when the export's root carries
 `X-Lkml-Parent-Thread` with any value, malformed included, judged before
 panel-state runs; an export whose root cannot be read leaves the gate
 unable to tell, and it errors as on a main thread.
+
+A child seat that runs on another model (a codex or hosted-API seat)
+needs no room on the model server. Name it in
+`LKML_CAPACITY_EXEMPT_SEATS` and its wake skips the read, the decision
+line ending `; capacity: exempt`; its gate errors exit 2 as on a main
+thread, since there is no check to protect. The gate's rules judge it like
+any other seat. A seat not named stays gated, so a missing or misspelt
+entry costs a deferred wake, never an unchecked one on the model server.
 
 The gate keeps no state and never retries: re-asking a deferred wake is
 the postmaster's job. fork-sandbox's postmaster re-runs a deferred seat's
