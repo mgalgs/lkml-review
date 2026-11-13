@@ -39,6 +39,9 @@ if [[ -n "$resume" ]]; then
     if [[ -f "$state/$key/$resume.jsonl" ]]; then
         cp "$state/$key/$resume.jsonl" "$STUB_RUN_ROOT/resumed.jsonl"
         sid=${STUB_INIT_ID:-$resume}
+        if [[ "${STUB_THINKING_DROP:-}" == 1 ]]; then
+            printf '%s\n' '{"timestamp":"2026-01-01T00:00:06Z","attachment":{"type":"thinking_drop","newlyDropped":{"reason":"prefix_mismatch","reasonCounts":{"prefix_mismatch":2},"blockCount":2},"secret":"DO-NOT-RECORD"},"message":"DO-NOT-RECORD"}' >> "$state/$key/$resume.jsonl"
+        fi
     else
         sid=ffffffff-0000-4000-8000-000000000000
     fi
@@ -177,6 +180,7 @@ PY
 import json,sys
 d=json.load(open(sys.argv[1]))
 assert d['resumed'] is False and d['session_transcript'] is None and d['exit_status']==0
+assert d['faithful'] is None
 PY
     resume_args=(--session-transcript "$live" --session-id "$sid" --session-cut 2026-01-01T00:00:05Z)
     rm -f "$tmp/resumed.jsonl"
@@ -206,6 +210,7 @@ import hashlib,json,pathlib,sys
 path,live,sid=sys.argv[1:]; text=pathlib.Path(path).read_text(); d=json.loads(text)
 sha=lambda p: hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
 assert d['exit_status']==0 and d['resumed'] is True and d['session_id']==sid and d['init_session_id']==sid
+assert d['faithful'] is True
 assert d['session_transcript']==live and d['session_transcript_sha256']==sha(live)
 assert pathlib.Path(d['seeded_transcript']).name==sid+'.jsonl' and d['seeded_transcript_sha256']==sha(d['seeded_transcript'])
 assert d['session_cut']=='2026-01-01T00:00:05Z' and d['session_entries_kept']==3 and d['session_entries_dropped']==3
@@ -215,11 +220,23 @@ PY
     label='matching CLI version does not warn'; if grep -q 'live wake ran' "$tmp/resume.err"; then no "$label"; else ok "$label"; fi
     "$script" "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" "${resume_args[@]}" --live-cli-version 1.2.3 --work-dir "$tmp/resume-version" > /dev/null 2> "$tmp/resume-version.err"
     rc=$?
-    label='differing CLI version still resumes'; check test "$rc" -eq 0
+    label='differing CLI version exits 5'; check test "$rc" -eq 5
     label='differing CLI version warns'; check grep -q 'replay ran claude 9.9.9; the live wake ran 1.2.3' "$tmp/resume-version.err"
     label='differing CLI version records both'; check python3 - "$tmp/resume-version/replay.json" <<'PY'
 import json,sys
 d=json.load(open(sys.argv[1])); assert d['cli_version']=='9.9.9' and d['live_cli_version']=='1.2.3'
+assert d['exit_status']==5 and d['faithful'] is False
+assert 'thinking_drop' not in d
+PY
+    STUB_THINKING_DROP=1 "$script" "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" "${resume_args[@]}" --work-dir "$tmp/resume-drop" > /dev/null 2> "$tmp/resume-drop.err"
+    rc=$?
+    label='thinking drop exits 4'; check test "$rc" -eq 4
+    label='thinking drop records only metadata'; check python3 - "$tmp/resume-drop/replay.json" <<'PY'
+import json,pathlib,sys
+text=pathlib.Path(sys.argv[1]).read_text(); d=json.loads(text)
+assert d['exit_status']==4 and d['faithful'] is False
+assert d['thinking_drop']=={'reason':'prefix_mismatch','reasonCounts':{'prefix_mismatch':2},'blockCount':2}
+assert 'DO-NOT-RECORD' not in text
 PY
     STUB_INIT_ID=eeeeeeee-0000-4000-8000-000000000000 "$script" "${args[@]}" --personas-ref "$new_ref" --fork-sandbox "$fs" "${resume_args[@]}" --work-dir "$tmp/resume-other" > /dev/null 2> "$tmp/resume-other.err"
     rc=$?

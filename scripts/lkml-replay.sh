@@ -260,14 +260,14 @@ sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
 PY
 fi
 start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-status=1 reply='' run_dir='' stopped_runs=() stop_failures=()
+status=1 reply='' run_dir='' stopped_runs=() stop_failures=() faithful='null' drop_metadata=''
 # shellcheck disable=SC2329 # EXIT trap invokes this function.
 record() {
     REPLAY_STATUS=$status REPLAY_REPLY=$reply REPLAY_RUN_DIR=$run_dir REPLAY_START=$start \
     REPLAY_EXPORT=$export_file REPLAY_SEAT=$seat REPLAY_REF=$ref REPLAY_MODEL=$model \
     REPLAY_THINKING=$thinking REPLAY_FORK_REF=$fork_ref REPLAY_OVERLAY=$personas_overlay \
     REPLAY_LAUNCHER=$FORK_SANDBOX_POSTMASTER_LAUNCHER REPLAY_LIVE_CLI=$live_cli_version \
-    REPLAY_CREDENTIALS=$claude_credentials \
+    REPLAY_CREDENTIALS=$claude_credentials REPLAY_FAITHFUL=$faithful REPLAY_DROP=$drop_metadata \
     REPLAY_STOPPED="$(printf '%s\n' "${stopped_runs[@]}")" \
     REPLAY_STOP_FAILURES="$(printf '%s\n' "${stop_failures[@]}")" \
     REPLAY_OVERLAY_FILES="$(printf '%s\n' "${overlay_files[@]}")" python3 - "$work" <<'PY'
@@ -301,6 +301,9 @@ data['resumed']=bool(check.get('resumed'))
 data['init_session_id']=check.get('init_session_id')
 data['cli_version']=check.get('cli_version'); data['cli_version_source']=check.get('cli_version_source')
 data['live_cli_version']=os.environ['REPLAY_LIVE_CLI'] or None
+data['faithful']={'true':True,'false':False}.get(os.environ['REPLAY_FAITHFUL'])
+if os.environ['REPLAY_DROP']:
+    data['thinking_drop']=json.loads(os.environ['REPLAY_DROP'])
 (root/'replay.json').write_text(json.dumps(data,indent=2)+'\n')
 PY
 }
@@ -337,6 +340,29 @@ if live and version != live:
     print(f'Warning: replay ran claude {version or "unknown"}; the live wake ran {live}', file=sys.stderr)
 (root / 'session-check.json').write_text(json.dumps(check))
 print('1' if check['resumed'] else '0')
+PY
+}
+check_faithfulness() {
+    python3 - "$work" <<'PY'
+import json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); seed=json.loads((root/'session-seed.json').read_text())
+path=pathlib.Path(seed['seeded_transcript'])
+drop=None
+if path.is_file():
+    for line in path.read_text(errors='replace').splitlines()[seed['session_entries_kept']:]:
+        try: entry=json.loads(line)
+        except ValueError: continue
+        attachments=[]
+        if isinstance(entry,dict):
+            attachments=entry.get('attachments',[])
+            if isinstance(entry.get('attachment'),dict): attachments=[entry['attachment'],*attachments]
+        for attachment in attachments:
+            if isinstance(attachment,dict) and attachment.get('type')=='thinking_drop':
+                newly=attachment.get('newlyDropped',{})
+                drop={k:newly.get(k) for k in ('reason','reasonCounts','blockCount')}
+                break
+        if drop is not None: break
+print(json.dumps(drop) if drop is not None else '')
 PY
 }
 # shellcheck disable=SC2329 # EXIT trap invokes this function.
@@ -386,6 +412,21 @@ while (( SECONDS < deadline )); do
         if ((resume)) && [[ "$resumed" != 1 ]]; then
             echo "Error: the wake did not resume session $session_id; it started fresh" >&2
             exit 3
+        fi
+        if ((resume)); then
+            drop_metadata=$(check_faithfulness) || die 'could not check transcript faithfulness'
+            if [[ -n "$drop_metadata" ]]; then
+                faithful=false
+                echo 'Error: replay dropped earlier thinking blocks; do not score this run' >&2
+                exit 4
+            fi
+            # faithful=true is the one signal that a resumed run may be scored.
+            if [[ -n "$live_cli_version" ]] && [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("cli_version") or "")' "$work/session-check.json")" != "$live_cli_version" ]]; then
+                faithful=false
+                echo 'Error: replay CLI version differs from the live wake; do not score this run' >&2
+                exit 5
+            fi
+            faithful=true
         fi
         exit 0
     fi
