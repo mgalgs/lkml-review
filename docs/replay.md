@@ -1,6 +1,6 @@
 # Replay one panel seat
 
-`scripts/lkml-replay.sh` asks the local fork-sandbox postmaster to replay one
+`scripts/lkml-replay.sh` asks the fork-sandbox postmaster to replay one
 seat on a mail thread frozen at a chosen message. It uses the postmaster's
 handoff writer and renderer, so the seat sees the same prompt construction as
 a live wake. The script substitutes only the persona and prompt files from an
@@ -28,6 +28,22 @@ paths there. `--timeout` defaults to 3600 seconds, the wake's own default.
 `--claude-credentials FILE` pins the claude account the wake runs on, through
 fork-sandbox's `claude.env`; without it the wake uses fork-sandbox's default.
 `replay.json` records the path as `claude_credentials`.
+`--prepare-only` writes the store, fleet, config and `replay.json`, prints the
+work directory, and launches nothing. The record marks `prepared: true`.
+
+For a pod wake, add `--k8s --k8s-env <operator-k8s.env> --seat-image
+<pinned-image-ref>`. Both values are required. The image must have a
+`sha-<hex>` tag or `@sha256:` digest; an untagged or `latest` image is
+refused. The script copies the k8s env file into its isolated config and
+sets the pinned image there. The fleet selects `backend: k8s` without a
+grant, skills or extra mounts. `replay.json` records the env file path and
+image ref, never their contents. Use `--prepare-only` to inspect the files
+before launching a paid run.
+
+Kubernetes Job and Secret names include the thread id's first eight hex
+digits. A k8s replay assigns a fresh thread id with a different prefix and
+keys the seeded session by that id, so a replay cannot collide with the live
+thread's cluster objects. `replay.json` records `source_thread` and `thread`.
 
 `--model` and `--thinking` are required. Pass the values the live fleet used;
 fleet configuration can override persona frontmatter. The record stores those
@@ -77,14 +93,16 @@ To replay that seat rather than a fresh one, pass the live session:
 ```sh
 scripts/lkml-replay.sh ... \
     --session-transcript <session-id>.jsonl --session-id <session-id> \
-    --session-cut <replayed-wake-spawned_at> [--live-cli-version <version>]
+    --session-cut <replayed-wake-spawned_at> --live-cli-version <version>
 ```
 
 The transcript is the claude JSONL file from the live seat's session store,
 copied by the operator; a sibling directory of the same name next to it
 (subagent transcripts) is picked up too. `--session-cut` is the replayed
 wake's `spawned_at`, an ISO-8601 UTC time. The three options go together;
-any one alone is refused with exit 2. Only claude seats can resume; a seat
+any one alone is refused with exit 2. `--live-cli-version` is the version
+in the live wake's init line; a resumed replay without it is refused with
+exit 2. Only claude seats can resume; a seat
 whose persona names another harness is refused.
 
 Only entries strictly before the cut are kept: the file is cut before its
@@ -96,8 +114,8 @@ replay refuses (exit 2). Subagent transcripts are cut the
 same way; other files in the sibling directory are copied as they are.
 
 The cut file is placed where the postmaster's own resume path finds it: the
-seat's session store, under the claude project key of the local wake's
-working directory, with the id in the postmaster's sessions record. The
+seat's session store, under the claude project key of the wake's working
+directory (`/work/clone` for k8s), with the id in the postmaster's sessions record. The
 transcript's content, including its recorded working directory, is not
 rewritten. The replay passes no resume flag of its own.
 
@@ -105,14 +123,25 @@ claude starts fresh when a resume fails and still replies, so after the
 harvest the replay reads the wake's init event. If its session id is not
 `--session-id`, the replay records `resumed: false` and exits 3. A resumed
 replay records `resumed: true`.
+It then scans entries written by the replayed wake for a `thinking_drop`
+attachment. If found, `replay.json` records `faithful: false` and only the
+drop's reason, reason counts and block count; exit 4 means do not score the
+run. A resumed run records `faithful: true` only when it may be scored:
+no drop and the live CLI version; a fresh run records `faithful: null`.
 
 `replay.json` records the transcript's path and SHA-256, the seeded file's
 path and SHA-256, the cut, entries kept and dropped, the session id, the id
 the wake reported (`init_session_id`) and `cli_version`, from the init event
-or else the launcher's `claude --version`. With `--live-cli-version`, a
-different version prints a warning and both are recorded. Transcript text is
+or else the launcher's `claude --version`. A different version on a resumed
+run records both, records `faithful: false` and exits 5; a fresh run given
+`--live-cli-version` only warns. Transcript text is
 never recorded: a live transcript can hold anything the seat read, including
 credentials.
+
+A host resume can change the conversation prefix because its working path,
+OS and injected project context differ from the live pod. Claude may then
+drop earlier thinking blocks with `prefix_mismatch`; use a k8s wake in the
+live image and require `faithful: true` before treating its reply as evidence.
 
 The earlier turns of a resumed conversation were written under whatever
 persona and prompt text ran at those live wakes. A persona arm therefore
@@ -122,10 +151,11 @@ from its first wake.
 ## Differences from a live wake
 
 - No grants are seeded, so preview and other granted environments are absent.
-- The replay uses a local bwrap sandbox, not a pod.
+- Host mode uses a local bwrap sandbox; `--k8s` uses a pod.
 - Live persona and prompt text depend on what was deployed when the wake spawned; pass the ref and overlay live at that time.
 - A model alias such as `opus` resolves through the CLI version in the live image; pass a full model ID when known.
 - Postmaster refreezes that move a target after a force push without a header cannot be reproduced.
+- A replay whose seat stays silent ends there; a live seat set to `on-silence: retry` is woken again.
 - A live claude or codex seat resumes its own conversation from its earlier wakes on the thread. Without the session options a replay starts the seat fresh, so read that result as what a fresh seat does at the cut.
 
 The replay sets both `FORK_SANDBOX_MAIL_ROOT` and `FORK_SANDBOX_CONFIG_DIR`
