@@ -874,7 +874,7 @@ write(D, export(e), status())
 PY
 run_case s3
 reason_has "a NAK under a CONVERGED secretary" "secretary says CONVERGED but @core is blocking"
-reason_has "an open Question under a CONVERGED secretary" "secretary says CONVERGED but @docs has an open Question"
+reason_has "a Question under a CONVERGED secretary" "secretary says CONVERGED but @docs holds a Question"
 check "a seat with a Question is not positive" "question" "$(seat @docs state)"
 
 gen s4 <<'PY'
@@ -1170,6 +1170,32 @@ def qthread(core_body, hours="2h", to=("@pr-author", "@operator")):
     return [timeout_root(hours), question(2, "@core", core_body, to=to),
             msg(3, "@tests", "Reviewed-by: T", sha=A, ver=1),
             msg(4, "@docs", "Reviewed-by: D", sha=A, ver=1), sec(20)]
+
+# A run record as `postmaster status --json` lists it: agent without the
+# '@', the message that woke it, the review target it was woken at, and
+# the durable outcome the harvest wrote. The harvest writes the outcome and
+# counts before the harvested marker, so a "live" run can already read
+# clean with no replies.
+def wake(rid, agent, trigger, sha=A, ver=1, state="harvested", replies=0,
+         reply_files=0, outcome="clean"):
+    return {"run_id": rid, "agent": agent, "state": state,
+            "run_dir": "/run/" + rid, "resumed": None, "trigger": trigger,
+            "review_target_sha": sha, "review_target_version": ver,
+            "harvested_at": "2026-03-02T10:12:00Z" if state == "harvested" else None,
+            "replies": replies, "reply_files": reply_files, "outcome": outcome,
+            "retry_of": None, "spawned_at": "2026-03-02T10:11:00Z"}
+
+# qthread() with @core's question beside a Reviewed-by (the shape a seat
+# that agrees but asks the human something posts) and @operator's answer
+# at seq 10, a direct reply to it addressed to @core.
+QR = "Question\n\nWhich tests cover the retry path?\n\nReviewed-by: C <c@example.com>"
+
+def answered(core_body=QR):
+    e = qthread(core_body, hours=None)
+    r = msg(10, "@operator", "The retry suite; edited.", to=["@core"])
+    r["in_reply_to"] = "m002"
+    e.insert(2, r)
+    return e
 FX3
 
 gen fh_a <<'PY'
@@ -2700,7 +2726,7 @@ run_case q1 --now 2026-03-02T12:02:00Z
 # timed_out is null and the question blocks: @core is in state question,
 # the secretary's CONVERGED is contradicted. It is open: AWAITING-OPERATOR.
 check "(q1) one operator question is listed" \
-    '{"seat":"@core","message_id":"m002","asked_at":"2026-03-02T10:02:00Z","age_seconds":7200,"timed_out":null,"subject":"Re: [PATCH v1] Fix the thing","open":true}' \
+    '{"seat":"@core","message_id":"m002","asked_at":"2026-03-02T10:02:00Z","age_seconds":7200,"timed_out":null,"subject":"Re: [PATCH v1] Fix the thing","answered_by":null,"settled_by":null,"open":true}' \
     "$(j '.questions[0]')"
 check "(q1) exactly one" "1" "$(jr '.questions | length')"
 check "(q1) no timeout: null" "null" "$(j .question_timeout_hours)"
@@ -3042,6 +3068,121 @@ run_case aw_live --now 2026-03-02T12:00:00Z
 # Hand-worked: open while another seat's run is live: the operator is still
 # who the panel waits on, so AWAITING-OPERATOR, not IN-PROGRESS.
 check "(aw-live) an open question outranks IN-PROGRESS" "AWAITING-OPERATOR" "$(jr .status)"
+
+printf '\n== an answered question whose seat stays silent ==\n'
+# The postmaster wakes a seat the operator's answer names. A wake that ends
+# clean having posted nothing, on a target the seat already replied on, is
+# `silent ... reason=replied-on-target` there: neither flagged nor retried,
+# so nothing will wake the seat again. Panel-state reads that run out of
+# the status file and drops the answered Question as a timeout does.
+
+gen sil_ok <<'PY'
+write(D, export(answered()), status(runs=[wake("r2", "core", "m010")]))
+PY
+run_case sil_ok --now 2026-03-02T12:00:00Z
+# Hand-worked: @operator answered m002 at m010; @core's run r2, woken by
+# m010 at A, harvested clean with 0 replies and 0 reply files. The Question
+# on m002 drops, its Reviewed-by decides: positive from m002. Every seat
+# positive, the secretary says CONVERGED, quiescent: CONVERGED SIGNED-OFF.
+check "(sil-ok) the seat's remaining tag decides" "positive Reviewed-by m002" "$(seat @core state) $(seat @core verdict) $(seat @core message_id)"
+check "(sil-ok) the question records its answer and the silent run" "false m010 r2" "$(jr '"\(.questions[0].open) \(.questions[0].answered_by) \(.questions[0].settled_by)"')"
+check "(sil-ok) CONVERGED SIGNED-OFF" "CONVERGED SIGNED-OFF" "$(jr '"\(.status) \(.verdict)"')"
+
+gen sil_at <<'PY'
+write(D, export(answered()), status(runs=[wake("r2", "@core", "m010")]))
+PY
+run_case sil_at --now 2026-03-02T12:00:00Z
+check "(sil-at) an agent stored with its '@' matches too" "positive r2" "$(seat @core state) $(jr '.questions[0].settled_by')"
+
+gen sil_later <<'PY'
+e = answered()
+e.insert(3, msg(11, "@tests", "FYI: the retry suite moved.", to=["@core"]))
+write(D, export(e), status(runs=[wake("r2", "core", "m011")]))
+PY
+run_case sil_later --now 2026-03-02T12:00:00Z
+# Hand-worked: r2 was woken by m011, after the answer m010: it had the answer.
+check "(sil-later) a wake by a message after the answer settles it" "positive CONVERGED" "$(seat @core state) $(jr .status)"
+
+gen sil_none <<'PY'
+write(D, export(answered()), status())
+PY
+run_case sil_none --now 2026-03-02T12:00:00Z
+# Hand-worked: answered, but no run of @core since: the seat still holds
+# its Question and owes the next move. Not open (the operator answered),
+# quiescent: STALLED, and the reason says the question was answered.
+check "(sil-none) no wake yet: the Question stands" "question m002" "$(seat @core state) $(seat @core message_id)"
+check "(sil-none) answered, not settled" "false m010 null" "$(jr '"\(.questions[0].open) \(.questions[0].answered_by) \(.questions[0].settled_by)"')"
+check "(sil-none) STALLED" "STALLED" "$(jr .status)"
+reason_has "(sil-none) the reason says it was answered" "@core: Question on v1 answered by @operator in m010; no verdict from @core since"
+reason_lacks "(sil-none) never 'unanswered'" "unanswered Question"
+reason_has "(sil-none) the secretary check does not call it open" "secretary says CONVERGED but @core holds a Question"
+
+gen sil_live <<'PY'
+write(D, export(answered()), status(runs=[wake("r2", "core", "m010", state="live")]))
+PY
+run_case sil_live --now 2026-03-02T12:00:00Z
+# Hand-worked: the run is not harvested yet (its outcome and counts are
+# already written): nothing settled yet, IN-PROGRESS.
+check "(sil-live) a live wake settles nothing" "question null IN-PROGRESS" "$(seat @core state) $(jr '.questions[0].settled_by') $(jr .status)"
+
+# Each guard alone keeps the Question: the run must be @core's, harvested
+# clean, have posted nothing and written no reply file, be woken at the
+# question's own target, and by the answer or a later message.
+for g in \
+    'replies=1|it posted a reply' \
+    'reply_files=1|a reply file was discarded' \
+    'outcome="failed"|it failed' \
+    'trigger="m001"|woken before the answer' \
+    'trigger="m999"|woken by a message not on the thread' \
+    'sha=B|woken at another target' \
+    'agent="tests"|another seat'; do
+    kw="${g%%|*}"; why="${g#*|}"
+    gen sil_guard <<PY
+kw = dict(agent="core", trigger="m010")
+kw.update(dict($kw))
+write(D, export(answered()), status(runs=[wake("r2", **kw)]))
+PY
+    run_case sil_guard --now 2026-03-02T12:00:00Z
+    check "(sil-guard) not settled when $why" "question null STALLED" "$(seat @core state) $(jr '.questions[0].settled_by') $(jr .status)"
+done
+
+gen sil_unanswered <<'PY'
+e = qthread(QR, hours=None)
+e.insert(2, msg(11, "@tests", "FYI: the retry suite moved.", to=["@core"]))
+write(D, export(e), status(runs=[wake("r2", "core", "m011")]))
+PY
+run_case sil_unanswered --now 2026-03-02T12:00:00Z
+# Hand-worked: @core stayed silent after a wake, but @operator never
+# answered: the question is still open, the panel waits on the operator.
+check "(sil-unanswered) a silent wake does not answer a question" "true null AWAITING-OPERATOR" "$(jr '"\(.questions[0].open) \(.questions[0].answered_by) \(.status)"')"
+reason_has "(sil-unanswered) still unanswered" "@core: unanswered Question on v1"
+
+gen sil_only <<'PY'
+write(D, export(answered(Q)), status(runs=[wake("r2", "core", "m010")]))
+PY
+run_case sil_only --now 2026-03-02T12:00:00Z
+# Hand-worked: m002's only tag was the Question. Dropped, the message gives
+# no verdict, so @core has none on A: silent, STALLED. Settling never
+# manufactures a positive verdict.
+check "(sil-only) a question-only message leaves no verdict" "silent r2 STALLED" "$(seat @core state) $(jr '.questions[0].settled_by') $(jr .status)"
+
+gen sil_block <<'PY'
+write(D, export(answered(Q + "\nChanges-requested")), status(runs=[wake("r2", "core", "m010")]))
+PY
+run_case sil_block --now 2026-03-02T12:00:00Z
+# Hand-worked: the question rode beside Changes-requested; settled, the
+# block decides alone and stands.
+check "(sil-block) the block beside it stands" "blocking Changes-requested STALLED" "$(seat @core state) $(seat @core verdict) $(jr .status)"
+
+gen sil_newer <<'PY'
+e = answered()
+e.insert(3, question(12, "@core", "Question: and the backoff?\n\nReviewed-by: C", to=("@operator",)))
+write(D, export(e), status(runs=[wake("r2", "core", "m010")]))
+PY
+run_case sil_newer --now 2026-03-02T12:00:00Z
+# Hand-worked: r2 harvested clean with no replies, but @core's newer
+# question m012 (not answered) is its verdict: that one is open.
+check "(sil-newer) a newer, unanswered question is still open" "question m012 AWAITING-OPERATOR" "$(seat @core state) $(seat @core message_id) $(jr .status)"
 
 printf '\n== a seat owed a verdict that nothing addresses ==\n'
 # Shared shape (the PR 2411 incident): v1 converged with @core/@tests/@docs;

@@ -416,14 +416,24 @@ is dropped before any seat is judged and the strongest remaining tag on the
 same message decides. A message whose only tag was the question leaves the seat
 with no verdict from it, so it still owes one and falls back to its earlier
 verdicts by the usual rules, carry included. **A timeout never manufactures a
-positive verdict.** A question an `@operator` reply answered is ordinary: the
-seat's next verdict decides.
+positive verdict.** A question an `@operator` reply answered stays the seat's
+verdict until its next one, with one exception. The postmaster wakes the seat
+the answer names, and a wake that ends clean having posted nothing, on a target
+the seat already replied on, is `silent ... reason=replied-on-target`: neither
+flagged nor retried, so nothing wakes the seat again. When the postmaster
+status lists such a run of the asking seat -- harvested clean, `replies` and
+`reply_files` both 0, `review_target_sha` the question message's own target,
+`trigger` the answer or a later message on the thread -- the seat has kept its
+verdict with the answer in hand: the `Question` tag drops as it does on a
+timeout, and the strongest remaining tag decides. Settling, like a timeout,
+never manufactures a positive verdict.
 
 The gate's output gains `ci` (`{"source", "status", "sha", "branch", "url",
 "message_id", "covers_target"}`: the newest trusted result on the frozen head,
 reported on every thread, with `source` `ci` only when the root opted in),
 `question_timeout_hours`, `questions` (`{"seat", "message_id", "asked_at",
-"age_seconds", "timed_out", "subject"}`), and `now`. `lkml-panel-state.py`
+"age_seconds", "timed_out", "subject", "open", "answered_by", "settled_by"}`),
+and `now`. `lkml-panel-state.py`
 takes `--now <ISO-8601>` to pin the clock the ages are taken at; the display
 tools take theirs from `SOURCE_DATE_EPOCH`. `lkml-render.py` and
 `lkml-fleet-status.sh` show the newest trusted result and the questions with

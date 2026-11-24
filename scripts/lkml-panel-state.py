@@ -423,12 +423,16 @@ question. They are listed, whatever
 the timeout, so a dashboard can show them:
 
     "questions": [{"seat","message_id","asked_at","age_seconds",
-                   "timed_out","subject","open"}]  (every version, seq order)
+                   "timed_out","subject","open","answered_by",
+                   "settled_by"}]  (every version, seq order)
 
 asked_at is the message's Date as an ISO UTC stamp, age_seconds is
 against `now` (--now <ISO-8601>, default the clock; the output carries it
 as "now"), subject is the first line, clipped to 200 characters. A Date
 that cannot be read leaves those three null and the question blocking.
+answered_by is the id of @operator's first message that answers it (see
+"open" below), else null; settled_by is the run id that settled it (see
+"Answered and silent"), else null.
 
 The timeout is the root's `X-Lkml-Question-Timeout: <N>h` (whole hours,
 N >= 1; so every reader of a thread agrees). Absent: no timeout, and
@@ -438,9 +442,31 @@ dropped before any seat is judged and the strongest REMAINING tag on the
 same message decides; a message whose only tag was the question gives the
 seat no verdict, so it still owes one and falls back to its earlier
 verdicts by the usual rules (carry included). A timeout NEVER manufactures
-a positive verdict. A question answered by an @operator reply is ordinary:
-the seat's next verdict decides. Nothing wakes a thread when a question
-times out; the timeout is read, not scheduled.
+a positive verdict. Nothing wakes a thread when a question times out; the
+timeout is read, not scheduled.
+
+Answered and silent -- a question @operator answered stays the seat's
+verdict until the seat gives a newer one, with one exception. The
+postmaster wakes the seat the answer names; when that wake ends clean
+having posted nothing, and the seat has already replied on the run's
+review target, the postmaster logs `silent ... reason=replied-on-target`
+and neither flags nor retries it: the seat's reply on that target stands,
+and nothing will wake it again. Panel-state reads the same silence out of
+the status file's runs, so the two agree. A question from a seat (never
+the Author, who holds no verdict) that is not timed out is settled by a
+run of that seat (agent with or without its '@') that has:
+
+  - state "harvested" and outcome "clean";
+  - replies 0 and reply_files 0 (a discarded reply file is not silence);
+  - review_target_sha equal to the question message's X-Review-Target
+    sha: the seat stayed silent about the version it asked on;
+  - a trigger that is a message on the thread no earlier (by seq) than
+    @operator's answer: the seat was woken with the answer in hand.
+
+A settled question's `Question` tag is then dropped exactly as a timeout
+drops it, and settled_by names the run. Settling NEVER manufactures a
+positive verdict: a question-only message leaves the seat with none, and
+a question beside Changes-requested or NAK leaves the block.
 
 A question is open -- the panel waits on the operator -- when all hold:
 
@@ -455,7 +481,9 @@ A question is open -- the panel waits on the operator -- when all hold:
   - @operator has not answered it: no later message from @operator is in
     its reply subtree (In-Reply-To, else the last References id) or names
     the asking seat in To/Cc. Once answered the seat owes the next move,
-    so the word falls through to IN-PROGRESS or STALLED.
+    so the word falls through to IN-PROGRESS or STALLED, and a seat still
+    holding the answered question has the reason "<seat>: Question on vN
+    answered by @operator in <id>; no verdict from <seat> since".
 
 Secretary -- the roster's Secretary seat reports the panel's overall
 state in the LAST non-empty lines of a message body, in this order:
@@ -1075,35 +1103,89 @@ def operator_questions(msgs, panel, hours, now):
                                        f"unreadable Date; the timeout cannot apply"))
         if timed_out:
             m["tags"] = [t for t in m["tags"] if t != "Question"]
-        out.append({"seat": m["from"], "message_id": m["id"],
-                    "asked_at": stamp(asked) if asked else None,
-                    "age_seconds": age, "timed_out": timed_out,
-                    "subject": first_line(m["subject"] or "",
-                                          QUESTION_SUBJECT_MAX)})
+        q = {"seat": m["from"], "message_id": m["id"],
+             "asked_at": stamp(asked) if asked else None,
+             "age_seconds": age, "timed_out": timed_out,
+             "subject": first_line(m["subject"] or "", QUESTION_SUBJECT_MAX)}
+        answer = operator_answer(q, msgs)
+        q.update(answered_by=answer["id"] if answer else None, settled_by=None)
+        out.append(q)
     return out, reasons
 
 
-def operator_answered(q, msgs):
-    """True when @operator has replied to question q: a later message from
-    @operator either in the question's reply subtree or addressed to the
-    asking seat."""
+def operator_answer(q, msgs):
+    """@operator's first message that answers question q, else None: a
+    later message from @operator either in the question's reply subtree or
+    addressed to the asking seat."""
     by_id = {m["id"]: m for m in msgs if m["ok"] and m["id"]}
     asked = by_id.get(q["message_id"])
     if asked is None:
-        return False
+        return None
     for m in msgs:
         if not (m["ok"] and m["from"] == OPERATOR and m["seq"] > asked["seq"]):
             continue
         if q["seat"] in m["to"] + m["cc"]:
-            return True
+            return m
         seen, cur = set(), m["parent"]
         # `seen` guards a reply cycle in a malformed mailbox.
         while cur and cur not in seen:
             if cur == q["message_id"]:
-                return True
+                return m
             seen.add(cur)
             cur = by_id[cur]["parent"] if cur in by_id else None
-    return False
+    return None
+
+
+def is_zero(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value == 0
+
+
+def silent_wake(seat, asked, answer, runs, by_id):
+    """The id of a postmaster run that woke `seat` with @operator's `answer`
+    in hand, at the target of the question message `asked`, and ended clean
+    having posted nothing, else None. See the module docstring, "Answered
+    and silent"."""
+    for r in runs:
+        if not isinstance(r, dict):
+            continue
+        agent, rid = r.get("agent"), r.get("run_id")
+        if not (isinstance(agent, str) and isinstance(rid, str) and rid):
+            continue
+        if (agent if agent.startswith("@") else "@" + agent) != seat:
+            continue
+        if r.get("state") != "harvested" or r.get("outcome") != "clean":
+            continue
+        if not (is_zero(r.get("replies")) and is_zero(r.get("reply_files"))):
+            continue
+        rsha = r.get("review_target_sha")
+        if not (isinstance(rsha, str) and asked["sha"] is not None
+                and rsha.lower() == asked["sha"]):
+            continue
+        trigger = r.get("trigger")
+        woke = by_id.get(trigger) if isinstance(trigger, str) else None
+        if woke is None or woke["seq"] < answer["seq"]:
+            continue
+        return rid
+    return None
+
+
+def settle_answered_questions(questions, msgs, runs, author=None):
+    """Drop, IN PLACE and before any seat is judged, the `Question` tag of
+    each answered question whose seat a postmaster run shows stayed silent
+    with the answer in hand, and set its settled_by. See the module
+    docstring, "Answered and silent"."""
+    by_id = {m["id"]: m for m in msgs if m["ok"] and m["id"]}
+    for q in questions:
+        if q["timed_out"] is True or q["seat"] == author:
+            continue
+        asked = by_id.get(q["message_id"])
+        answer = operator_answer(q, msgs)
+        if asked is None or answer is None or "Question" not in asked["tags"]:
+            continue
+        rid = silent_wake(q["seat"], asked, answer, runs, by_id)
+        if rid is not None:
+            asked["tags"] = [t for t in asked["tags"] if t != "Question"]
+            q["settled_by"] = rid
 
 
 def mark_open_questions(questions, seats, msgs, author=None, target=None):
@@ -1125,7 +1207,7 @@ def mark_open_questions(questions, seats, msgs, author=None, target=None):
         else:
             current = (q["seat"], q["message_id"]) in holding
         q["open"] = (q["timed_out"] is not True and current
-                     and not operator_answered(q, msgs))
+                     and operator_answer(q, msgs) is None)
 
 
 def parse_overrules(msgs, panel, since=0, advisory=()):
@@ -1652,11 +1734,13 @@ def ver_label(target):
     return f"({target['sha'][:8]})"
 
 
-def judge_on(entry, seat, m, tagged, target, suite_seats, source=None):
+def judge_on(entry, seat, m, tagged, target, suite_seats, source=None,
+             answered=None):
     """Fill `entry` from `m`, the seat's latest tagged message on `target`
     -> (entry, reason|None). `source` is the target the verdict was GIVEN on
     when it is being carried forward, else None; `target` is always the
-    version being judged."""
+    version being judged. `answered` maps an operator question's message id
+    to the id of @operator's answer."""
     tag = pick_tag(m["tags"])
     entry.update(state=seat_state_of(tag), verdict=tag, message_id=m["id"],
                  version=m["version"], sha=m["sha"], carried=source is not None,
@@ -1684,8 +1768,12 @@ def judge_on(entry, seat, m, tagged, target, suite_seats, source=None):
             return entry, suite_run_reason(seat, entry["suite_run"])
         return entry, None
     where = ver_label(target)
-    what = "unanswered Question" if tag == "Question" else tag
     carried = f" (carried from {ver_label(source)})" if source else ""
+    answer = (answered or {}).get(m["id"]) if tag == "Question" else None
+    if answer is not None:
+        return entry, (f"{seat}: Question on {where}{carried} answered by "
+                       f"{OPERATOR} in {answer}; no verdict from {seat} since")
+    what = "unanswered Question" if tag == "Question" else tag
     return entry, f"{seat}: {what} on {where}{carried}"
 
 
@@ -1707,12 +1795,12 @@ def unaddressed_seats(seats, msgs, target, since):
 
 
 def judge_seat(seat, msgs, target, suite_seats=(), carry_chain=(),
-               recheck=False):
+               recheck=False, answered=None):
     """-> (seat entry, reason|None) for one panel seat. `carry_chain` is
     the targets, nearest first, whose verdicts this seat may carry forward
     onto `target` (see "Pushes and push modes"); empty means the seat owes
     a fresh verdict, and `recheck` says that is because a recheck push
-    listed it."""
+    listed it. `answered` is judge_on's."""
     tsha = target["sha"] if target else None
     mine = [m for m in msgs if m["ok"] and m["from"] == seat]
     tagged = [m for m in mine if m["tags"]]
@@ -1722,7 +1810,8 @@ def judge_seat(seat, msgs, target, suite_seats=(), carry_chain=(),
              "suite_run": suite_run("missing") if seat in suite_seats else None,
              "carried": False, "overruled_by": None, "fix_size": None}
     if on:
-        return judge_on(entry, seat, on[-1], tagged, target, suite_seats)
+        return judge_on(entry, seat, on[-1], tagged, target, suite_seats,
+                        answered=answered)
     fallback = dict(entry)
     if tagged:
         m = tagged[-1]
@@ -1732,7 +1821,7 @@ def judge_seat(seat, msgs, target, suite_seats=(), carry_chain=(),
         given = [m for m in tagged if m["sha"] == prev["sha"]]
         if given:
             return judge_on(entry, seat, given[-1], tagged, target,
-                            suite_seats, source=prev)
+                            suite_seats, source=prev, answered=answered)
     if carry_chain:
         return fallback, (f"{seat}: no verdict on {ver_label(target)} and "
                           f"nothing to carry from {ver_label(carry_chain[0])}")
@@ -1748,7 +1837,7 @@ def judge_seat(seat, msgs, target, suite_seats=(), carry_chain=(),
     return fallback, f"{seat}: no verdict on {target_label(target)}"
 
 
-SEAT_PHRASE = {"blocking": "is blocking", "question": "has an open Question",
+SEAT_PHRASE = {"blocking": "is blocking", "question": "holds a Question",
                "stale": "is stale", "silent": "is silent",
                "positive": "is positive", "overruled": "is overruled"}
 
@@ -2256,6 +2345,9 @@ def build_state(export, status, now):
     reasons += timeout_reasons
     askers = panel + ([roster["author"]] if roster["author"] else [])
     questions, question_reasons = operator_questions(msgs, askers, timeout, now)
+    settle_answered_questions(questions, msgs, status["runs"], roster["author"])
+    answered = {q["message_id"]: q["answered_by"] for q in questions
+                if q["answered_by"] is not None}
     for seat, why in question_reasons:
         note_or_reason(seat, why)
 
@@ -2306,7 +2398,7 @@ def build_state(export, status, now):
         chain, rechecked = carry_chain(seat, msgs, roster, pushes, versions,
                                        cur, carry_from is not None)
         entry, why = judge_seat(seat, msgs, target, suite_seats,
-                                chain, rechecked)
+                                chain, rechecked, answered)
         entry, why = apply_overrule(entry, why, rulings, suite_seats)
         entry["advisory"] = seat in advisory
         seats.append(entry)
