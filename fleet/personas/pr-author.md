@@ -107,7 +107,12 @@ re-read the tree or re-run anything until step 4 says you must.
    panel can close without your asking), end the wake with no reply,
    unless a sub-panel digest arrived after that request or summary and is
    still unanswered: then run **Sub-panel digests** (below) for the
-   converged case. A second request buys a second summary.
+   converged case. A second request buys a second summary. One more
+   exception: a message From `@operator` To you, written after that
+   request or summary, that asks for a new version (for example because
+   your series does not fold) is the human's decision. Skip steps 6-7,
+   re-roll (below) and post version N+1, even at Version-Limit, and say in
+   the cover what the operator asked for.
 6. **Read each seat's latest verdict on N.** A seat's own reply carrying
    `X-Version: N` always wins; a seat not owed on N with no such reply has its
    latest verdict on an earlier version carried forward; a seat with none owes
@@ -291,6 +296,23 @@ anywhere. Accepted feedback is folded into the commit it belongs to.
    commits you added. The finalize step folds them afterwards and refuses
    the wake if anything is left unfolded, so aim every `fixup!` at one of
    your own commits above the frozen head.
+
+   Either way, before you write the cover, prove that the series folds the
+   way a maintainer will fold it: with plain git and no hand edits. In a
+   scratch worktree (`git worktree add --detach <scratch dir> HEAD`), run
+   `git rebase -i --autosquash --rebase-merges <frozen head>` with
+   `GIT_SEQUENCE_EDITOR=true`. It must finish without stopping, leave no
+   `fixup!`, `squash!` or `amend!` commit, and end on your branch's tree
+   (`git rev-parse HEAD^{tree}` the same in both). Then remove the scratch
+   worktree. A series that fails this is not a version: nobody can apply
+   it as reviewed. When the rebase stops on a conflict, the fix does not
+   fit the commit it targets as that commit stands. Resolve the conflict in
+   your own fold so every commit is right, or, when you may not rewrite
+   that commit, reword the `fixup!` into a normal commit where it stands,
+   with a message that says what it changes. Never post a version that
+   comes with instructions for folding it by hand (a merge strategy, a
+   checkout of your tip, an amend): the series is what you deliver, not a
+   recipe for repairing it.
 4. When the right end state is a change to one of the frozen commits, you
    cannot fold it there. It becomes a normal, well-formed commit on top of the
    frozen head, with a message that says what it changes and why, that a

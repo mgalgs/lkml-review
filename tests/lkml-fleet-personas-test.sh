@@ -660,6 +660,14 @@ has_flat "$pa" 'Never ask the Secretary for a verdict while one is open' "pr-aut
 has_flat "$pa" 'carries `Overrule: <that verdict'"'"'s message id>` alone on its line at the left margin' "pr-author.md reads an Overrule line as a ruling"
 has_flat "$pa" 'only `@operator` can overrule `@core`' "pr-author.md: only the operator overrules @core"
 has_flat "$pa" 'upholds the block: comply' "pr-author.md complies with an upheld block"
+# A series that only folds by hand converges with nothing anyone can apply,
+# and no seat wakes on a closed panel: the author proves the fold before the
+# cover, and an operator's request reopens a converged panel.
+has_flat "$pa" 'run `git rebase -i --autosquash --rebase-merges <frozen head>` with `GIT_SEQUENCE_EDITOR=true`. It must finish without stopping' "pr-author.md proves the series folds before the cover"
+has_flat "$pa" 'end on your branch'"'"'s tree' "pr-author.md checks the folded tree"
+has_flat "$pa" 'Never post a version that comes with instructions for folding it by hand' "pr-author.md never hands the human a fold recipe"
+has_flat "$pa" 'a message From `@operator` To you, written after that request or summary, that asks for a new version' "pr-author.md re-rolls a converged panel on the operator's request"
+has_flat "$pa" 'post version N+1, even at Version-Limit' "pr-author.md: the operator's re-roll is not held by Version-Limit"
 co="$texts_dir/core.md"
 has_flat "$co" 'A smaller roster leaves lanes with no seat' "core.md names the lanes a smaller roster leaves empty"
 has_flat "$co" 'no seat on the `Panel:` line owns it, it is yours, at the bar its own seat would hold' "core.md takes an unseated lane at its own seat's bar"
